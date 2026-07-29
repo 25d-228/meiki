@@ -10,6 +10,10 @@ import type { StudyCardDto } from "./generated/StudyCardDto";
 import type { MakeClozeRequest } from "./generated/MakeClozeRequest";
 import type { RemoveClozeRequest } from "./generated/RemoveClozeRequest";
 import type { ReorderSegmentsRequest } from "./generated/ReorderSegmentsRequest";
+import type { RebuildSchedulerResultDto } from "./generated/RebuildSchedulerResultDto";
+import type { SchedulerSettingsDto } from "./generated/SchedulerSettingsDto";
+import type { SchedulerDiagnosticsExportDto } from "./generated/SchedulerDiagnosticsExportDto";
+import type { UpdateSchedulerSettingsRequest } from "./generated/UpdateSchedulerSettingsRequest";
 
 function invoke<T>(
   command: string,
@@ -36,6 +40,34 @@ export const api = {
 
   gradeReview(request: GradeReviewRequest): Promise<GradeReviewResultDto> {
     return invoke("grade_review", { request });
+  },
+
+  getSchedulerSettings(deckId: string): Promise<SchedulerSettingsDto> {
+    return invoke("get_scheduler_settings", { deckId });
+  },
+
+  updateSchedulerSettings(
+    request: UpdateSchedulerSettingsRequest,
+  ): Promise<SchedulerSettingsDto> {
+    return invoke("update_scheduler_settings", { request });
+  },
+
+  optimizeScheduler(deckId: string): Promise<SchedulerSettingsDto> {
+    return invoke("optimize_scheduler", { deckId });
+  },
+
+  rollbackScheduler(deckId: string): Promise<SchedulerSettingsDto> {
+    return invoke("rollback_scheduler", { deckId });
+  },
+
+  rebuildScheduler(deckId: string): Promise<RebuildSchedulerResultDto> {
+    return invoke("rebuild_scheduler", { deckId });
+  },
+
+  exportSchedulerDiagnostics(
+    deckId: string,
+  ): Promise<SchedulerDiagnosticsExportDto> {
+    return invoke("export_scheduler_diagnostics", { deckId });
   },
 
   newAuthoringDraft(): Promise<AuthoringDraftDto> {

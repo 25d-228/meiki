@@ -9,7 +9,8 @@ use tempfile::tempdir;
 use super::{
     AnnotationRepository, CardRepository, ClozeRepository, DEFAULT_DECK_ID, DeckRepository,
     FOUNDATION_MIGRATION, MediaRepository, SAMPLE_CARD_ID, SchedulerParameterSetRepository,
-    SourceNoteRepository, Storage, StorageError, StoredSourceNote, TagRepository,
+    SchedulerProfileRepository, SourceNoteRepository, Storage, StorageError, StoredSourceNote,
+    TagRepository,
 };
 
 fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent {
@@ -17,8 +18,13 @@ fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent
     let mut next = stored.schedule.clone();
     next.version += 1;
     next.due_at_ms = reviewed_at_ms + 259_200_000;
+    next.ideal_due_at_ms = next.due_at_ms;
+    next.interval_milliseconds = 259_200_000;
     next.interval_seconds = 259_200;
     next.repetitions += 1;
+    next.stability_milliseconds = 259_200_000;
+    next.difficulty_millipoints = 5_000;
+    next.last_reviewed_at_ms = Some(reviewed_at_ms);
     next.last_review_event_id = Some(id.to_owned());
     ReviewEvent {
         id: id.to_owned(),
@@ -32,9 +38,80 @@ fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent
         reviewed_at_ms,
         scheduler_version: "test-scheduler".into(),
         scheduler_parameter_set_id: None,
+        target_retention_basis_points: 9_000,
         previous_schedule: stored.schedule,
         next_schedule: next,
     }
+}
+
+#[test]
+fn parameter_adoption_and_rollback_are_atomic_and_prospective() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let schedule_before = storage.load_schedule(SAMPLE_CARD_ID).unwrap();
+    let history_before = storage.review_count(SAMPLE_CARD_ID).unwrap();
+    let default_profile = storage.get_scheduler_profile(DEFAULT_DECK_ID).unwrap();
+    let mut parameters = storage
+        .get_scheduler_parameter_set(&default_profile.active_parameter_set_id)
+        .unwrap()
+        .parameters;
+    parameters[7] += 0.1;
+
+    let personalized = SchedulerParameterSet {
+        id: "fsrs7-personal-test".into(),
+        engine_version: "fsrs-7".into(),
+        parameters,
+        created_at_ms: 2_000,
+    };
+    let adopted = storage
+        .adopt_scheduler_parameter_set(
+            DEFAULT_DECK_ID,
+            &personalized,
+            "{\"result\":\"adopted\",\"reviews\":64}",
+            2_000,
+        )
+        .unwrap();
+    assert_eq!(adopted.active_parameter_set_id, personalized.id);
+    assert_eq!(
+        adopted.previous_parameter_set_id.as_deref(),
+        Some(default_profile.active_parameter_set_id.as_str())
+    );
+    assert_eq!(
+        adopted.optimizer_status,
+        meiki_domain::OptimizerStatus::Adopted
+    );
+    assert_eq!(
+        storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
+        schedule_before
+    );
+    assert_eq!(
+        storage.review_count(SAMPLE_CARD_ID).unwrap(),
+        history_before
+    );
+
+    let rolled_back = storage
+        .rollback_scheduler_parameter_set(DEFAULT_DECK_ID, 3_000)
+        .unwrap();
+    assert_eq!(
+        rolled_back.active_parameter_set_id,
+        default_profile.active_parameter_set_id
+    );
+    assert_eq!(
+        rolled_back.previous_parameter_set_id.as_deref(),
+        Some(personalized.id.as_str())
+    );
+    assert_eq!(
+        rolled_back.optimizer_status,
+        meiki_domain::OptimizerStatus::RolledBack
+    );
+    assert_eq!(
+        storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
+        schedule_before
+    );
+    assert_eq!(
+        storage.review_count(SAMPLE_CARD_ID).unwrap(),
+        history_before
+    );
 }
 
 fn deck(id: &str) -> Deck {
@@ -391,7 +468,7 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 3);
+    assert_eq!(storage.schema_version().unwrap(), 4);
     let restored = storage.load_study_card("legacy-card").unwrap();
     assert_eq!(restored.source_item.deck_id, DEFAULT_DECK_ID);
     assert_eq!(restored.source_item.direction, Direction::RightToLeft);
@@ -520,8 +597,13 @@ fn multilingual_aggregate_round_trips_and_cloze_ids_survive_surrounding_edits() 
             card_id: card.id.clone(),
             version: 0,
             due_at_ms: 1_000,
+            ideal_due_at_ms: 1_000,
+            interval_milliseconds: 0,
             interval_seconds: 0,
             repetitions: 0,
+            stability_milliseconds: 0,
+            difficulty_millipoints: 0,
+            last_reviewed_at_ms: None,
             last_review_event_id: None,
         };
         storage.create_card(&card, &schedule).unwrap();

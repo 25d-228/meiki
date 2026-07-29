@@ -1744,6 +1744,7 @@ dependencies = [
  "meiki-storage",
  "meiki-text",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "ts-rs",

@@ -1,15 +1,16 @@
 use std::collections::{HashMap, HashSet};
 
 use meiki_domain::{
-    Annotation, Card, Cloze, Deck, LocalizedText, MediaKind, MediaReference, ScheduleState,
-    SchedulerParameterSet, SegmentContent, SemanticSegment, SourceItem, Tag,
+    Annotation, Card, Cloze, Deck, LocalizedText, MediaKind, MediaReference, OptimizerStatus,
+    ScheduleState, SchedulerParameterSet, SchedulerProfile, SegmentContent, SemanticSegment,
+    SourceItem, StudyIntensity, Tag,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::{
-    Storage, StorageError, StoredSourceNote, StoredStudyCard, direction_from_database,
-    direction_to_database, entity_not_found, matching_policy_from_database,
-    matching_policy_to_database,
+    DEFAULT_SCHEDULER_PARAMETER_SET_ID, Storage, StorageError, StoredSourceNote, StoredStudyCard,
+    direction_from_database, direction_to_database, entity_not_found,
+    matching_policy_from_database, matching_policy_to_database,
 };
 
 /// Persistence operations for mutable decks.
@@ -88,6 +89,18 @@ pub trait SchedulerParameterSetRepository {
     fn delete_scheduler_parameter_set(&mut self, id: &str) -> Result<(), StorageError>;
 }
 
+/// Persistence operations for per-deck scheduling controls and engine state.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when validation, lookup, or persistence
+/// fails.
+#[allow(clippy::missing_errors_doc)]
+pub trait SchedulerProfileRepository {
+    fn get_scheduler_profile(&self, deck_id: &str) -> Result<SchedulerProfile, StorageError>;
+    fn update_scheduler_profile(&mut self, profile: &SchedulerProfile) -> Result<(), StorageError>;
+}
+
 /// Persistence operations for source-note aggregates.
 ///
 /// # Errors
@@ -136,7 +149,11 @@ pub trait CardRepository {
 
 impl DeckRepository for Storage {
     fn create_deck(&mut self, deck: &Deck) -> Result<(), StorageError> {
-        insert_deck(&self.connection, deck)
+        let transaction = self.connection.transaction()?;
+        insert_deck(&transaction, deck)?;
+        insert_default_scheduler_profile(&transaction, &deck.id, deck.created_at_ms)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     fn get_deck(&self, id: &str) -> Result<Deck, StorageError> {
@@ -348,6 +365,130 @@ impl SchedulerParameterSetRepository for Storage {
             .connection
             .execute("DELETE FROM scheduler_parameter_sets WHERE id = ?1", [id])?;
         ensure_changed(changed, "scheduler parameter set", id)
+    }
+}
+
+impl SchedulerProfileRepository for Storage {
+    fn get_scheduler_profile(&self, deck_id: &str) -> Result<SchedulerProfile, StorageError> {
+        load_scheduler_profile(&self.connection, deck_id)
+    }
+
+    fn update_scheduler_profile(&mut self, profile: &SchedulerProfile) -> Result<(), StorageError> {
+        validate_scheduler_profile(&self.connection, profile)?;
+        let changed = self.connection.execute(
+            "UPDATE scheduler_profiles
+             SET engine_version = ?1,
+                 active_parameter_set_id = ?2,
+                 previous_parameter_set_id = ?3,
+                 intensity = ?4,
+                 daily_time_budget_minutes = ?5,
+                 day_boundary_minutes = ?6,
+                 optimizer_status = ?7,
+                 optimizer_diagnostics = ?8,
+                 updated_at_ms = ?9
+             WHERE deck_id = ?10",
+            params![
+                profile.engine_version,
+                profile.active_parameter_set_id,
+                profile.previous_parameter_set_id,
+                intensity_to_database(profile.intensity),
+                profile.daily_time_budget_minutes,
+                profile.day_boundary_minutes,
+                optimizer_status_to_database(profile.optimizer_status),
+                profile.optimizer_diagnostics,
+                profile.updated_at_ms,
+                profile.deck_id,
+            ],
+        )?;
+        ensure_changed(changed, "scheduler profile", &profile.deck_id)
+    }
+}
+
+impl Storage {
+    /// Atomically stores and activates a new immutable parameter set.
+    ///
+    /// Existing schedule projections are deliberately left unchanged; the new
+    /// parameters apply only to future review decisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the profile and parameter engine versions
+    /// differ or the transaction cannot be committed.
+    pub fn adopt_scheduler_parameter_set(
+        &mut self,
+        deck_id: &str,
+        parameter_set: &SchedulerParameterSet,
+        diagnostics: &str,
+        updated_at_ms: i64,
+    ) -> Result<SchedulerProfile, StorageError> {
+        let transaction = self.connection.transaction()?;
+        let current = load_scheduler_profile(&transaction, deck_id)?;
+        if current.engine_version != parameter_set.engine_version {
+            return Err(StorageError::InvalidAggregate(
+                "a scheduler profile and parameter set must use the same engine version".into(),
+            ));
+        }
+        let parameters = serde_json::to_string(&parameter_set.parameters)?;
+        transaction.execute(
+            "INSERT INTO scheduler_parameter_sets(
+                id, engine_version, parameters_json, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                parameter_set.id,
+                parameter_set.engine_version,
+                parameters,
+                parameter_set.created_at_ms,
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE scheduler_profiles
+             SET previous_parameter_set_id = active_parameter_set_id,
+                 active_parameter_set_id = ?1,
+                 optimizer_status = 'adopted',
+                 optimizer_diagnostics = ?2,
+                 updated_at_ms = ?3
+             WHERE deck_id = ?4",
+            params![parameter_set.id, diagnostics, updated_at_ms, deck_id],
+        )?;
+        transaction.commit()?;
+        load_scheduler_profile(&self.connection, deck_id)
+    }
+
+    /// Restores the last known-good parameter set without rescheduling cards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the profile has no rollback target or the
+    /// transaction cannot be committed.
+    pub fn rollback_scheduler_parameter_set(
+        &mut self,
+        deck_id: &str,
+        updated_at_ms: i64,
+    ) -> Result<SchedulerProfile, StorageError> {
+        let transaction = self.connection.transaction()?;
+        let current = load_scheduler_profile(&transaction, deck_id)?;
+        let previous = current.previous_parameter_set_id.ok_or_else(|| {
+            StorageError::InvalidAggregate(
+                "the scheduler profile has no previous parameter set to restore".into(),
+            )
+        })?;
+        transaction.execute(
+            "UPDATE scheduler_profiles
+             SET active_parameter_set_id = ?1,
+                 previous_parameter_set_id = ?2,
+                 optimizer_status = 'rolled_back',
+                 optimizer_diagnostics = '{\"result\":\"rolled_back\"}',
+                 updated_at_ms = ?3
+             WHERE deck_id = ?4",
+            params![
+                previous,
+                current.active_parameter_set_id,
+                updated_at_ms,
+                deck_id
+            ],
+        )?;
+        transaction.commit()?;
+        load_scheduler_profile(&self.connection, deck_id)
     }
 }
 
@@ -1135,6 +1276,147 @@ fn insert_deck(connection: &Connection, deck: &Deck) -> Result<(), StorageError>
     Ok(())
 }
 
+fn insert_default_scheduler_profile(
+    connection: &Connection,
+    deck_id: &str,
+    created_at_ms: i64,
+) -> Result<(), StorageError> {
+    connection.execute(
+        "INSERT INTO scheduler_profiles(
+            deck_id,
+            engine_version,
+            active_parameter_set_id,
+            intensity,
+            day_boundary_minutes,
+            optimizer_status,
+            updated_at_ms
+         ) VALUES (?1, 'fsrs-7', ?2, 'balanced', 240, 'never_run', ?3)",
+        params![deck_id, DEFAULT_SCHEDULER_PARAMETER_SET_ID, created_at_ms],
+    )?;
+    Ok(())
+}
+
+fn load_scheduler_profile(
+    connection: &Connection,
+    deck_id: &str,
+) -> Result<SchedulerProfile, StorageError> {
+    connection
+        .query_row(
+            "SELECT
+                deck_id,
+                engine_version,
+                active_parameter_set_id,
+                previous_parameter_set_id,
+                intensity,
+                daily_time_budget_minutes,
+                day_boundary_minutes,
+                optimizer_status,
+                optimizer_diagnostics,
+                updated_at_ms
+             FROM scheduler_profiles
+             WHERE deck_id = ?1",
+            [deck_id],
+            |row| {
+                Ok(SchedulerProfile {
+                    deck_id: row.get(0)?,
+                    engine_version: row.get(1)?,
+                    active_parameter_set_id: row.get(2)?,
+                    previous_parameter_set_id: row.get(3)?,
+                    intensity: intensity_from_database(&row.get::<_, String>(4)?)
+                        .map_err(to_sql_conversion_error)?,
+                    daily_time_budget_minutes: row.get(5)?,
+                    day_boundary_minutes: row.get(6)?,
+                    optimizer_status: optimizer_status_from_database(&row.get::<_, String>(7)?)
+                        .map_err(to_sql_conversion_error)?,
+                    optimizer_diagnostics: row.get(8)?,
+                    updated_at_ms: row.get(9)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| entity_not_found("scheduler profile", deck_id))
+}
+
+fn validate_scheduler_profile(
+    connection: &Connection,
+    profile: &SchedulerProfile,
+) -> Result<(), StorageError> {
+    if profile.day_boundary_minutes >= 1_440
+        || profile.daily_time_budget_minutes == Some(0)
+        || profile.engine_version.is_empty()
+    {
+        return Err(StorageError::InvalidAggregate(
+            "scheduler profile controls are outside safe bounds".into(),
+        ));
+    }
+    for parameter_set_id in std::iter::once(profile.active_parameter_set_id.as_str())
+        .chain(profile.previous_parameter_set_id.as_deref())
+    {
+        let version = connection
+            .query_row(
+                "SELECT engine_version
+                 FROM scheduler_parameter_sets
+                 WHERE id = ?1",
+                [parameter_set_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| entity_not_found("scheduler parameter set", parameter_set_id))?;
+        if version != profile.engine_version {
+            return Err(StorageError::InvalidAggregate(
+                "scheduler profile parameter versions must match its engine version".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+const fn intensity_to_database(value: StudyIntensity) -> &'static str {
+    match value {
+        StudyIntensity::Light => "light",
+        StudyIntensity::Balanced => "balanced",
+        StudyIntensity::Intensive => "intensive",
+    }
+}
+
+fn intensity_from_database(value: &str) -> Result<StudyIntensity, StorageError> {
+    match value {
+        "light" => Ok(StudyIntensity::Light),
+        "balanced" => Ok(StudyIntensity::Balanced),
+        "intensive" => Ok(StudyIntensity::Intensive),
+        _ => Err(StorageError::InvalidStoredValue {
+            field: "study intensity",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+const fn optimizer_status_to_database(value: OptimizerStatus) -> &'static str {
+    match value {
+        OptimizerStatus::NeverRun => "never_run",
+        OptimizerStatus::InsufficientData => "insufficient_data",
+        OptimizerStatus::Adopted => "adopted",
+        OptimizerStatus::Rejected => "rejected",
+        OptimizerStatus::Failed => "failed",
+        OptimizerStatus::RolledBack => "rolled_back",
+    }
+}
+
+fn optimizer_status_from_database(value: &str) -> Result<OptimizerStatus, StorageError> {
+    match value {
+        "never_run" => Ok(OptimizerStatus::NeverRun),
+        "insufficient_data" => Ok(OptimizerStatus::InsufficientData),
+        "adopted" => Ok(OptimizerStatus::Adopted),
+        "rejected" => Ok(OptimizerStatus::Rejected),
+        "failed" => Ok(OptimizerStatus::Failed),
+        "rolled_back" => Ok(OptimizerStatus::RolledBack),
+        _ => Err(StorageError::InvalidStoredValue {
+            field: "optimizer status",
+            value: value.to_owned(),
+        }),
+    }
+}
+
 fn load_deck(connection: &Connection, id: &str) -> Result<Deck, StorageError> {
     connection
         .query_row(
@@ -1648,10 +1930,15 @@ fn insert_schedule(
             card_id,
             version,
             due_at_ms,
+            ideal_due_at_ms,
+            interval_milliseconds,
             interval_seconds,
             repetitions,
+            stability_milliseconds,
+            difficulty_millipoints,
+            last_reviewed_at_ms,
             last_review_event_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
     );
     connection.execute(
         &sql,
@@ -1659,8 +1946,13 @@ fn insert_schedule(
             schedule.card_id,
             schedule.version,
             schedule.due_at_ms,
+            schedule.ideal_due_at_ms,
+            schedule.interval_milliseconds,
             schedule.interval_seconds,
             schedule.repetitions,
+            schedule.stability_milliseconds,
+            schedule.difficulty_millipoints,
+            schedule.last_reviewed_at_ms,
             schedule.last_review_event_id,
         ],
     )?;
@@ -1674,8 +1966,10 @@ pub(crate) fn load_schedule_row(
 ) -> Result<Option<ScheduleState>, StorageError> {
     let sql = format!(
         "SELECT
-            card_id, version, due_at_ms, interval_seconds, repetitions,
-            last_review_event_id
+            card_id, version, due_at_ms, ideal_due_at_ms,
+            interval_milliseconds, interval_seconds, repetitions,
+            stability_milliseconds, difficulty_millipoints,
+            last_reviewed_at_ms, last_review_event_id
          FROM {table}
          WHERE card_id = ?1"
     );
@@ -1685,9 +1979,14 @@ pub(crate) fn load_schedule_row(
                 card_id: row.get(0)?,
                 version: row.get(1)?,
                 due_at_ms: row.get(2)?,
-                interval_seconds: row.get(3)?,
-                repetitions: row.get(4)?,
-                last_review_event_id: row.get(5)?,
+                ideal_due_at_ms: row.get(3)?,
+                interval_milliseconds: row.get(4)?,
+                interval_seconds: row.get(5)?,
+                repetitions: row.get(6)?,
+                stability_milliseconds: row.get(7)?,
+                difficulty_millipoints: row.get(8)?,
+                last_reviewed_at_ms: row.get(9)?,
+                last_review_event_id: row.get(10)?,
             })
         })
         .optional()?)

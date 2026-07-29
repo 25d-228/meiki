@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use meiki_domain::{
-    Annotation, Card, Cloze, Direction, LocalizedText, MatchingPolicy, ScheduleState,
-    SegmentContent, SemanticSegment, SourceItem, StudySettingsOverride,
+    Annotation, Card, Cloze, Direction, LocalizedText, MatchingPolicy, SegmentContent,
+    SemanticSegment, SourceItem, StudySettingsOverride,
 };
+use meiki_scheduler::{Fsrs7Engine, SchedulerConfig, SchedulerEngine};
 use meiki_storage::{
     CardRepository, DEFAULT_DECK_ID, DeckRepository, SourceNoteRepository, StoredSourceNote,
 };
@@ -367,17 +368,8 @@ impl ApplicationService {
                         created_at_ms: now_ms,
                         updated_at_ms: now_ms,
                     };
-                    storage.create_card(
-                        &card,
-                        &ScheduleState {
-                            card_id: card.id.clone(),
-                            version: 0,
-                            due_at_ms: now_ms,
-                            interval_seconds: 0,
-                            repetitions: 0,
-                            last_review_event_id: None,
-                        },
-                    )?;
+                    let scheduler = Fsrs7Engine::new(SchedulerConfig::default())?;
+                    storage.create_card(&card, &scheduler.initial_schedule(&card.id, now_ms))?;
                 }
                 Err(error) => return Err(error.into()),
             }

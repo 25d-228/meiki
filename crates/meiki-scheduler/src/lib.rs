@@ -1,82 +1,123 @@
-//! Pure scheduling boundary for the foundation walking skeleton.
+//! Pure, versioned scheduling engines and local parameter optimization.
+//!
+//! This crate owns no UI, SQL, clock, filesystem, or mutable global state.
+
+mod fsrs7;
+mod optimizer;
+
+use std::fmt;
 
 use meiki_domain::{Grade, ScheduleState};
 
-pub const ENGINE_VERSION: &str = "foundation-v1";
+pub use fsrs7::{DEFAULT_PARAMETERS, Fsrs7Engine, PARAMETER_COUNT, SchedulerConfig};
+pub use optimizer::{
+    MINIMUM_OPTIMIZATION_REVIEWS, OptimizationDiagnostics, OptimizationResult, ReviewHistoryEntry,
+};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+pub const ENGINE_VERSION: &str = "fsrs-7";
+pub const DEFAULT_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ScheduleDecision {
     pub scheduler_version: &'static str,
+    pub target_retention_basis_points: u16,
     pub next_state: ScheduleState,
 }
 
-/// Calculates the next schedule state without I/O or mutable shared state.
-pub fn schedule_review(
-    current: &ScheduleState,
-    grade: Grade,
-    reviewed_at_ms: i64,
-) -> ScheduleDecision {
-    let (interval_seconds, repetitions) = match grade {
-        Grade::Again => (60, 0),
-        Grade::Hard => (
-            86_400 * u64::from(current.repetitions.max(1)),
-            current.repetitions + 1,
-        ),
-        Grade::Good => (
-            259_200 * u64::from(current.repetitions.max(1)),
-            current.repetitions + 1,
-        ),
-        Grade::Easy => (
-            604_800 * u64::from(current.repetitions.max(1)),
-            current.repetitions + 1,
-        ),
-    };
-    let interval_ms = i64::try_from(interval_seconds)
-        .unwrap_or(i64::MAX)
-        .saturating_mul(1_000);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SchedulerError {
+    InvalidParameterCount { expected: usize, found: usize },
+    InvalidParameter(usize),
+    InvalidParameterOrder,
+    InvalidTargetRetention(u16),
+    InvalidMaximumInterval(u32),
+    InvalidState(&'static str),
+    InvalidSerialization(&'static str),
+}
 
-    ScheduleDecision {
-        scheduler_version: ENGINE_VERSION,
-        next_state: ScheduleState {
-            card_id: current.card_id.clone(),
-            version: current.version + 1,
-            due_at_ms: reviewed_at_ms.saturating_add(interval_ms),
-            interval_seconds,
-            repetitions,
-            last_review_event_id: None,
-        },
+impl fmt::Display for SchedulerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidParameterCount { expected, found } => {
+                write!(
+                    formatter,
+                    "expected {expected} scheduler parameters, found {found}"
+                )
+            }
+            Self::InvalidParameter(index) => {
+                write!(
+                    formatter,
+                    "scheduler parameter {index} is outside safe bounds"
+                )
+            }
+            Self::InvalidParameterOrder => {
+                formatter.write_str("scheduler parameters violate required ordering")
+            }
+            Self::InvalidTargetRetention(value) => {
+                write!(
+                    formatter,
+                    "target retention {value} must be between 7000 and 9900 basis points"
+                )
+            }
+            Self::InvalidMaximumInterval(value) => {
+                write!(
+                    formatter,
+                    "maximum interval {value} must be between 1 and 36500 days"
+                )
+            }
+            Self::InvalidState(reason) => write!(formatter, "invalid schedule state: {reason}"),
+            Self::InvalidSerialization(reason) => {
+                write!(formatter, "invalid scheduler serialization: {reason}")
+            }
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use meiki_domain::{Grade, ScheduleState};
+impl std::error::Error for SchedulerError {}
 
-    use super::{ENGINE_VERSION, schedule_review};
+/// Replaceable pure scheduling boundary.
+pub trait SchedulerEngine {
+    fn version(&self) -> &'static str;
 
-    fn initial_state() -> ScheduleState {
-        ScheduleState {
-            card_id: "card-1".into(),
-            version: 0,
-            due_at_ms: 1_000,
-            interval_seconds: 0,
-            repetitions: 0,
-            last_review_event_id: None,
-        }
-    }
+    /// Returns an immediately due, version-zero state for a new card.
+    fn initial_schedule(&self, card_id: &str, created_at_ms: i64) -> ScheduleState;
 
-    #[test]
-    fn identical_inputs_produce_identical_decisions() {
-        let first = schedule_review(&initial_state(), Grade::Good, 10_000);
-        let second = schedule_review(&initial_state(), Grade::Good, 10_000);
-        assert_eq!(first, second);
-        assert_eq!(first.scheduler_version, ENGINE_VERSION);
-    }
+    /// Applies one graded review without performing I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the persisted state is inconsistent or time moves
+    /// backwards.
+    fn review(
+        &self,
+        current: &ScheduleState,
+        grade: Grade,
+        reviewed_at_ms: i64,
+    ) -> Result<ScheduleDecision, SchedulerError>;
 
-    #[test]
-    fn again_schedules_a_retry_and_resets_repetitions() {
-        let decision = schedule_review(&initial_state(), Grade::Again, 10_000);
-        assert_eq!(decision.next_state.due_at_ms, 70_000);
-        assert_eq!(decision.next_state.repetitions, 0);
-    }
+    /// Predicts recall probability at an exact timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the card has no initialized memory state or time
+    /// moves backwards.
+    fn recall_probability(&self, state: &ScheduleState, at_ms: i64) -> Result<f64, SchedulerError>;
+
+    /// Serializes parameters in a canonical, bit-exact representation.
+    fn serialize_parameters(&self) -> String;
+
+    /// Serializes a projected state without locale-sensitive formatting.
+    fn serialize_state(&self, state: &ScheduleState) -> String;
+
+    /// Restores a projected state from the engine's canonical serialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the version, field count, encoding, or memory
+    /// invariants are invalid.
+    fn deserialize_state(&self, serialized: &str) -> Result<ScheduleState, SchedulerError>;
+
+    /// Runs deterministic local optimization with chronological holdout
+    /// validation.
+    fn optimize(&self, history: &[ReviewHistoryEntry]) -> OptimizationResult;
 }

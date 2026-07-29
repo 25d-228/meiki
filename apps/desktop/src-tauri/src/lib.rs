@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use meiki_application::{
     ApplicationService, AuthoringDraftDto, AuthoringPreviewDto, CheckAnswerRequest,
-    GradeReviewRequest, GradeReviewResultDto, MakeClozeRequest, RemoveClozeRequest,
-    ReorderSegmentsRequest, RevealDto, StudyCardDto,
+    GradeReviewRequest, GradeReviewResultDto, MakeClozeRequest, RebuildSchedulerResultDto,
+    RemoveClozeRequest, ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto,
+    SchedulerSettingsDto, StudyCardDto, UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -56,6 +57,78 @@ fn grade_review(
     state
         .service()
         .grade_review(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_scheduler_settings(
+    deck_id: String,
+    state: State<'_, AppContext>,
+) -> Result<SchedulerSettingsDto, String> {
+    state
+        .service()
+        .get_scheduler_settings(&deck_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn update_scheduler_settings(
+    request: UpdateSchedulerSettingsRequest,
+    state: State<'_, AppContext>,
+) -> Result<SchedulerSettingsDto, String> {
+    state
+        .service()
+        .update_scheduler_settings(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn optimize_scheduler(
+    deck_id: String,
+    state: State<'_, AppContext>,
+) -> Result<SchedulerSettingsDto, String> {
+    state
+        .service()
+        .optimize_scheduler(&deck_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn rollback_scheduler(
+    deck_id: String,
+    state: State<'_, AppContext>,
+) -> Result<SchedulerSettingsDto, String> {
+    state
+        .service()
+        .rollback_scheduler(&deck_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn rebuild_scheduler(
+    deck_id: String,
+    state: State<'_, AppContext>,
+) -> Result<RebuildSchedulerResultDto, String> {
+    state
+        .service()
+        .rebuild_scheduler(&deck_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn export_scheduler_diagnostics(
+    deck_id: String,
+    state: State<'_, AppContext>,
+) -> Result<SchedulerDiagnosticsExportDto, String> {
+    state
+        .service()
+        .export_scheduler_diagnostics(&deck_id)
         .map_err(|error| error.to_string())
 }
 
@@ -147,6 +220,12 @@ pub fn run() {
             get_study_card,
             check_answer,
             grade_review,
+            get_scheduler_settings,
+            update_scheduler_settings,
+            optimize_scheduler,
+            rollback_scheduler,
+            rebuild_scheduler,
+            export_scheduler_diagnostics,
             new_authoring_draft,
             make_cloze,
             remove_cloze,
