@@ -1,0 +1,1701 @@
+use std::collections::{HashMap, HashSet};
+
+use meiki_domain::{
+    Annotation, Card, Cloze, Deck, LocalizedText, MediaKind, MediaReference, ScheduleState,
+    SchedulerParameterSet, SegmentContent, SemanticSegment, SourceItem, Tag,
+};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
+use crate::{
+    Storage, StorageError, StoredSourceNote, StoredStudyCard, direction_from_database,
+    direction_to_database, entity_not_found,
+};
+
+/// Persistence operations for mutable decks.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when validation, lookup, or persistence
+/// fails.
+#[allow(clippy::missing_errors_doc)]
+pub trait DeckRepository {
+    fn create_deck(&mut self, deck: &Deck) -> Result<(), StorageError>;
+    fn get_deck(&self, id: &str) -> Result<Deck, StorageError>;
+    fn update_deck(&mut self, deck: &Deck) -> Result<(), StorageError>;
+    fn delete_deck(&mut self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Persistence operations for mutable tags.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when validation, lookup, or persistence
+/// fails.
+#[allow(clippy::missing_errors_doc)]
+pub trait TagRepository {
+    fn create_tag(&mut self, tag: &Tag) -> Result<(), StorageError>;
+    fn get_tag(&self, id: &str) -> Result<Tag, StorageError>;
+    fn update_tag(&mut self, tag: &Tag) -> Result<(), StorageError>;
+    fn delete_tag(&mut self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Persistence operations for generic annotations.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when validation, lookup, or persistence
+/// fails.
+#[allow(clippy::missing_errors_doc)]
+pub trait AnnotationRepository {
+    fn create_annotation(&mut self, annotation: &Annotation) -> Result<(), StorageError>;
+    fn get_annotation(&self, id: &str) -> Result<Annotation, StorageError>;
+    fn update_annotation(&mut self, annotation: &Annotation) -> Result<(), StorageError>;
+    fn delete_annotation(&mut self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Persistence operations for media metadata references.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when validation, lookup, or persistence
+/// fails.
+#[allow(clippy::missing_errors_doc)]
+pub trait MediaRepository {
+    fn create_media_reference(&mut self, media: &MediaReference) -> Result<(), StorageError>;
+    fn get_media_reference(&self, id: &str) -> Result<MediaReference, StorageError>;
+    fn update_media_reference(&mut self, media: &MediaReference) -> Result<(), StorageError>;
+    fn delete_media_reference(&mut self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Persistence operations for versioned scheduler parameter sets.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when validation, lookup, or persistence
+/// fails.
+#[allow(clippy::missing_errors_doc)]
+pub trait SchedulerParameterSetRepository {
+    fn create_scheduler_parameter_set(
+        &mut self,
+        parameter_set: &SchedulerParameterSet,
+    ) -> Result<(), StorageError>;
+    fn get_scheduler_parameter_set(&self, id: &str) -> Result<SchedulerParameterSet, StorageError>;
+    fn update_scheduler_parameter_set(
+        &mut self,
+        parameter_set: &SchedulerParameterSet,
+    ) -> Result<(), StorageError>;
+    fn delete_scheduler_parameter_set(&mut self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Persistence operations for source-note aggregates.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when validation, lookup, or persistence
+/// fails.
+#[allow(clippy::missing_errors_doc)]
+pub trait SourceNoteRepository {
+    fn create_source_note(&mut self, note: &StoredSourceNote) -> Result<(), StorageError>;
+    fn get_source_note(&self, id: &str) -> Result<StoredSourceNote, StorageError>;
+    fn update_source_note(&mut self, note: &StoredSourceNote) -> Result<(), StorageError>;
+    fn delete_source_note(&mut self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Persistence operations for clozes owned by source notes.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when validation, lookup, or persistence
+/// fails.
+#[allow(clippy::missing_errors_doc)]
+pub trait ClozeRepository {
+    fn get_cloze(&self, id: &str) -> Result<Cloze, StorageError>;
+    fn update_cloze(&mut self, cloze: &Cloze) -> Result<(), StorageError>;
+    fn delete_cloze(&mut self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Persistence operations for cards and their initial projections.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when validation, lookup, or persistence
+/// fails.
+#[allow(clippy::missing_errors_doc)]
+pub trait CardRepository {
+    fn create_card(
+        &mut self,
+        card: &Card,
+        initial_schedule: &ScheduleState,
+    ) -> Result<(), StorageError>;
+    fn get_card(&self, id: &str) -> Result<Card, StorageError>;
+    fn update_card(&mut self, card: &Card) -> Result<(), StorageError>;
+    fn delete_card(&mut self, id: &str) -> Result<(), StorageError>;
+}
+
+impl DeckRepository for Storage {
+    fn create_deck(&mut self, deck: &Deck) -> Result<(), StorageError> {
+        insert_deck(&self.connection, deck)
+    }
+
+    fn get_deck(&self, id: &str) -> Result<Deck, StorageError> {
+        load_deck(&self.connection, id)
+    }
+
+    fn update_deck(&mut self, deck: &Deck) -> Result<(), StorageError> {
+        let changed = self.connection.execute(
+            "UPDATE decks
+             SET name = ?1,
+                 description = ?2,
+                 target_retention_basis_points = ?3,
+                 new_cards_per_day = ?4,
+                 maximum_interval_days = ?5,
+                 updated_at_ms = ?6
+             WHERE id = ?7",
+            params![
+                deck.name,
+                deck.description,
+                deck.settings.target_retention_basis_points,
+                deck.settings.new_cards_per_day,
+                deck.settings.maximum_interval_days,
+                deck.updated_at_ms,
+                deck.id,
+            ],
+        )?;
+        ensure_changed(changed, "deck", &deck.id)
+    }
+
+    fn delete_deck(&mut self, id: &str) -> Result<(), StorageError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM decks WHERE id = ?1", [id])?;
+        ensure_changed(changed, "deck", id)
+    }
+}
+
+impl TagRepository for Storage {
+    fn create_tag(&mut self, tag: &Tag) -> Result<(), StorageError> {
+        insert_tag(&self.connection, tag)
+    }
+
+    fn get_tag(&self, id: &str) -> Result<Tag, StorageError> {
+        load_tag(&self.connection, id)
+    }
+
+    fn update_tag(&mut self, tag: &Tag) -> Result<(), StorageError> {
+        let changed = self.connection.execute(
+            "UPDATE tags
+             SET name = ?1, updated_at_ms = ?2
+             WHERE id = ?3",
+            params![tag.name, tag.updated_at_ms, tag.id],
+        )?;
+        ensure_changed(changed, "tag", &tag.id)
+    }
+
+    fn delete_tag(&mut self, id: &str) -> Result<(), StorageError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM tags WHERE id = ?1", [id])?;
+        ensure_changed(changed, "tag", id)
+    }
+}
+
+impl AnnotationRepository for Storage {
+    fn create_annotation(&mut self, annotation: &Annotation) -> Result<(), StorageError> {
+        insert_annotation(&self.connection, annotation)
+    }
+
+    fn get_annotation(&self, id: &str) -> Result<Annotation, StorageError> {
+        load_annotation(&self.connection, id)
+    }
+
+    fn update_annotation(&mut self, annotation: &Annotation) -> Result<(), StorageError> {
+        let changed = self.connection.execute(
+            "UPDATE annotations
+             SET label = ?1, value = ?2, language_tag = ?3, direction = ?4
+             WHERE id = ?5",
+            params![
+                annotation.label,
+                annotation.value,
+                annotation.language_tag,
+                direction_to_database(annotation.direction),
+                annotation.id,
+            ],
+        )?;
+        ensure_changed(changed, "annotation", &annotation.id)
+    }
+
+    fn delete_annotation(&mut self, id: &str) -> Result<(), StorageError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM annotations WHERE id = ?1", [id])?;
+        ensure_changed(changed, "annotation", id)
+    }
+}
+
+impl MediaRepository for Storage {
+    fn create_media_reference(&mut self, media: &MediaReference) -> Result<(), StorageError> {
+        insert_media(&self.connection, media)
+    }
+
+    fn get_media_reference(&self, id: &str) -> Result<MediaReference, StorageError> {
+        load_media(&self.connection, id)
+    }
+
+    fn update_media_reference(&mut self, media: &MediaReference) -> Result<(), StorageError> {
+        let changed = self.connection.execute(
+            "UPDATE media_references
+             SET content_hash = ?1,
+                 kind = ?2,
+                 media_type = ?3,
+                 original_file_name = ?4,
+                 alt_text = ?5,
+                 language_tag = ?6,
+                 direction = ?7
+             WHERE id = ?8",
+            params![
+                media.content_hash,
+                media_kind_to_database(media.kind),
+                media.media_type,
+                media.original_file_name,
+                media.alt_text,
+                media.language_tag,
+                direction_to_database(media.direction),
+                media.id,
+            ],
+        )?;
+        ensure_changed(changed, "media reference", &media.id)
+    }
+
+    fn delete_media_reference(&mut self, id: &str) -> Result<(), StorageError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM media_references WHERE id = ?1", [id])?;
+        ensure_changed(changed, "media reference", id)
+    }
+}
+
+impl SchedulerParameterSetRepository for Storage {
+    fn create_scheduler_parameter_set(
+        &mut self,
+        parameter_set: &SchedulerParameterSet,
+    ) -> Result<(), StorageError> {
+        let parameters = serde_json::to_string(&parameter_set.parameters)?;
+        self.connection.execute(
+            "INSERT INTO scheduler_parameter_sets(
+                id, engine_version, parameters_json, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                parameter_set.id,
+                parameter_set.engine_version,
+                parameters,
+                parameter_set.created_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn get_scheduler_parameter_set(&self, id: &str) -> Result<SchedulerParameterSet, StorageError> {
+        let stored = self
+            .connection
+            .query_row(
+                "SELECT id, engine_version, parameters_json, created_at_ms
+                 FROM scheduler_parameter_sets
+                 WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| entity_not_found("scheduler parameter set", id))?;
+        Ok(SchedulerParameterSet {
+            id: stored.0,
+            engine_version: stored.1,
+            parameters: serde_json::from_str(&stored.2)?,
+            created_at_ms: stored.3,
+        })
+    }
+
+    fn update_scheduler_parameter_set(
+        &mut self,
+        parameter_set: &SchedulerParameterSet,
+    ) -> Result<(), StorageError> {
+        let parameters = serde_json::to_string(&parameter_set.parameters)?;
+        let changed = self.connection.execute(
+            "UPDATE scheduler_parameter_sets
+             SET engine_version = ?1, parameters_json = ?2
+             WHERE id = ?3",
+            params![parameter_set.engine_version, parameters, parameter_set.id,],
+        )?;
+        ensure_changed(changed, "scheduler parameter set", &parameter_set.id)
+    }
+
+    fn delete_scheduler_parameter_set(&mut self, id: &str) -> Result<(), StorageError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM scheduler_parameter_sets WHERE id = ?1", [id])?;
+        ensure_changed(changed, "scheduler parameter set", id)
+    }
+}
+
+impl SourceNoteRepository for Storage {
+    fn create_source_note(&mut self, note: &StoredSourceNote) -> Result<(), StorageError> {
+        validate_note(note)?;
+        let transaction = self.connection.transaction()?;
+        insert_source(&transaction, &note.source_item)?;
+        insert_note_children(&transaction, note)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn get_source_note(&self, id: &str) -> Result<StoredSourceNote, StorageError> {
+        load_source_note(&self.connection, id)
+    }
+
+    fn update_source_note(&mut self, note: &StoredSourceNote) -> Result<(), StorageError> {
+        validate_note(note)?;
+        let transaction = self.connection.transaction()?;
+        let changed = update_source(&transaction, &note.source_item)?;
+        ensure_changed(changed, "source note", &note.source_item.id)?;
+
+        transaction.execute(
+            "DELETE FROM semantic_segments WHERE source_item_id = ?1",
+            [&note.source_item.id],
+        )?;
+        replace_owned_annotations(
+            &transaction,
+            "source_item_annotations",
+            "source_item_id",
+            &note.source_item.id,
+            &note.source_item.annotations,
+        )?;
+        replace_source_tags(&transaction, &note.source_item)?;
+        replace_source_media(&transaction, &note.source_item)?;
+
+        let existing = source_cloze_ids(&transaction, &note.source_item.id)?;
+        let requested = note
+            .clozes
+            .iter()
+            .map(|cloze| cloze.id.as_str())
+            .collect::<HashSet<_>>();
+        for cloze_id in existing {
+            if !requested.contains(cloze_id.as_str()) {
+                delete_owned_annotations(&transaction, "cloze_annotations", "cloze_id", &cloze_id)?;
+                transaction.execute("DELETE FROM clozes WHERE id = ?1", [&cloze_id])?;
+            }
+        }
+
+        for cloze in &note.clozes {
+            let exists = transaction
+                .query_row(
+                    "SELECT 1 FROM clozes WHERE id = ?1",
+                    [&cloze.id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if exists {
+                update_cloze_row(&transaction, cloze)?;
+                replace_owned_annotations(
+                    &transaction,
+                    "cloze_annotations",
+                    "cloze_id",
+                    &cloze.id,
+                    &cloze.annotations,
+                )?;
+                replace_cloze_media(&transaction, cloze)?;
+            } else {
+                insert_cloze(&transaction, cloze)?;
+                insert_cloze_children(&transaction, cloze)?;
+            }
+        }
+        insert_segments(&transaction, &note.source_item)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn delete_source_note(&mut self, id: &str) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        let cloze_ids = source_cloze_ids(&transaction, id)?;
+        delete_owned_annotations(
+            &transaction,
+            "source_item_annotations",
+            "source_item_id",
+            id,
+        )?;
+        for cloze_id in &cloze_ids {
+            delete_owned_annotations(&transaction, "cloze_annotations", "cloze_id", cloze_id)?;
+        }
+        transaction.execute(
+            "DELETE FROM cards
+             WHERE cloze_id IN (
+                SELECT id FROM clozes WHERE source_item_id = ?1
+             )",
+            [id],
+        )?;
+        transaction.execute(
+            "DELETE FROM semantic_segments WHERE source_item_id = ?1",
+            [id],
+        )?;
+        let changed = transaction.execute("DELETE FROM source_items WHERE id = ?1", [id])?;
+        ensure_changed(changed, "source note", id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+impl ClozeRepository for Storage {
+    fn get_cloze(&self, id: &str) -> Result<Cloze, StorageError> {
+        load_cloze(&self.connection, id)
+    }
+
+    fn update_cloze(&mut self, cloze: &Cloze) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        let changed = update_cloze_row(&transaction, cloze)?;
+        ensure_changed(changed, "cloze", &cloze.id)?;
+        let changed = transaction.execute(
+            "UPDATE semantic_segments
+             SET text = ?1
+             WHERE cloze_id = ?2",
+            params![cloze.answer, cloze.id],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::InvalidAggregate(format!(
+                "cloze {} must own exactly one semantic segment",
+                cloze.id
+            )));
+        }
+        replace_owned_annotations(
+            &transaction,
+            "cloze_annotations",
+            "cloze_id",
+            &cloze.id,
+            &cloze.annotations,
+        )?;
+        replace_cloze_media(&transaction, cloze)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn delete_cloze(&mut self, id: &str) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM semantic_segments WHERE cloze_id = ?1", [id])?;
+        delete_owned_annotations(&transaction, "cloze_annotations", "cloze_id", id)?;
+        let changed = transaction.execute("DELETE FROM clozes WHERE id = ?1", [id])?;
+        ensure_changed(changed, "cloze", id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+impl CardRepository for Storage {
+    fn create_card(
+        &mut self,
+        card: &Card,
+        initial_schedule: &ScheduleState,
+    ) -> Result<(), StorageError> {
+        if initial_schedule.card_id != card.id
+            || initial_schedule.version != 0
+            || initial_schedule.last_review_event_id.is_some()
+        {
+            return Err(StorageError::InvalidAggregate(
+                "a new card requires its own version-zero schedule".into(),
+            ));
+        }
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO cards(
+                id,
+                cloze_id,
+                content_version,
+                target_retention_basis_points,
+                new_cards_per_day,
+                maximum_interval_days,
+                created_at_ms,
+                updated_at_ms,
+                queue_updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            params![
+                card.id,
+                card.cloze_id,
+                card.content_version,
+                card.settings.target_retention_basis_points,
+                card.settings.new_cards_per_day,
+                card.settings.maximum_interval_days,
+                card.created_at_ms,
+                card.updated_at_ms,
+            ],
+        )?;
+        insert_schedule(&transaction, "schedule_states", initial_schedule)?;
+        insert_schedule(&transaction, "schedule_baselines", initial_schedule)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn get_card(&self, id: &str) -> Result<Card, StorageError> {
+        load_card(&self.connection, id)
+    }
+
+    fn update_card(&mut self, card: &Card) -> Result<(), StorageError> {
+        let stored = load_card(&self.connection, &card.id)?;
+        if stored.cloze_id != card.cloze_id {
+            return Err(StorageError::InvalidAggregate(format!(
+                "card {} cannot move between clozes",
+                card.id
+            )));
+        }
+        let changed = self.connection.execute(
+            "UPDATE cards
+             SET content_version = ?1,
+                 target_retention_basis_points = ?2,
+                 new_cards_per_day = ?3,
+                 maximum_interval_days = ?4,
+                 updated_at_ms = ?5
+             WHERE id = ?6",
+            params![
+                card.content_version,
+                card.settings.target_retention_basis_points,
+                card.settings.new_cards_per_day,
+                card.settings.maximum_interval_days,
+                card.updated_at_ms,
+                card.id,
+            ],
+        )?;
+        ensure_changed(changed, "card", &card.id)
+    }
+
+    fn delete_card(&mut self, id: &str) -> Result<(), StorageError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM cards WHERE id = ?1", [id])?;
+        ensure_changed(changed, "card", id)
+    }
+}
+
+impl Storage {
+    /// Loads a card with its full source aggregate and projected schedule.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the card is missing or stored data cannot
+    /// be decoded.
+    pub fn load_study_card(&self, card_id: &str) -> Result<StoredStudyCard, StorageError> {
+        let (card, source_item_id) = self
+            .connection
+            .query_row(
+                "SELECT cards.id, clozes.source_item_id
+                 FROM cards
+                 JOIN clozes ON clozes.id = cards.cloze_id
+                 WHERE cards.id = ?1",
+                [card_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))?;
+        let note = load_source_note(&self.connection, &source_item_id)?;
+        let card = load_card(&self.connection, &card)?;
+        let cloze = note
+            .clozes
+            .into_iter()
+            .find(|cloze| cloze.id == card.cloze_id)
+            .ok_or_else(|| entity_not_found("cloze", &card.cloze_id))?;
+        let schedule = self.load_schedule(card_id)?;
+        Ok(StoredStudyCard {
+            source_item: note.source_item,
+            cloze,
+            card,
+            schedule,
+        })
+    }
+
+    /// Loads the current projected schedule for a card.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the card is missing or the query fails.
+    pub fn load_schedule(&self, card_id: &str) -> Result<ScheduleState, StorageError> {
+        load_schedule_row(&self.connection, "schedule_states", card_id)?
+            .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))
+    }
+}
+
+fn insert_note_children(
+    transaction: &Transaction<'_>,
+    note: &StoredSourceNote,
+) -> Result<(), StorageError> {
+    for tag in &note.source_item.tags {
+        upsert_tag(transaction, tag)?;
+    }
+    for media in &note.source_item.media {
+        upsert_media(transaction, media)?;
+    }
+    insert_owned_annotations(
+        transaction,
+        "source_item_annotations",
+        "source_item_id",
+        &note.source_item.id,
+        &note.source_item.annotations,
+    )?;
+    insert_source_tag_links(transaction, &note.source_item)?;
+    insert_source_media_links(transaction, &note.source_item)?;
+
+    for cloze in &note.clozes {
+        insert_cloze(transaction, cloze)?;
+        insert_cloze_children(transaction, cloze)?;
+    }
+    insert_segments(transaction, &note.source_item)?;
+    Ok(())
+}
+
+fn insert_cloze_children(transaction: &Transaction<'_>, cloze: &Cloze) -> Result<(), StorageError> {
+    for media in &cloze.media {
+        upsert_media(transaction, media)?;
+    }
+    insert_owned_annotations(
+        transaction,
+        "cloze_annotations",
+        "cloze_id",
+        &cloze.id,
+        &cloze.annotations,
+    )?;
+    insert_cloze_media_links(transaction, cloze)
+}
+
+fn validate_note(note: &StoredSourceNote) -> Result<(), StorageError> {
+    let clozes = note
+        .clozes
+        .iter()
+        .map(|cloze| (cloze.id.as_str(), cloze))
+        .collect::<HashMap<_, _>>();
+    if clozes.len() != note.clozes.len() {
+        return Err(StorageError::InvalidAggregate(
+            "cloze identifiers must be unique".into(),
+        ));
+    }
+    for cloze in &note.clozes {
+        if cloze.source_item_id != note.source_item.id {
+            return Err(StorageError::InvalidAggregate(format!(
+                "cloze {} belongs to a different source note",
+                cloze.id
+            )));
+        }
+    }
+    for (index, segment) in note.source_item.segments.iter().enumerate() {
+        let ordinal = u32::try_from(index).map_err(|_| StorageError::NumericRange("ordinal"))?;
+        if segment.ordinal != ordinal {
+            return Err(StorageError::InvalidAggregate(
+                "segment ordinals must be contiguous and match vector order".into(),
+            ));
+        }
+        if let SegmentContent::Cloze { cloze_id, text } = &segment.content {
+            let cloze = clozes.get(cloze_id.as_str()).ok_or_else(|| {
+                StorageError::InvalidAggregate(format!(
+                    "segment {} references missing cloze {cloze_id}",
+                    segment.id
+                ))
+            })?;
+            if cloze.answer != *text {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "segment {} does not preserve cloze {} surface text",
+                    segment.id, cloze.id
+                )));
+            }
+        }
+    }
+    let referenced = note
+        .source_item
+        .segments
+        .iter()
+        .filter_map(|segment| match &segment.content {
+            SegmentContent::Cloze { cloze_id, .. } => Some(cloze_id.as_str()),
+            SegmentContent::Text(_) => None,
+        })
+        .collect::<HashSet<_>>();
+    if referenced.len() != clozes.len() || !clozes.keys().all(|id| referenced.contains(id)) {
+        return Err(StorageError::InvalidAggregate(
+            "each cloze must appear in exactly one semantic segment".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn insert_source(connection: &Connection, source: &SourceItem) -> Result<(), StorageError> {
+    let (explanation, explanation_language, explanation_direction) =
+        localized_text_columns(source.explanation.as_ref());
+    connection.execute(
+        "INSERT INTO source_items(
+            id,
+            language_tag,
+            direction,
+            created_at_ms,
+            deck_id,
+            explanation,
+            explanation_language_tag,
+            explanation_direction,
+            updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            source.id,
+            source.language_tag,
+            direction_to_database(source.direction),
+            source.created_at_ms,
+            source.deck_id,
+            explanation,
+            explanation_language,
+            explanation_direction,
+            source.updated_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_source(connection: &Connection, source: &SourceItem) -> Result<usize, StorageError> {
+    let (explanation, explanation_language, explanation_direction) =
+        localized_text_columns(source.explanation.as_ref());
+    Ok(connection.execute(
+        "UPDATE source_items
+         SET deck_id = ?1,
+             language_tag = ?2,
+             direction = ?3,
+             explanation = ?4,
+             explanation_language_tag = ?5,
+             explanation_direction = ?6,
+             updated_at_ms = ?7
+         WHERE id = ?8",
+        params![
+            source.deck_id,
+            source.language_tag,
+            direction_to_database(source.direction),
+            explanation,
+            explanation_language,
+            explanation_direction,
+            source.updated_at_ms,
+            source.id,
+        ],
+    )?)
+}
+
+fn load_source_note(connection: &Connection, id: &str) -> Result<StoredSourceNote, StorageError> {
+    type StoredSource = (
+        String,
+        String,
+        Option<String>,
+        String,
+        i64,
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let stored = connection
+        .query_row(
+            "SELECT
+                id,
+                deck_id,
+                language_tag,
+                direction,
+                created_at_ms,
+                updated_at_ms,
+                explanation,
+                explanation_language_tag,
+                explanation_direction
+             FROM source_items
+             WHERE id = ?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| entity_not_found("source note", id))?;
+    let stored: StoredSource = stored;
+    let segments = load_segments(connection, id)?;
+    let tags = load_source_tags(connection, id)?;
+    let annotations =
+        load_owned_annotations(connection, "source_item_annotations", "source_item_id", id)?;
+    let media = load_linked_media(connection, "source_item_media", "source_item_id", id)?;
+    let cloze_ids = source_cloze_ids(connection, id)?;
+    let clozes = cloze_ids
+        .iter()
+        .map(|cloze_id| load_cloze(connection, cloze_id))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(StoredSourceNote {
+        source_item: SourceItem {
+            id: stored.0,
+            deck_id: stored.1,
+            segments,
+            language_tag: stored.2,
+            direction: direction_from_database(&stored.3)?,
+            tags,
+            annotations,
+            explanation: localized_text_from_columns(stored.6, stored.7, stored.8.as_deref())?,
+            media,
+            created_at_ms: stored.4,
+            updated_at_ms: stored.5,
+        },
+        clozes,
+    })
+}
+
+fn insert_cloze(connection: &Connection, cloze: &Cloze) -> Result<(), StorageError> {
+    let accepted_answers = serde_json::to_string(&cloze.accepted_answers)?;
+    let (hint, hint_language, hint_direction) = localized_text_columns(cloze.hint.as_ref());
+    let (explanation, explanation_language, explanation_direction) =
+        localized_text_columns(cloze.explanation.as_ref());
+    connection.execute(
+        "INSERT INTO clozes(
+            id,
+            source_item_id,
+            answer,
+            accepted_answers_json,
+            hint,
+            hint_language_tag,
+            hint_direction,
+            language_tag,
+            direction,
+            explanation,
+            explanation_language_tag,
+            explanation_direction,
+            created_at_ms,
+            updated_at_ms
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+         )",
+        params![
+            cloze.id,
+            cloze.source_item_id,
+            cloze.answer,
+            accepted_answers,
+            hint,
+            hint_language,
+            hint_direction,
+            cloze.language_tag,
+            direction_to_database(cloze.direction),
+            explanation,
+            explanation_language,
+            explanation_direction,
+            cloze.created_at_ms,
+            cloze.updated_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_cloze_row(connection: &Connection, cloze: &Cloze) -> Result<usize, StorageError> {
+    let accepted_answers = serde_json::to_string(&cloze.accepted_answers)?;
+    let (hint, hint_language, hint_direction) = localized_text_columns(cloze.hint.as_ref());
+    let (explanation, explanation_language, explanation_direction) =
+        localized_text_columns(cloze.explanation.as_ref());
+    Ok(connection.execute(
+        "UPDATE clozes
+         SET answer = ?1,
+             accepted_answers_json = ?2,
+             hint = ?3,
+             hint_language_tag = ?4,
+             hint_direction = ?5,
+             language_tag = ?6,
+             direction = ?7,
+             explanation = ?8,
+             explanation_language_tag = ?9,
+             explanation_direction = ?10,
+             updated_at_ms = ?11
+         WHERE id = ?12 AND source_item_id = ?13",
+        params![
+            cloze.answer,
+            accepted_answers,
+            hint,
+            hint_language,
+            hint_direction,
+            cloze.language_tag,
+            direction_to_database(cloze.direction),
+            explanation,
+            explanation_language,
+            explanation_direction,
+            cloze.updated_at_ms,
+            cloze.id,
+            cloze.source_item_id,
+        ],
+    )?)
+}
+
+fn load_cloze(connection: &Connection, id: &str) -> Result<Cloze, StorageError> {
+    type StoredCloze = (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    );
+    let stored = connection
+        .query_row(
+            "SELECT
+                id,
+                source_item_id,
+                answer,
+                accepted_answers_json,
+                hint,
+                hint_language_tag,
+                hint_direction,
+                language_tag,
+                direction,
+                explanation,
+                explanation_language_tag,
+                explanation_direction,
+                created_at_ms,
+                updated_at_ms
+             FROM clozes
+             WHERE id = ?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| entity_not_found("cloze", id))?;
+    let stored: StoredCloze = stored;
+    Ok(Cloze {
+        id: stored.0,
+        source_item_id: stored.1,
+        answer: stored.2,
+        accepted_answers: serde_json::from_str(&stored.3)?,
+        hint: localized_text_from_columns(stored.4, stored.5, stored.6.as_deref())?,
+        language_tag: stored.7,
+        direction: direction_from_database(&stored.8)?,
+        annotations: load_owned_annotations(connection, "cloze_annotations", "cloze_id", id)?,
+        explanation: localized_text_from_columns(stored.9, stored.10, stored.11.as_deref())?,
+        media: load_linked_media(connection, "cloze_media", "cloze_id", id)?,
+        created_at_ms: stored.12,
+        updated_at_ms: stored.13,
+    })
+}
+
+fn insert_segments(connection: &Connection, source: &SourceItem) -> Result<(), StorageError> {
+    for segment in &source.segments {
+        let (kind, text, cloze_id) = match &segment.content {
+            SegmentContent::Text(text) => ("text", text.as_str(), None),
+            SegmentContent::Cloze { cloze_id, text } => {
+                ("cloze", text.as_str(), Some(cloze_id.as_str()))
+            }
+        };
+        connection.execute(
+            "INSERT INTO semantic_segments(
+                id, source_item_id, ordinal, kind, text, cloze_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![segment.id, source.id, segment.ordinal, kind, text, cloze_id,],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_segments(
+    connection: &Connection,
+    source_item_id: &str,
+) -> Result<Vec<SemanticSegment>, StorageError> {
+    let mut statement = connection.prepare(
+        "SELECT id, ordinal, kind, text, cloze_id
+         FROM semantic_segments
+         WHERE source_item_id = ?1
+         ORDER BY ordinal",
+    )?;
+    let stored = statement
+        .query_map([source_item_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    stored
+        .into_iter()
+        .map(|(id, ordinal, kind, text, cloze_id)| {
+            let content = match (kind.as_str(), cloze_id) {
+                ("text", None) => SegmentContent::Text(text),
+                ("cloze", Some(cloze_id)) => SegmentContent::Cloze { cloze_id, text },
+                _ => {
+                    return Err(StorageError::InvalidStoredValue {
+                        field: "semantic segment",
+                        value: kind,
+                    });
+                }
+            };
+            Ok(SemanticSegment {
+                id,
+                ordinal,
+                content,
+            })
+        })
+        .collect()
+}
+
+fn insert_deck(connection: &Connection, deck: &Deck) -> Result<(), StorageError> {
+    connection.execute(
+        "INSERT INTO decks(
+            id,
+            name,
+            description,
+            target_retention_basis_points,
+            new_cards_per_day,
+            maximum_interval_days,
+            created_at_ms,
+            updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            deck.id,
+            deck.name,
+            deck.description,
+            deck.settings.target_retention_basis_points,
+            deck.settings.new_cards_per_day,
+            deck.settings.maximum_interval_days,
+            deck.created_at_ms,
+            deck.updated_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_deck(connection: &Connection, id: &str) -> Result<Deck, StorageError> {
+    connection
+        .query_row(
+            "SELECT
+                id,
+                name,
+                description,
+                target_retention_basis_points,
+                new_cards_per_day,
+                maximum_interval_days,
+                created_at_ms,
+                updated_at_ms
+             FROM decks
+             WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Deck {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    settings: meiki_domain::StudySettingsOverride {
+                        target_retention_basis_points: row.get(3)?,
+                        new_cards_per_day: row.get(4)?,
+                        maximum_interval_days: row.get(5)?,
+                    },
+                    created_at_ms: row.get(6)?,
+                    updated_at_ms: row.get(7)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| entity_not_found("deck", id))
+}
+
+fn insert_tag(connection: &Connection, tag: &Tag) -> Result<(), StorageError> {
+    connection.execute(
+        "INSERT INTO tags(id, name, created_at_ms, updated_at_ms)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![tag.id, tag.name, tag.created_at_ms, tag.updated_at_ms],
+    )?;
+    Ok(())
+}
+
+fn upsert_tag(connection: &Connection, tag: &Tag) -> Result<(), StorageError> {
+    connection.execute(
+        "INSERT INTO tags(id, name, created_at_ms, updated_at_ms)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE
+         SET name = excluded.name, updated_at_ms = excluded.updated_at_ms",
+        params![tag.id, tag.name, tag.created_at_ms, tag.updated_at_ms],
+    )?;
+    Ok(())
+}
+
+fn load_tag(connection: &Connection, id: &str) -> Result<Tag, StorageError> {
+    connection
+        .query_row(
+            "SELECT id, name, created_at_ms, updated_at_ms
+             FROM tags
+             WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Tag {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at_ms: row.get(2)?,
+                    updated_at_ms: row.get(3)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| entity_not_found("tag", id))
+}
+
+fn insert_annotation(connection: &Connection, annotation: &Annotation) -> Result<(), StorageError> {
+    connection.execute(
+        "INSERT INTO annotations(id, label, value, language_tag, direction)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            annotation.id,
+            annotation.label,
+            annotation.value,
+            annotation.language_tag,
+            direction_to_database(annotation.direction),
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_annotation(connection: &Connection, id: &str) -> Result<Annotation, StorageError> {
+    let stored = connection
+        .query_row(
+            "SELECT id, label, value, language_tag, direction
+             FROM annotations
+             WHERE id = ?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| entity_not_found("annotation", id))?;
+    Ok(Annotation {
+        id: stored.0,
+        label: stored.1,
+        value: stored.2,
+        language_tag: stored.3,
+        direction: direction_from_database(&stored.4)?,
+    })
+}
+
+fn insert_media(connection: &Connection, media: &MediaReference) -> Result<(), StorageError> {
+    connection.execute(
+        "INSERT INTO media_references(
+            id,
+            content_hash,
+            kind,
+            media_type,
+            original_file_name,
+            alt_text,
+            language_tag,
+            direction,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            media.id,
+            media.content_hash,
+            media_kind_to_database(media.kind),
+            media.media_type,
+            media.original_file_name,
+            media.alt_text,
+            media.language_tag,
+            direction_to_database(media.direction),
+            media.created_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_media(connection: &Connection, media: &MediaReference) -> Result<(), StorageError> {
+    connection.execute(
+        "INSERT INTO media_references(
+            id,
+            content_hash,
+            kind,
+            media_type,
+            original_file_name,
+            alt_text,
+            language_tag,
+            direction,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+            content_hash = excluded.content_hash,
+            kind = excluded.kind,
+            media_type = excluded.media_type,
+            original_file_name = excluded.original_file_name,
+            alt_text = excluded.alt_text,
+            language_tag = excluded.language_tag,
+            direction = excluded.direction",
+        params![
+            media.id,
+            media.content_hash,
+            media_kind_to_database(media.kind),
+            media.media_type,
+            media.original_file_name,
+            media.alt_text,
+            media.language_tag,
+            direction_to_database(media.direction),
+            media.created_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_media(connection: &Connection, id: &str) -> Result<MediaReference, StorageError> {
+    let stored = connection
+        .query_row(
+            "SELECT
+                id,
+                content_hash,
+                kind,
+                media_type,
+                original_file_name,
+                alt_text,
+                language_tag,
+                direction,
+                created_at_ms
+             FROM media_references
+             WHERE id = ?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| entity_not_found("media reference", id))?;
+    Ok(MediaReference {
+        id: stored.0,
+        content_hash: stored.1,
+        kind: media_kind_from_database(&stored.2)?,
+        media_type: stored.3,
+        original_file_name: stored.4,
+        alt_text: stored.5,
+        language_tag: stored.6,
+        direction: direction_from_database(&stored.7)?,
+        created_at_ms: stored.8,
+    })
+}
+
+fn source_cloze_ids(
+    connection: &Connection,
+    source_item_id: &str,
+) -> Result<Vec<String>, StorageError> {
+    let mut statement = connection.prepare(
+        "SELECT clozes.id
+         FROM clozes
+         LEFT JOIN semantic_segments
+            ON semantic_segments.cloze_id = clozes.id
+         WHERE clozes.source_item_id = ?1
+         GROUP BY clozes.id
+         ORDER BY MIN(semantic_segments.ordinal), clozes.id",
+    )?;
+    Ok(statement
+        .query_map([source_item_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn insert_source_tag_links(
+    connection: &Connection,
+    source: &SourceItem,
+) -> Result<(), StorageError> {
+    for (index, tag) in source.tags.iter().enumerate() {
+        connection.execute(
+            "INSERT INTO source_item_tags(source_item_id, tag_id, ordinal)
+             VALUES (?1, ?2, ?3)",
+            params![source.id, tag.id, ordinal(index)?],
+        )?;
+    }
+    Ok(())
+}
+
+fn replace_source_tags(connection: &Connection, source: &SourceItem) -> Result<(), StorageError> {
+    connection.execute(
+        "DELETE FROM source_item_tags WHERE source_item_id = ?1",
+        [&source.id],
+    )?;
+    for tag in &source.tags {
+        upsert_tag(connection, tag)?;
+    }
+    insert_source_tag_links(connection, source)
+}
+
+fn load_source_tags(
+    connection: &Connection,
+    source_item_id: &str,
+) -> Result<Vec<Tag>, StorageError> {
+    let mut statement = connection.prepare(
+        "SELECT tags.id, tags.name, tags.created_at_ms, tags.updated_at_ms
+         FROM source_item_tags
+         JOIN tags ON tags.id = source_item_tags.tag_id
+         WHERE source_item_tags.source_item_id = ?1
+         ORDER BY source_item_tags.ordinal",
+    )?;
+    Ok(statement
+        .query_map([source_item_id], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at_ms: row.get(2)?,
+                updated_at_ms: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn insert_owned_annotations(
+    connection: &Connection,
+    link_table: &str,
+    owner_column: &str,
+    owner_id: &str,
+    annotations: &[Annotation],
+) -> Result<(), StorageError> {
+    for (index, annotation) in annotations.iter().enumerate() {
+        insert_annotation(connection, annotation)?;
+        let sql = format!(
+            "INSERT INTO {link_table}({owner_column}, annotation_id, ordinal)
+             VALUES (?1, ?2, ?3)"
+        );
+        connection.execute(&sql, params![owner_id, annotation.id, ordinal(index)?])?;
+    }
+    Ok(())
+}
+
+fn replace_owned_annotations(
+    connection: &Connection,
+    link_table: &str,
+    owner_column: &str,
+    owner_id: &str,
+    annotations: &[Annotation],
+) -> Result<(), StorageError> {
+    delete_owned_annotations(connection, link_table, owner_column, owner_id)?;
+    insert_owned_annotations(connection, link_table, owner_column, owner_id, annotations)
+}
+
+fn delete_owned_annotations(
+    connection: &Connection,
+    link_table: &str,
+    owner_column: &str,
+    owner_id: &str,
+) -> Result<(), StorageError> {
+    let select = format!("SELECT annotation_id FROM {link_table} WHERE {owner_column} = ?1");
+    let annotation_ids = {
+        let mut statement = connection.prepare(&select)?;
+        statement
+            .query_map([owner_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let delete_links = format!("DELETE FROM {link_table} WHERE {owner_column} = ?1");
+    connection.execute(&delete_links, [owner_id])?;
+    for annotation_id in annotation_ids {
+        connection.execute("DELETE FROM annotations WHERE id = ?1", [&annotation_id])?;
+    }
+    Ok(())
+}
+
+fn load_owned_annotations(
+    connection: &Connection,
+    link_table: &str,
+    owner_column: &str,
+    owner_id: &str,
+) -> Result<Vec<Annotation>, StorageError> {
+    let sql = format!(
+        "SELECT
+            annotations.id,
+            annotations.label,
+            annotations.value,
+            annotations.language_tag,
+            annotations.direction
+         FROM {link_table}
+         JOIN annotations ON annotations.id = {link_table}.annotation_id
+         WHERE {link_table}.{owner_column} = ?1
+         ORDER BY {link_table}.ordinal"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let stored = statement
+        .query_map([owner_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    stored
+        .into_iter()
+        .map(|stored| {
+            Ok(Annotation {
+                id: stored.0,
+                label: stored.1,
+                value: stored.2,
+                language_tag: stored.3,
+                direction: direction_from_database(&stored.4)?,
+            })
+        })
+        .collect()
+}
+
+fn insert_source_media_links(
+    connection: &Connection,
+    source: &SourceItem,
+) -> Result<(), StorageError> {
+    for (index, media) in source.media.iter().enumerate() {
+        connection.execute(
+            "INSERT INTO source_item_media(
+                source_item_id, media_reference_id, ordinal
+             ) VALUES (?1, ?2, ?3)",
+            params![source.id, media.id, ordinal(index)?],
+        )?;
+    }
+    Ok(())
+}
+
+fn replace_source_media(connection: &Connection, source: &SourceItem) -> Result<(), StorageError> {
+    connection.execute(
+        "DELETE FROM source_item_media WHERE source_item_id = ?1",
+        [&source.id],
+    )?;
+    for media in &source.media {
+        upsert_media(connection, media)?;
+    }
+    insert_source_media_links(connection, source)
+}
+
+fn insert_cloze_media_links(connection: &Connection, cloze: &Cloze) -> Result<(), StorageError> {
+    for (index, media) in cloze.media.iter().enumerate() {
+        connection.execute(
+            "INSERT INTO cloze_media(cloze_id, media_reference_id, ordinal)
+             VALUES (?1, ?2, ?3)",
+            params![cloze.id, media.id, ordinal(index)?],
+        )?;
+    }
+    Ok(())
+}
+
+fn replace_cloze_media(connection: &Connection, cloze: &Cloze) -> Result<(), StorageError> {
+    connection.execute("DELETE FROM cloze_media WHERE cloze_id = ?1", [&cloze.id])?;
+    for media in &cloze.media {
+        upsert_media(connection, media)?;
+    }
+    insert_cloze_media_links(connection, cloze)
+}
+
+fn load_linked_media(
+    connection: &Connection,
+    link_table: &str,
+    owner_column: &str,
+    owner_id: &str,
+) -> Result<Vec<MediaReference>, StorageError> {
+    let sql = format!(
+        "SELECT media_references.id
+         FROM {link_table}
+         JOIN media_references
+            ON media_references.id = {link_table}.media_reference_id
+         WHERE {link_table}.{owner_column} = ?1
+         ORDER BY {link_table}.ordinal"
+    );
+    let media_ids = {
+        let mut statement = connection.prepare(&sql)?;
+        statement
+            .query_map([owner_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    media_ids
+        .iter()
+        .map(|media_id| load_media(connection, media_id))
+        .collect()
+}
+
+fn load_card(connection: &Connection, id: &str) -> Result<Card, StorageError> {
+    connection
+        .query_row(
+            "SELECT
+                id,
+                cloze_id,
+                content_version,
+                target_retention_basis_points,
+                new_cards_per_day,
+                maximum_interval_days,
+                created_at_ms,
+                updated_at_ms
+             FROM cards
+             WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Card {
+                    id: row.get(0)?,
+                    cloze_id: row.get(1)?,
+                    content_version: row.get(2)?,
+                    settings: meiki_domain::StudySettingsOverride {
+                        target_retention_basis_points: row.get(3)?,
+                        new_cards_per_day: row.get(4)?,
+                        maximum_interval_days: row.get(5)?,
+                    },
+                    created_at_ms: row.get(6)?,
+                    updated_at_ms: row.get(7)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| entity_not_found("card", id))
+}
+
+fn insert_schedule(
+    connection: &Connection,
+    table: &str,
+    schedule: &ScheduleState,
+) -> Result<(), StorageError> {
+    let sql = format!(
+        "INSERT INTO {table}(
+            card_id,
+            version,
+            due_at_ms,
+            interval_seconds,
+            repetitions,
+            last_review_event_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+    );
+    connection.execute(
+        &sql,
+        params![
+            schedule.card_id,
+            schedule.version,
+            schedule.due_at_ms,
+            schedule.interval_seconds,
+            schedule.repetitions,
+            schedule.last_review_event_id,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn load_schedule_row(
+    connection: &Connection,
+    table: &str,
+    card_id: &str,
+) -> Result<Option<ScheduleState>, StorageError> {
+    let sql = format!(
+        "SELECT
+            card_id, version, due_at_ms, interval_seconds, repetitions,
+            last_review_event_id
+         FROM {table}
+         WHERE card_id = ?1"
+    );
+    Ok(connection
+        .query_row(&sql, [card_id], |row| {
+            Ok(ScheduleState {
+                card_id: row.get(0)?,
+                version: row.get(1)?,
+                due_at_ms: row.get(2)?,
+                interval_seconds: row.get(3)?,
+                repetitions: row.get(4)?,
+                last_review_event_id: row.get(5)?,
+            })
+        })
+        .optional()?)
+}
+
+fn localized_text_columns(
+    localized: Option<&LocalizedText>,
+) -> (Option<&str>, Option<&str>, Option<&str>) {
+    localized.map_or((None, None, None), |localized| {
+        (
+            Some(localized.value.as_str()),
+            localized.language_tag.as_deref(),
+            Some(direction_to_database(localized.direction)),
+        )
+    })
+}
+
+fn localized_text_from_columns(
+    value: Option<String>,
+    language_tag: Option<String>,
+    direction: Option<&str>,
+) -> Result<Option<LocalizedText>, StorageError> {
+    value
+        .map(|value| {
+            Ok(LocalizedText {
+                value,
+                language_tag,
+                direction: direction_from_database(direction.unwrap_or("auto"))?,
+            })
+        })
+        .transpose()
+}
+
+const fn media_kind_to_database(kind: MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Audio => "audio",
+        MediaKind::Image => "image",
+    }
+}
+
+fn media_kind_from_database(value: &str) -> Result<MediaKind, StorageError> {
+    match value {
+        "audio" => Ok(MediaKind::Audio),
+        "image" => Ok(MediaKind::Image),
+        _ => Err(StorageError::InvalidStoredValue {
+            field: "media kind",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+fn ordinal(index: usize) -> Result<u32, StorageError> {
+    u32::try_from(index).map_err(|_| StorageError::NumericRange("ordinal"))
+}
+
+fn ensure_changed(changed: usize, entity: &'static str, id: &str) -> Result<(), StorageError> {
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(entity_not_found(entity, id))
+    }
+}

@@ -233,6 +233,7 @@ impl ApplicationService {
             chosen_grade: request.chosen_grade.into(),
             reviewed_at_ms,
             scheduler_version: decision.scheduler_version.to_owned(),
+            scheduler_parameter_set_id: None,
             previous_schedule: stored.schedule,
             next_schedule,
         };
