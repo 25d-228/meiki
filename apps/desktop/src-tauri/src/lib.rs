@@ -2,11 +2,12 @@ use std::path::PathBuf;
 
 use meiki_application::{
     ApplicationService, AuthoringDraftDto, AuthoringPreviewDto, CheckAnswerRequest,
-    GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, MakeClozeRequest,
-    RebuildSchedulerResultDto, RemoveClozeRequest, ReorderSegmentsRequest, RevealDto,
-    SchedulerDiagnosticsExportDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto,
-    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
-    UpdateSchedulerSettingsRequest,
+    GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, LibraryBulkRequest,
+    LibraryBulkResultDto, LibraryExportRequest, LibraryExportResultDto, LibraryOverviewDto,
+    LibraryRequest, MakeClozeRequest, RebuildSchedulerResultDto, RemoveClozeRequest,
+    ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto, SchedulerSettingsDto,
+    StudyCardDto, StudyMediaDto, SuspendCardRequest, TodayOverviewDto, TodayRequest,
+    UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -47,6 +48,42 @@ fn get_today_overview(
     state
         .service()
         .get_today_overview(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_library(
+    request: LibraryRequest,
+    state: State<'_, AppContext>,
+) -> Result<LibraryOverviewDto, String> {
+    state
+        .service()
+        .get_library(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn apply_library_bulk_action(
+    request: LibraryBulkRequest,
+    state: State<'_, AppContext>,
+) -> Result<LibraryBulkResultDto, String> {
+    state
+        .service()
+        .apply_library_bulk_action(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn export_library_selection(
+    request: LibraryExportRequest,
+    state: State<'_, AppContext>,
+) -> Result<LibraryExportResultDto, String> {
+    state
+        .service()
+        .export_library_selection(&request)
         .map_err(|error| error.to_string())
 }
 
@@ -282,6 +319,9 @@ pub fn run() {
             initialize_collection,
             get_study_card,
             get_today_overview,
+            get_library,
+            apply_library_bulk_action,
+            export_library_selection,
             get_authoring_draft_for_card,
             check_answer,
             grade_review,

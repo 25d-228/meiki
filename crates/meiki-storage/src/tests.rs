@@ -538,7 +538,7 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 6);
+    assert_eq!(storage.schema_version().unwrap(), 7);
     let restored = storage.load_study_card("legacy-card").unwrap();
     assert!(!restored.card.suspended);
     assert_eq!(restored.source_item.deck_id, DEFAULT_DECK_ID);
@@ -591,7 +591,7 @@ fn version_five_media_migrates_to_roles_and_technical_metadata() {
     drop(connection);
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 6);
+    assert_eq!(storage.schema_version().unwrap(), 7);
     let image = storage.get_media_reference("legacy-image").unwrap();
     assert_eq!(image.role, MediaRole::RevealImage);
     assert_eq!(image.byte_size, 0);
@@ -826,6 +826,123 @@ fn multilingual_aggregate_round_trips_and_cloze_ids_survive_surrounding_edits() 
     storage.delete_media_reference("media-source").unwrap();
     storage.delete_media_reference("media-cloze").unwrap();
     storage.delete_deck(&deck.id).unwrap();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn library_bulk_actions_are_recoverable_atomic_and_preserve_history_and_media() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let source_id = storage.library_notes().unwrap()[0]
+        .note
+        .source_item
+        .id
+        .clone();
+    let mut note = storage.get_source_note(&source_id).unwrap();
+    note.source_item
+        .media
+        .push(media("media-library", MediaKind::Image));
+    storage.update_source_note(&note).unwrap();
+
+    let review = sample_event(&storage, "review-library", 10_000);
+    let reviewed_schedule = storage.commit_review(&review).unwrap();
+    assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
+    assert_eq!(storage.media_reference_usage("media-library").unwrap(), 1);
+
+    storage
+        .set_library_notes_deleted(std::slice::from_ref(&source_id), Some(20_000), 20_000)
+        .unwrap();
+    let deleted = storage.library_notes().unwrap();
+    assert_eq!(deleted[0].deleted_at_ms, Some(20_000));
+    assert!(
+        storage
+            .study_cards_for_deck(DEFAULT_DECK_ID)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
+    assert_eq!(
+        storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
+        reviewed_schedule
+    );
+    assert_eq!(storage.media_reference_usage("media-library").unwrap(), 1);
+    assert_eq!(
+        storage.get_media_reference("media-library").unwrap().id,
+        "media-library"
+    );
+
+    storage
+        .set_library_notes_deleted(std::slice::from_ref(&source_id), None, 21_000)
+        .unwrap();
+    assert_eq!(
+        storage.study_cards_for_deck(DEFAULT_DECK_ID).unwrap().len(),
+        1
+    );
+
+    let missing_selection = vec![source_id.clone(), "missing-source".into()];
+    assert!(matches!(
+        storage.set_library_notes_suspended(&missing_selection, true, 22_000),
+        Err(StorageError::EntityNotFound {
+            entity: "source note",
+            ..
+        })
+    ));
+    assert!(!storage.get_card(SAMPLE_CARD_ID).unwrap().suspended);
+
+    storage
+        .set_library_notes_suspended(std::slice::from_ref(&source_id), true, 23_000)
+        .unwrap();
+    assert!(storage.get_card(SAMPLE_CARD_ID).unwrap().suspended);
+    assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
+    assert_eq!(
+        storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
+        reviewed_schedule
+    );
+
+    let destination = deck("library-destination");
+    storage.create_deck(&destination).unwrap();
+    storage
+        .move_library_notes(std::slice::from_ref(&source_id), &destination.id, 24_000)
+        .unwrap();
+    assert_eq!(
+        storage
+            .get_source_note(&source_id)
+            .unwrap()
+            .source_item
+            .deck_id,
+        destination.id
+    );
+
+    let library_tag = tag("tag-library", "検索");
+    storage
+        .tag_library_notes(std::slice::from_ref(&source_id), &library_tag, 25_000)
+        .unwrap();
+    assert!(
+        storage
+            .get_source_note(&source_id)
+            .unwrap()
+            .source_item
+            .tags
+            .iter()
+            .any(|stored| stored.id == library_tag.id)
+    );
+    storage
+        .untag_library_notes(std::slice::from_ref(&source_id), &library_tag.id, 26_000)
+        .unwrap();
+    assert!(
+        storage
+            .get_source_note(&source_id)
+            .unwrap()
+            .source_item
+            .tags
+            .iter()
+            .all(|stored| stored.id != library_tag.id)
+    );
+    assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
+    assert_eq!(
+        storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
+        reviewed_schedule
+    );
 }
 
 impl Storage {

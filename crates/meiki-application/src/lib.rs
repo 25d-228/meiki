@@ -31,12 +31,19 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod authoring;
+mod library;
 mod today;
 
 pub use authoring::{
     AnnotationDraftDto, AuthoringClozeDto, AuthoringDraftDto, AuthoringPreviewDto,
     AuthoringSegmentDto, AuthoringSegmentKindDto, MakeClozeRequest, MatchingPolicyDto,
     RemoveClozeRequest, ReorderSegmentsRequest,
+};
+pub use library::{
+    LibraryBulkActionDto, LibraryBulkRequest, LibraryBulkResultDto, LibraryCardDto, LibraryDeckDto,
+    LibraryDueFilterDto, LibraryExportRequest, LibraryExportResultDto, LibraryMediaFilterDto,
+    LibraryNoteDto, LibraryOverviewDto, LibraryRequest, LibrarySuspendedFilterDto, LibraryTagDto,
+    LibraryTrashFilterDto,
 };
 pub use today::{TodayDeckDto, TodayOverviewDto, TodayQueueCardDto, TodayRequest};
 
@@ -56,6 +63,12 @@ pub enum ApplicationError {
     InvalidAuthoring(String),
     #[error("invalid Today request: {0}")]
     InvalidToday(String),
+    #[error("invalid Library request: {0}")]
+    InvalidLibrary(String),
+    #[error("failed to export the Library selection: {0}")]
+    LibraryExport(#[source] std::io::Error),
+    #[error("failed to serialize the Library selection: {0}")]
+    LibrarySerialization(#[source] serde_json::Error),
     #[error("invalid text selection: {0}")]
     TextBoundary(#[from] meiki_text::TextBoundaryError),
     #[error("scheduler operation failed: {0}")]
@@ -1481,6 +1494,21 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     TodayDeckDto::export_all_to(output)?;
     TodayQueueCardDto::export_all_to(output)?;
     TodayOverviewDto::export_all_to(output)?;
+    LibraryDueFilterDto::export_all_to(output)?;
+    LibrarySuspendedFilterDto::export_all_to(output)?;
+    LibraryMediaFilterDto::export_all_to(output)?;
+    LibraryTrashFilterDto::export_all_to(output)?;
+    LibraryRequest::export_all_to(output)?;
+    LibraryDeckDto::export_all_to(output)?;
+    LibraryTagDto::export_all_to(output)?;
+    LibraryCardDto::export_all_to(output)?;
+    LibraryNoteDto::export_all_to(output)?;
+    LibraryOverviewDto::export_all_to(output)?;
+    LibraryBulkActionDto::export_all_to(output)?;
+    LibraryBulkRequest::export_all_to(output)?;
+    LibraryBulkResultDto::export_all_to(output)?;
+    LibraryExportRequest::export_all_to(output)?;
+    LibraryExportResultDto::export_all_to(output)?;
     Ok(())
 }
 
