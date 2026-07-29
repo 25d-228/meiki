@@ -23,6 +23,7 @@ use crate::{
 pub trait DeckRepository {
     fn create_deck(&mut self, deck: &Deck) -> Result<(), StorageError>;
     fn get_deck(&self, id: &str) -> Result<Deck, StorageError>;
+    fn list_decks(&self) -> Result<Vec<Deck>, StorageError>;
     fn update_deck(&mut self, deck: &Deck) -> Result<(), StorageError>;
     fn delete_deck(&mut self, id: &str) -> Result<(), StorageError>;
 }
@@ -160,6 +161,18 @@ impl DeckRepository for Storage {
 
     fn get_deck(&self, id: &str) -> Result<Deck, StorageError> {
         load_deck(&self.connection, id)
+    }
+
+    fn list_decks(&self) -> Result<Vec<Deck>, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM decks ORDER BY name, id")?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.iter()
+            .map(|id| load_deck(&self.connection, id))
+            .collect()
     }
 
     fn update_deck(&mut self, deck: &Deck) -> Result<(), StorageError> {

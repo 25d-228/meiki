@@ -19,7 +19,7 @@
     { id: "settings", label: "Settings", shortLabel: "SE" },
   ];
 
-  let activeScreen: Screen = "study";
+  let activeScreen: Screen = "today";
   let theme: ThemeMode = "system";
   let online = true;
   let authoringDirty = false;
@@ -101,6 +101,13 @@
     await tick();
     mainElement.focus();
   }
+
+  async function finishStudyQueue(): Promise<void> {
+    activeScreen = "today";
+    editingStudyCardId = null;
+    await tick();
+    mainElement.focus();
+  }
 </script>
 
 <svelte:head>
@@ -160,9 +167,15 @@
       {/if}
 
       {#if activeScreen === "today"}
-        <TodayScreen onNavigate={navigate} />
+        <TodayScreen
+          onStart={() => void navigate("study")}
+          onSettings={() => void navigate("settings")}
+        />
       {:else if activeScreen === "study"}
-        <StudyScreen onEdit={editStudyCard} />
+        <StudyScreen
+          onEdit={editStudyCard}
+          onQueueComplete={finishStudyQueue}
+        />
       {:else if activeScreen === "library"}
         <LibraryScreen onNavigate={navigate} />
       {:else if activeScreen === "editor"}

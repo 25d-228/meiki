@@ -51,6 +51,15 @@ export async function installMockApi(page: Page): Promise<void> {
         languageTag: null,
         direction: "auto",
       },
+      longmixed: {
+        prompt:
+          "Meetingは الساعة […] に始まる — this deliberately long multilingual prompt keeps 日本語, العربية, and English context readable without changing the stored text or forcing horizontal scrolling.",
+        fullSource:
+          "Meetingは الساعة 三時 に始まる — this deliberately long multilingual prompt keeps 日本語, العربية, and English context readable without changing the stored text or forcing horizontal scrolling.",
+        answer: "三時",
+        languageTag: null,
+        direction: "auto",
+      },
     } as const;
 
     const readState = () => {
@@ -61,6 +70,13 @@ export async function installMockApi(page: Page): Promise<void> {
       const name = new URLSearchParams(location.search).get("fixture") ?? "cjk";
       return fixtures[name as keyof typeof fixtures] ?? fixtures.cjk;
     };
+    const promptForCard = (
+      cardId: string,
+      fixture: (typeof fixtures)[keyof typeof fixtures],
+    ) =>
+      cardId === "new-card"
+        ? `Second card · ${fixture.prompt}`
+        : fixture.prompt;
     let nextAuthoringId = 0;
     const authoringId = (kind: string) => `${kind}-e2e-${++nextAuthoringId}`;
     const newDraft = () => ({
@@ -157,6 +173,106 @@ export async function installMockApi(page: Page): Promise<void> {
       const fixtureName = new URLSearchParams(location.search).get("fixture");
       const requestedMedia = new URLSearchParams(location.search).get("media");
       const fixture = selectedFixture();
+      if (command === "get_today_overview") {
+        const request = (
+          args as {
+            request: {
+              deck_id: string;
+            };
+          }
+        ).request;
+        const scenario =
+          new URLSearchParams(location.search).get("today") ?? "normal";
+        const queueCard = (
+          cardId: string,
+          overdue: boolean,
+          isNew: boolean,
+        ) => ({
+          card_id: cardId,
+          deck_id: request.deck_id,
+          due_at: overdue
+            ? "2026-07-28T09:00:00+00:00"
+            : "2026-07-30T09:00:00+00:00",
+          ideal_due_at: overdue
+            ? "2026-07-27T09:00:00+00:00"
+            : "2026-07-30T09:00:00+00:00",
+          overdue,
+          is_new: isNew,
+        });
+        const decks = [
+          { id: "default-deck", name: "Japanese" },
+          { id: "travel-deck", name: "Travel phrases" },
+        ];
+        if (scenario === "empty") {
+          return {
+            deck_id: request.deck_id,
+            deck_name:
+              decks.find((deck) => deck.id === request.deck_id)?.name ??
+              "Japanese",
+            decks,
+            due_reviews: 0,
+            overdue_reviews: 0,
+            new_cards: 0,
+            deferred_new_cards: 0,
+            estimated_seconds: 0,
+            estimate_uses_history: false,
+            response_time_samples: 0,
+            daily_time_budget_minutes:
+              schedulerSettings.daily_time_budget_minutes,
+            next_due_at: "2026-08-01T09:00:00+00:00",
+            queue: [],
+          };
+        }
+
+        const due =
+          scenario === "overdue"
+            ? [
+                queueCard("overdue-card", true, false),
+                queueCard("due-card", false, false),
+              ]
+            : [queueCard("due-card", false, false)];
+        const availableNew =
+          scenario === "capped" || scenario === "budget" ? 3 : 1;
+        const forcedBudget = scenario === "capped" ? 1 : null;
+        const budget =
+          forcedBudget ?? schedulerSettings.daily_time_budget_minutes;
+        const newByDailyLimit = Math.min(
+          availableNew,
+          schedulerSettings.new_cards_per_day,
+        );
+        const budgetRemaining =
+          budget === null
+            ? Number.POSITIVE_INFINITY
+            : Math.max(0, budget * 60 - due.length * 20);
+        const selectedNew = Math.min(
+          newByDailyLimit,
+          Math.floor(budgetRemaining / 30),
+        );
+        const newCards = Array.from({ length: selectedNew }, (_, index) =>
+          queueCard(
+            index === 0 ? "new-card" : `new-card-${index + 1}`,
+            false,
+            true,
+          ),
+        );
+        return {
+          deck_id: request.deck_id,
+          deck_name:
+            decks.find((deck) => deck.id === request.deck_id)?.name ??
+            "Japanese",
+          decks,
+          due_reviews: due.length,
+          overdue_reviews: due.filter((card) => card.overdue).length,
+          new_cards: newCards.length,
+          deferred_new_cards: availableNew - newCards.length,
+          estimated_seconds: due.length * 20 + newCards.length * 30,
+          estimate_uses_history: scenario !== "empty",
+          response_time_samples: scenario === "empty" ? 0 : 8,
+          daily_time_budget_minutes: budget,
+          next_due_at: null,
+          queue: [...due, ...newCards],
+        };
+      }
       if (command === "initialize_collection" || command === "get_study_card") {
         if (fixtureName === "error") {
           throw new Error("The local collection is temporarily unavailable.");
@@ -164,11 +280,15 @@ export async function installMockApi(page: Page): Promise<void> {
         if (fixtureName === "loading") {
           await new Promise((resolve) => setTimeout(resolve, 350));
         }
+        const cardId =
+          command === "get_study_card"
+            ? (args as { cardId: string }).cardId
+            : "sample-card";
         return {
-          card_id: "sample-card",
+          card_id: cardId,
           card_content_version: 0,
           schedule_version: state.scheduleVersion,
-          prompt: fixture.prompt,
+          prompt: promptForCard(cardId, fixture),
           language_tag: fixture.languageTag,
           direction: fixture.direction,
           due_at: state.dueAt,
@@ -193,12 +313,14 @@ export async function installMockApi(page: Page): Promise<void> {
           failedCheck = true;
           throw new Error("The answer check was interrupted.");
         }
-        const request = (args as { request: { raw_response: string } }).request;
+        const request = (
+          args as { request: { card_id: string; raw_response: string } }
+        ).request;
         const normalizedResponse = request.raw_response.trim().normalize("NFC");
         const exact = normalizedResponse === fixture.answer;
         const answerStart = fixture.fullSource.indexOf(fixture.answer);
         return {
-          card_id: "sample-card",
+          card_id: request.card_id,
           card_content_version: 0,
           schedule_version: state.scheduleVersion,
           full_source: fixture.fullSource,
@@ -271,13 +393,14 @@ export async function installMockApi(page: Page): Promise<void> {
         };
       }
       if (command === "suspend_card") {
+        const request = (args as { request: { card_id: string } }).request;
         const nextState = { ...state, suspended: true };
         localStorage.setItem("meiki-e2e-state", JSON.stringify(nextState));
         return {
-          card_id: "sample-card",
+          card_id: request.card_id,
           card_content_version: 0,
           schedule_version: nextState.scheduleVersion,
-          prompt: fixture.prompt,
+          prompt: promptForCard(request.card_id, fixture),
           language_tag: fixture.languageTag,
           direction: fixture.direction,
           due_at: nextState.dueAt,

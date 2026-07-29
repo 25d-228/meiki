@@ -16,9 +16,17 @@
   import type { StudyCardDto } from "../lib/generated/StudyCardDto";
   import { mediaAssetSource } from "../lib/media";
   import { messages } from "../lib/messages";
+  import {
+    clearStudyQueue,
+    readStudyQueue,
+    remainingStudyCards,
+    writeStudyQueue,
+    type StudyQueueSession,
+  } from "../lib/study-queue";
 
   type Props = {
     onEdit?: (cardId: string) => void;
+    onQueueComplete?: () => void;
   };
 
   type ViewState =
@@ -46,7 +54,7 @@
   const autoplayKey = "meiki-autoplay-prompt-audio";
   const grades: GradeDto[] = ["again", "hard", "good", "easy"];
 
-  let { onEdit }: Props = $props();
+  let { onEdit, onQueueComplete }: Props = $props();
   let view = $state<ViewState>("loading");
   let recoveryView = $state<StableView>("prompt");
   let retryAction = $state<RetryAction>("load");
@@ -69,9 +77,17 @@
   let studyElement = $state<HTMLElement | undefined>();
   let promptStartedAt = $state(0);
   let autoplayPromptAudio = $state(false);
+  let queueSession = $state<StudyQueueSession | null>(null);
 
   onMount(() => {
     autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
+    queueSession = readStudyQueue();
+    if (queueSession && queueSession.position >= queueSession.cardIds.length) {
+      clearStudyQueue();
+      queueSession = null;
+      onQueueComplete?.();
+      return;
+    }
     void restoreOrLoad();
   });
 
@@ -102,6 +118,7 @@
         reveal = null;
         result = null;
         completionKind = null;
+        restoreQueuedCard(session.card.card_id);
         view = "prompt";
         sessionNotice =
           "The note changed in the editor. Your response is preserved; check it again.";
@@ -128,7 +145,10 @@
     pendingUndoEventId = null;
     hintVisible = false;
     try {
-      card = await api.initializeCollection();
+      const queuedCardId = queueSession?.cardIds[queueSession.position];
+      card = queuedCardId
+        ? await api.getStudyCard(queuedCardId)
+        : await api.initializeCollection();
       view = "prompt";
       promptStartedAt = performance.now();
       await focusAnswer();
@@ -186,6 +206,7 @@
         completed_reviews: card.completed_reviews + 1,
       };
       completionKind = "graded";
+      advanceStudyQueue();
       view = "next";
     } catch (error) {
       fail(error, "revealed", "grade");
@@ -205,6 +226,7 @@
       });
       result = null;
       completionKind = "suspended";
+      advanceStudyQueue();
       view = "next";
     } catch (error) {
       fail(error, origin, "suspend");
@@ -238,6 +260,7 @@
       pendingReviewEventId = null;
       pendingUndoEventId = null;
       completionKind = null;
+      restoreStudyQueueCard();
       undoNotice = "Last review undone. The card is back in the queue.";
       view = "prompt";
       promptStartedAt = performance.now();
@@ -245,6 +268,49 @@
     } catch (error) {
       fail(error, "next", "undo");
     }
+  }
+
+  function advanceStudyQueue(): void {
+    if (!queueSession || !card) return;
+    if (queueSession.cardIds[queueSession.position] !== card.card_id) return;
+    queueSession = {
+      ...queueSession,
+      position: Math.min(
+        queueSession.cardIds.length,
+        queueSession.position + 1,
+      ),
+    };
+    writeStudyQueue(queueSession);
+  }
+
+  function restoreStudyQueueCard(): void {
+    if (!queueSession || !card || queueSession.position === 0) return;
+    const previous = queueSession.position - 1;
+    if (queueSession.cardIds[previous] !== card.card_id) return;
+    queueSession = { ...queueSession, position: previous };
+    writeStudyQueue(queueSession);
+  }
+
+  function restoreQueuedCard(cardId: string): void {
+    if (!queueSession) return;
+    const cardIndex = queueSession.cardIds.indexOf(cardId);
+    if (cardIndex < 0 || queueSession.position !== cardIndex + 1) return;
+    queueSession = { ...queueSession, position: cardIndex };
+    writeStudyQueue(queueSession);
+  }
+
+  async function continueStudy(): Promise<void> {
+    if (!queueSession && completionKind === "suspended") {
+      onQueueComplete?.();
+      return;
+    }
+    if (queueSession && queueSession.position >= queueSession.cardIds.length) {
+      clearStudyQueue();
+      queueSession = null;
+      onQueueComplete?.();
+      return;
+    }
+    await loadCard();
   }
 
   function beginEdit(): void {
@@ -354,9 +420,9 @@
         event.preventDefault();
         void grade(chosenGrade);
       }
-    } else if (view === "next" && event.key === "Enter" && !card?.suspended) {
+    } else if (view === "next" && event.key === "Enter") {
       event.preventDefault();
-      void loadCard();
+      void continueStudy();
     }
   }
 
@@ -403,8 +469,13 @@
     </div>
     {#if card}
       <span class="review-count">
-        {card.completed_reviews}
-        {card.completed_reviews === 1 ? "review" : "reviews"} saved
+        {#if queueSession}
+          {remainingStudyCards(queueSession)}
+          {remainingStudyCards(queueSession) === 1 ? "card" : "cards"} remaining
+        {:else}
+          {card.completed_reviews}
+          {card.completed_reviews === 1 ? "review" : "reviews"} saved
+        {/if}
       </span>
     {/if}
   </header>
@@ -707,9 +778,19 @@
             {#if completionKind === "suspended"}
               <h2>Card suspended</h2>
               <p>This card will stay out of the study queue.</p>
-              <Button variant="secondary" shortcut="E" onclick={beginEdit}
-                >Edit note</Button
-              >
+              <div class="next-actions">
+                <Button variant="secondary" shortcut="E" onclick={beginEdit}
+                  >Edit note</Button
+                >
+                <Button variant="primary" shortcut="↵" onclick={continueStudy}
+                  >{queueSession &&
+                  queueSession.position >= queueSession.cardIds.length
+                    ? "Finish session"
+                    : queueSession
+                      ? "Continue"
+                      : "Return to Today"}</Button
+                >
+              </div>
             {:else if result}
               <h2>{messages.saved}</h2>
               <p>
@@ -722,8 +803,11 @@
                   shortcut="⌘/Ctrl Z"
                   onclick={undoReview}>Undo review</Button
                 >
-                <Button variant="primary" shortcut="↵" onclick={loadCard}
-                  >Continue</Button
+                <Button variant="primary" shortcut="↵" onclick={continueStudy}
+                  >{queueSession &&
+                  queueSession.position >= queueSession.cardIds.length
+                    ? "Finish session"
+                    : "Continue"}</Button
                 >
               </div>
             {/if}
