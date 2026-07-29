@@ -1,261 +1,248 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
-  import { api } from "./lib/api";
-  import type { GradeDto } from "./lib/generated/GradeDto";
-  import type { GradeReviewResultDto } from "./lib/generated/GradeReviewResultDto";
-  import type { RevealDto } from "./lib/generated/RevealDto";
-  import type { StudyCardDto } from "./lib/generated/StudyCardDto";
+  import Feedback from "./lib/components/Feedback.svelte";
+  import Menu, { type MenuItem } from "./lib/components/Menu.svelte";
   import { messages } from "./lib/messages";
+  import { screens, type Screen, type ThemeMode } from "./lib/ui";
+  import EditorScreen from "./screens/EditorScreen.svelte";
+  import LibraryScreen from "./screens/LibraryScreen.svelte";
+  import SettingsScreen from "./screens/SettingsScreen.svelte";
+  import StudyScreen from "./screens/StudyScreen.svelte";
+  import TodayScreen from "./screens/TodayScreen.svelte";
 
-  type ViewState =
-    | "loading"
-    | "prompt"
-    | "checking"
-    | "revealed"
-    | "committing"
-    | "complete"
-    | "error";
+  const menuItems: MenuItem[] = [
+    { id: "today", label: "Today", shortLabel: "TD" },
+    { id: "study", label: "Study", shortLabel: "ST" },
+    { id: "library", label: "Library", shortLabel: "LB" },
+    { id: "editor", label: "Add / Edit", shortLabel: "AD" },
+    { id: "settings", label: "Settings", shortLabel: "SE" },
+  ];
 
-  let view: ViewState = "loading";
-  let card: StudyCardDto | null = null;
-  let reveal: RevealDto | null = null;
-  let result: GradeReviewResultDto | null = null;
-  let response = "";
-  let errorMessage = "";
-  let composing = false;
-  let answerInput: HTMLInputElement;
+  let activeScreen: Screen = "study";
+  let theme: ThemeMode = "system";
+  let online = true;
+  let mainElement: HTMLElement;
 
-  onMount(loadCard);
+  onMount(() => {
+    const savedTheme = localStorage.getItem("meiki-theme");
+    if (isTheme(savedTheme)) theme = savedTheme;
+    applyTheme(theme);
+    online = navigator.onLine;
 
-  async function loadCard(): Promise<void> {
-    view = "loading";
-    errorMessage = "";
-    try {
-      card = await api.initializeCollection();
-      view = "prompt";
-      await tick();
-      answerInput?.focus();
-    } catch (error) {
-      showError(error);
-    }
-  }
-
-  async function checkAnswer(): Promise<void> {
-    if (!card || composing || view !== "prompt") return;
-    view = "checking";
-    try {
-      reveal = await api.checkAnswer({
-        card_id: card.card_id,
-        card_content_version: card.card_content_version,
-        schedule_version: card.schedule_version,
-        raw_response: response,
-      });
-      view = "revealed";
-    } catch (error) {
-      showError(error);
-    }
-  }
-
-  async function grade(chosenGrade: GradeDto): Promise<void> {
-    if (!card || !reveal || view !== "revealed") return;
-    view = "committing";
-    try {
-      result = await api.gradeReview({
-        card_id: card.card_id,
-        card_content_version: card.card_content_version,
-        schedule_version: card.schedule_version,
-        raw_response: reveal.raw_response,
-        chosen_grade: chosenGrade,
-      });
-      card = {
-        ...card,
-        schedule_version: result.schedule_version,
-        due_at: result.due_at,
-        completed_reviews: card.completed_reviews + 1,
-      };
-      view = "complete";
-    } catch (error) {
-      showError(error);
-    }
-  }
-
-  function handleAnswerKeydown(event: KeyboardEvent): void {
-    if (event.key === "Enter" && !event.isComposing && !composing) {
-      event.preventDefault();
-      void checkAnswer();
-    }
-  }
-
-  function handleWindowKeydown(event: KeyboardEvent): void {
-    if (
-      view !== "revealed" ||
-      composing ||
-      event.isComposing ||
-      event.target instanceof HTMLInputElement
-    )
-      return;
-    const grades: Partial<Record<string, GradeDto>> = {
-      "1": "again",
-      "2": "hard",
-      "3": "good",
-      "4": "easy",
+    const markOnline = () => (online = true);
+    const markOffline = () => (online = false);
+    window.addEventListener("online", markOnline);
+    window.addEventListener("offline", markOffline);
+    return () => {
+      window.removeEventListener("online", markOnline);
+      window.removeEventListener("offline", markOffline);
     };
-    if (event.key === "Enter" && reveal) {
-      event.preventDefault();
-      void grade(reveal.suggested_grade);
-    } else {
-      const chosenGrade = grades[event.key];
-      if (!chosenGrade) return;
-      event.preventDefault();
-      void grade(chosenGrade);
-    }
+  });
+
+  function isTheme(value: string | null): value is ThemeMode {
+    return value === "system" || value === "light" || value === "dark";
   }
 
-  function showError(error: unknown): void {
-    errorMessage = error instanceof Error ? error.message : String(error);
-    view = "error";
+  function isScreen(value: string): value is Screen {
+    return screens.includes(value as Screen);
   }
 
-  function gradeLabel(grade: GradeDto): string {
-    return messages[grade];
+  function applyTheme(nextTheme: ThemeMode): void {
+    theme = nextTheme;
+    document.documentElement.dataset.theme = nextTheme;
+    localStorage.setItem("meiki-theme", nextTheme);
   }
 
-  function formatDueDate(value: string): string {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(value));
-  }
-
-  function direction(value: StudyCardDto["direction"]): "auto" | "ltr" | "rtl" {
-    return value;
+  async function navigate(value: string): Promise<void> {
+    if (!isScreen(value)) return;
+    activeScreen = value;
+    await tick();
+    mainElement.focus();
   }
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} />
+<svelte:head>
+  <title>{messages.appName} · {messages.appTagline}</title>
+</svelte:head>
 
-<header class="app-header">
-  <div>
-    <span class="wordmark">{messages.appName}</span>
-    <span class="tagline">{messages.appTagline}</span>
+<a class="skip-link" href="#main-content">Skip to content</a>
+
+<div class="app-frame" dir="ltr">
+  <header class="app-header">
+    <button
+      class="brand"
+      type="button"
+      aria-label="Go to Today"
+      onclick={() => navigate("today")}
+    >
+      <span class="wordmark" lang="ja">{messages.appName}</span>
+      <span class="tagline">{messages.appTagline}</span>
+    </button>
+
+    <div class="header-actions">
+      <span class="local-status">
+        <span aria-hidden="true" class="status-dot"></span>
+        {messages.localOnly}
+      </span>
+      <label class="theme-select">
+        <span class="visually-hidden">Theme</span>
+        <select
+          aria-label="Theme"
+          value={theme}
+          onchange={(event) =>
+            applyTheme(event.currentTarget.value as ThemeMode)}
+        >
+          <option value="system">System</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <div class="shell-body">
+    <Menu
+      label="Primary navigation"
+      items={menuItems}
+      active={activeScreen}
+      onSelect={navigate}
+    />
+
+    <main id="main-content" bind:this={mainElement} tabindex="-1">
+      {#if !online}
+        <div class="offline-state">
+          <Feedback tone="warning" title="You are offline" compact>
+            <p>Local creation and study remain available.</p>
+          </Feedback>
+        </div>
+      {/if}
+
+      {#if activeScreen === "today"}
+        <TodayScreen onNavigate={navigate} />
+      {:else if activeScreen === "study"}
+        <StudyScreen />
+      {:else if activeScreen === "library"}
+        <LibraryScreen onNavigate={navigate} />
+      {:else if activeScreen === "editor"}
+        <EditorScreen />
+      {:else}
+        <SettingsScreen {theme} onThemeChange={applyTheme} />
+      {/if}
+    </main>
   </div>
-  <span class="local-status">
-    <span aria-hidden="true" class="status-dot"></span>
-    {messages.localOnly}
-  </span>
-</header>
+</div>
 
-<main>
-  {#if view === "loading"}
-    <section class="state-card" aria-live="polite">
-      <div class="spinner" aria-hidden="true"></div>
-      <p>{messages.loading}</p>
-    </section>
-  {:else if view === "error"}
-    <section class="state-card error-state" role="alert">
-      <p>{errorMessage}</p>
-      <button class="primary-button" onclick={loadCard}>{messages.retry}</button
-      >
-    </section>
-  {:else if card}
-    <section class="study-shell" aria-labelledby="study-prompt">
-      <div class="session-meta">
-        <span>Study</span>
-        <span
-          >{card.completed_reviews}
-          {card.completed_reviews === 1 ? "review" : "reviews"} saved</span
-        >
-      </div>
+<style>
+  .app-frame {
+    min-height: 100vh;
+    background:
+      radial-gradient(
+        circle at 15% 0%,
+        color-mix(in srgb, var(--color-accent-soft) 58%, transparent),
+        transparent 28rem
+      ),
+      var(--color-canvas);
+  }
 
-      <article class="study-card">
-        <p
-          id="study-prompt"
-          class="prompt"
-          lang={card.language_tag ?? undefined}
-          dir={direction(card.direction)}
-        >
-          {reveal ? reveal.full_source : card.prompt}
-        </p>
+  .app-header {
+    position: sticky;
+    z-index: var(--z-header);
+    top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: var(--header-height);
+    padding-inline: max(var(--space-6), calc((100% - 82rem) / 2));
+    border-bottom: var(--border-width) solid var(--color-border);
+    background: color-mix(in srgb, var(--color-canvas) 92%, transparent);
+    backdrop-filter: blur(16px);
+  }
 
-        {#if view === "prompt" || view === "checking"}
-          <form
-            onsubmit={(event) => {
-              event.preventDefault();
-              void checkAnswer();
-            }}
-          >
-            <label for="answer">{messages.answerLabel}</label>
-            <input
-              bind:this={answerInput}
-              bind:value={response}
-              id="answer"
-              name="answer"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder={messages.answerPlaceholder}
-              disabled={view === "checking"}
-              oncompositionstart={() => (composing = true)}
-              oncompositionend={() => (composing = false)}
-              onkeydown={handleAnswerKeydown}
-            />
-            <button
-              class="primary-button"
-              disabled={view === "checking"}
-              type="submit"
-            >
-              {view === "checking" ? "Checking…" : messages.checkAnswer}
-              <kbd>↵</kbd>
-            </button>
-          </form>
-        {:else if reveal && (view === "revealed" || view === "committing")}
-          <div class="reveal" aria-live="polite">
-            <div class="answer-comparison">
-              <div>
-                <span class="eyebrow">{messages.expectedAnswer}</span>
-                <strong>{reveal.expected_answer}</strong>
-              </div>
-              <div>
-                <span class="eyebrow">{messages.yourAnswer}</span>
-                <strong>{reveal.raw_response || "—"}</strong>
-              </div>
-            </div>
-            <span
-              class:correct={reveal.comparison === "exact" ||
-                reveal.comparison === "accepted_variant"}
-              class="result-pill"
-            >
-              {reveal.comparison.replace("_", " ")}
-            </span>
-            <fieldset disabled={view === "committing"}>
-              <legend>{messages.gradePrompt}</legend>
-              <div class="grade-grid">
-                {#each ["again", "hard", "good", "easy"] as GradeDto[] as gradeValue, index (gradeValue)}
-                  <button
-                    class:suggested={gradeValue === reveal.suggested_grade}
-                    class="grade-button"
-                    onclick={() => grade(gradeValue)}
-                    type="button"
-                  >
-                    <kbd>{index + 1}</kbd>
-                    {gradeLabel(gradeValue)}
-                  </button>
-                {/each}
-              </div>
-            </fieldset>
-          </div>
-        {:else if result && view === "complete"}
-          <div class="complete-state" aria-live="polite">
-            <div class="checkmark" aria-hidden="true">✓</div>
-            <h1>{messages.saved}</h1>
-            <p>
-              {messages.nextReview}:
-              <strong>{formatDueDate(result.due_at)}</strong>
-            </p>
-          </div>
-        {/if}
-      </article>
-    </section>
-  {/if}
-</main>
+  .brand {
+    display: flex;
+    gap: var(--space-3);
+    align-items: baseline;
+    padding: var(--space-2);
+    border: 0;
+    color: var(--color-text);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .wordmark {
+    font-family: var(--font-display);
+    font-size: var(--text-lg);
+    font-weight: 800;
+    letter-spacing: 0.08em;
+  }
+
+  .tagline,
+  .local-status {
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .header-actions,
+  .local-status {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+  }
+
+  .header-actions {
+    gap: var(--space-4);
+  }
+
+  .status-dot {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 50%;
+    background: var(--color-success);
+    box-shadow: 0 0 0 3px var(--color-success-soft);
+  }
+
+  .shell-body {
+    display: grid;
+    grid-template-columns: 12rem minmax(0, 1fr);
+    gap: clamp(var(--space-6), 4vw, var(--space-10));
+    width: min(calc(100% - var(--space-8)), 82rem);
+    margin-inline: auto;
+  }
+
+  main {
+    min-width: 0;
+    min-height: calc(100vh - var(--header-height));
+    padding: var(--space-8) 0 var(--space-10);
+    outline: 0;
+  }
+
+  .offline-state {
+    width: min(100%, var(--content-width));
+    margin-bottom: var(--space-5);
+  }
+
+  @media (max-width: 760px) {
+    .app-header {
+      padding-inline: var(--space-3);
+    }
+
+    .tagline,
+    .local-status {
+      display: none;
+    }
+
+    .header-actions {
+      gap: var(--space-2);
+    }
+
+    .shell-body {
+      display: block;
+      width: min(calc(100% - var(--space-6)), 44rem);
+    }
+
+    main {
+      padding: var(--space-6) 0 calc(6rem + env(safe-area-inset-bottom));
+    }
+  }
+</style>
