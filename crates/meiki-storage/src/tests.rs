@@ -1,7 +1,7 @@
 use meiki_domain::{
-    Annotation, Card, Cloze, ComparisonResult, Deck, Direction, Grade, LocalizedText, MediaKind,
-    MediaReference, ReviewEvent, ScheduleState, SchedulerParameterSet, SegmentContent,
-    SemanticSegment, SourceItem, StudySettingsOverride, Tag,
+    Annotation, Card, Cloze, ComparisonResult, Deck, Direction, Grade, LocalizedText,
+    MatchingPolicy, MediaKind, MediaReference, ReviewEvent, ScheduleState, SchedulerParameterSet,
+    SegmentContent, SemanticSegment, SourceItem, StudySettingsOverride, Tag,
 };
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -42,6 +42,9 @@ fn deck(id: &str) -> Deck {
         id: id.into(),
         name: "Mixed scripts".into(),
         description: Some("日本語 و فارسی".into()),
+        language_tag: None,
+        direction: Direction::Auto,
+        matching_policy: MatchingPolicy::Strict,
         settings: StudySettingsOverride {
             target_retention_basis_points: Some(9_200),
             new_cards_per_day: Some(12),
@@ -102,6 +105,7 @@ fn japanese_cloze() -> Cloze {
         }),
         language_tag: Some("ja".into()),
         direction: Direction::Auto,
+        matching_policy: None,
         annotations: vec![annotation(
             "annotation-ja",
             "読み",
@@ -132,6 +136,7 @@ fn persian_cloze() -> Cloze {
         }),
         language_tag: Some("fa".into()),
         direction: Direction::RightToLeft,
+        matching_policy: Some(MatchingPolicy::Forgiving),
         annotations: vec![Annotation {
             id: "annotation-fa".into(),
             label: "نقش".into(),
@@ -386,7 +391,7 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 2);
+    assert_eq!(storage.schema_version().unwrap(), 3);
     let restored = storage.load_study_card("legacy-card").unwrap();
     assert_eq!(restored.source_item.deck_id, DEFAULT_DECK_ID);
     assert_eq!(restored.source_item.direction, Direction::RightToLeft);

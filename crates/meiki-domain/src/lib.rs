@@ -12,6 +12,13 @@ pub enum Direction {
     RightToLeft,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MatchingPolicy {
+    #[default]
+    Strict,
+    Forgiving,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalizedText {
     pub value: String,
@@ -74,6 +81,9 @@ pub struct Deck {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    pub language_tag: Option<String>,
+    pub direction: Direction,
+    pub matching_policy: MatchingPolicy,
     pub settings: StudySettingsOverride,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -155,6 +165,7 @@ pub struct Cloze {
     pub hint: Option<LocalizedText>,
     pub language_tag: Option<String>,
     pub direction: Direction,
+    pub matching_policy: Option<MatchingPolicy>,
     pub annotations: Vec<Annotation>,
     pub explanation: Option<LocalizedText>,
     pub media: Vec<MediaReference>,

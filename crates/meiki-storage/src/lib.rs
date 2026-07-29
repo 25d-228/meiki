@@ -12,13 +12,15 @@ pub use repository::{
 
 use std::path::Path;
 
-use meiki_domain::{Card, Cloze, Direction, ScheduleState, SourceItem};
+use meiki_domain::{Card, Cloze, Direction, MatchingPolicy, ScheduleState, SourceItem};
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, params};
 use thiserror::Error;
 
 const FOUNDATION_MIGRATION: &str = include_str!("../migrations/0001_foundation.sql");
 const CORE_MODEL_MIGRATION: &str = include_str!("../migrations/0002_core_model.sql");
-const LATEST_SCHEMA_VERSION: u32 = 2;
+const AUTHORING_DEFAULTS_MIGRATION: &str =
+    include_str!("../migrations/0003_authoring_defaults.sql");
+const LATEST_SCHEMA_VERSION: u32 = 3;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const SAMPLE_SOURCE_ID: &str = "sample-source";
@@ -145,6 +147,9 @@ impl Storage {
         }
         if current < 2 {
             transaction.execute_batch(CORE_MODEL_MIGRATION)?;
+        }
+        if current < 3 {
+            transaction.execute_batch(AUTHORING_DEFAULTS_MIGRATION)?;
         }
         transaction.commit()?;
         Ok(())
@@ -281,6 +286,24 @@ pub(crate) const fn direction_to_database(value: Direction) -> &'static str {
         Direction::Auto => "auto",
         Direction::LeftToRight => "ltr",
         Direction::RightToLeft => "rtl",
+    }
+}
+
+pub(crate) fn matching_policy_from_database(value: &str) -> Result<MatchingPolicy, StorageError> {
+    match value {
+        "strict" => Ok(MatchingPolicy::Strict),
+        "forgiving" => Ok(MatchingPolicy::Forgiving),
+        _ => Err(StorageError::InvalidStoredValue {
+            field: "matching policy",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+pub(crate) const fn matching_policy_to_database(value: MatchingPolicy) -> &'static str {
+    match value {
+        MatchingPolicy::Strict => "strict",
+        MatchingPolicy::Forgiving => "forgiving",
     }
 }
 

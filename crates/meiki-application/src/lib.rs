@@ -6,14 +6,27 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use meiki_domain::{ComparisonResult, Direction, Grade, ReviewEvent, SegmentContent, SourceItem};
+use meiki_domain::{
+    ComparisonResult, Direction, Grade, MatchingPolicy, ReviewEvent, SegmentContent, SourceItem,
+};
 use meiki_scheduler::schedule_review;
-use meiki_storage::{SAMPLE_CARD_ID, Storage, StorageError, StoredStudyCard};
-use meiki_text::{DiffKind, DiffSegment, compare_answer};
+use meiki_storage::{DeckRepository, SAMPLE_CARD_ID, Storage, StorageError, StoredStudyCard};
+use meiki_text::{
+    CaseSensitivity, ComparisonOptions, DiacriticSensitivity, DiffKind, DiffSegment,
+    PunctuationSensitivity, WhitespaceSensitivity, WidthSensitivity, compare_answer_with_options,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 use uuid::Uuid;
+
+mod authoring;
+
+pub use authoring::{
+    AnnotationDraftDto, AuthoringClozeDto, AuthoringDraftDto, AuthoringPreviewDto,
+    AuthoringSegmentDto, AuthoringSegmentKindDto, MakeClozeRequest, MatchingPolicyDto,
+    RemoveClozeRequest, ReorderSegmentsRequest,
+};
 
 #[derive(Debug, Error)]
 pub enum ApplicationError {
@@ -27,6 +40,10 @@ pub enum ApplicationError {
     InvalidTimestamp(i64),
     #[error("stored numeric value is too large for the desktop contract: {0}")]
     NumericRange(&'static str),
+    #[error("invalid authoring draft: {0}")]
+    InvalidAuthoring(String),
+    #[error("invalid text selection: {0}")]
+    TextBoundary(#[from] meiki_text::TextBoundaryError),
 }
 
 #[derive(Debug, Error)]
@@ -185,10 +202,11 @@ impl ApplicationService {
             u64::from(request.card_content_version),
             u64::from(request.schedule_version),
         )?;
-        let comparison = compare_answer(
+        let comparison = compare_answer_with_options(
             &stored.cloze.answer,
             &stored.cloze.accepted_answers,
             &request.raw_response,
+            &answer_options(&storage, &stored)?,
         );
         let suggested_grade = suggested_grade(comparison.result);
 
@@ -225,10 +243,11 @@ impl ApplicationService {
             u64::from(request.schedule_version),
         )?;
 
-        let comparison = compare_answer(
+        let comparison = compare_answer_with_options(
             &stored.cloze.answer,
             &stored.cloze.accepted_answers,
             &request.raw_response,
+            &answer_options(&storage, &stored)?,
         );
         let suggested = suggested_grade(comparison.result);
         let reviewed_at_ms = Utc::now().timestamp_millis();
@@ -276,17 +295,37 @@ impl ApplicationService {
 
 fn study_card_dto(storage: &Storage, card_id: &str) -> Result<StudyCardDto, ApplicationError> {
     let stored = storage.load_study_card(card_id)?;
+    let deck = storage.get_deck(&stored.source_item.deck_id)?;
     let completed_reviews = storage.review_count(card_id)?;
     Ok(StudyCardDto {
         card_id: stored.card.id,
         card_content_version: desktop_u32(stored.card.content_version, "card content version")?,
         schedule_version: desktop_u32(stored.schedule.version, "schedule version")?,
         prompt: render_source(&stored.source_item, Some(&stored.cloze.id)),
-        language_tag: stored.source_item.language_tag,
-        direction: stored.source_item.direction.into(),
+        language_tag: stored
+            .cloze
+            .language_tag
+            .or(stored.source_item.language_tag)
+            .or(deck.language_tag),
+        direction: resolve_direction(
+            stored.cloze.direction,
+            stored.source_item.direction,
+            deck.direction,
+        )
+        .into(),
         due_at: timestamp_string(stored.schedule.due_at_ms)?,
         completed_reviews: desktop_u32(completed_reviews, "completed review count")?,
     })
+}
+
+const fn resolve_direction(cloze: Direction, source: Direction, deck: Direction) -> Direction {
+    if !matches!(cloze, Direction::Auto) {
+        cloze
+    } else if !matches!(source, Direction::Auto) {
+        source
+    } else {
+        deck
+    }
 }
 
 fn ensure_card_is_current(
@@ -300,6 +339,25 @@ fn ensure_card_is_current(
         return Err(ApplicationError::StaleCard);
     }
     Ok(())
+}
+
+fn answer_options(
+    storage: &Storage,
+    stored: &StoredStudyCard,
+) -> Result<ComparisonOptions, ApplicationError> {
+    let deck = storage.get_deck(&stored.source_item.deck_id)?;
+    let policy = stored.cloze.matching_policy.unwrap_or(deck.matching_policy);
+    Ok(match policy {
+        MatchingPolicy::Strict => ComparisonOptions::default(),
+        MatchingPolicy::Forgiving => ComparisonOptions {
+            case: CaseSensitivity::UnicodeLowercase,
+            diacritics: DiacriticSensitivity::Ignore,
+            punctuation: PunctuationSensitivity::Ignore,
+            whitespace: WhitespaceSensitivity::Collapse,
+            width: WidthSensitivity::FoldCompatibility,
+            ..ComparisonOptions::default()
+        },
+    })
 }
 
 fn render_source(source: &SourceItem, hidden_cloze_id: Option<&str>) -> String {
@@ -416,6 +474,16 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     RevealDto::export_all_to(output)?;
     GradeReviewRequest::export_all_to(output)?;
     GradeReviewResultDto::export_all_to(output)?;
+    AnnotationDraftDto::export_all_to(output)?;
+    AuthoringSegmentKindDto::export_all_to(output)?;
+    MatchingPolicyDto::export_all_to(output)?;
+    AuthoringSegmentDto::export_all_to(output)?;
+    AuthoringClozeDto::export_all_to(output)?;
+    AuthoringDraftDto::export_all_to(output)?;
+    AuthoringPreviewDto::export_all_to(output)?;
+    MakeClozeRequest::export_all_to(output)?;
+    RemoveClozeRequest::export_all_to(output)?;
+    ReorderSegmentsRequest::export_all_to(output)?;
     Ok(())
 }
 

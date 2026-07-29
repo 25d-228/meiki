@@ -52,6 +52,15 @@ test("dialog, toolbar, fields, and empty state are keyboard operable", async ({
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Add / Edit" }).click();
+  const source = page.locator(".segment-text");
+  await source.fill("Keyboard");
+  await source.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.setSelectionRange(0, 8);
+    textarea.dispatchEvent(new Event("select", { bubbles: true }));
+  });
+  await page.getByRole("button", { name: "Make cloze" }).click();
   await page.getByRole("button", { name: "Preview" }).click();
   await expect(
     page.getByRole("dialog", { name: "Card preview" }),
