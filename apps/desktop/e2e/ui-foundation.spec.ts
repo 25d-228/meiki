@@ -142,13 +142,10 @@ for (const fixture of ["ltr", "rtl", "cjk", "mixed"] as const) {
       await expect(prompt).toHaveAttribute("dir", "rtl");
       await expect(page.locator(".app-frame")).toHaveAttribute("dir", "ltr");
     }
-    await expect(page.getByTestId("study-card")).toHaveScreenshot(
-      `${fixture}.png`,
-      {
-        animations: "disabled",
-        caret: "hide",
-        maxDiffPixelRatio: 0.12,
-      },
-    );
+    await expect(page).toHaveScreenshot(`${fixture}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
   });
 }
