@@ -604,8 +604,9 @@ pub fn namespace_collection(
     for profile in &mut mapped.scheduler_profiles {
         profile.deck_id = map_id(&profile.deck_id);
         profile.active_parameter_set_id = map_id(&profile.active_parameter_set_id);
-        profile.previous_parameter_set_id =
-            profile.previous_parameter_set_id.as_deref().map(&map_id);
+        if let Some(previous) = &mut profile.previous_parameter_set_id {
+            *previous = map_id(previous);
+        }
     }
     for note in &mut mapped.notes {
         note.source_item.id = map_id(&note.source_item.id);
@@ -643,9 +644,12 @@ pub fn namespace_collection(
             for event in &mut portable.review_events {
                 event.id = map_id(&event.id);
                 event.card_id = map_id(&event.card_id);
-                event.undoes_review_event_id = event.undoes_review_event_id.as_deref().map(&map_id);
-                event.scheduler_parameter_set_id =
-                    event.scheduler_parameter_set_id.as_deref().map(&map_id);
+                if let Some(undone) = &mut event.undoes_review_event_id {
+                    *undone = map_id(undone);
+                }
+                if let Some(parameter_set) = &mut event.scheduler_parameter_set_id {
+                    *parameter_set = map_id(parameter_set);
+                }
                 map_schedule(&mut event.previous_schedule, &map_id);
                 map_schedule(&mut event.next_schedule, &map_id);
             }
