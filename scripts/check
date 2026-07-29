@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+"$project_root/scripts/dev-env" npm ci
+if [ "${CI:-}" = "true" ] && [ "$(uname -s)" = "Linux" ]; then
+  "$project_root/scripts/dev-env" npx playwright install --with-deps chromium
+else
+  "$project_root/scripts/dev-env" npx playwright install chromium
+fi
+"$project_root/scripts/dev-env" npm run verify
