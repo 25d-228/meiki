@@ -639,6 +639,7 @@ fn mutable_core_entities_support_create_read_update_delete() {
     let mut deck = deck("deck-crud");
     storage.create_deck(&deck).unwrap();
     assert_eq!(storage.get_deck(&deck.id).unwrap(), deck);
+    assert!(storage.list_decks().unwrap().contains(&deck));
     deck.name = "Updated deck".into();
     deck.updated_at_ms = 2_000;
     storage.update_deck(&deck).unwrap();

@@ -5,7 +5,8 @@ use meiki_application::{
     GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, MakeClozeRequest,
     RebuildSchedulerResultDto, RemoveClozeRequest, ReorderSegmentsRequest, RevealDto,
     SchedulerDiagnosticsExportDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto,
-    SuspendCardRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
+    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -34,6 +35,18 @@ fn get_study_card(card_id: String, state: State<'_, AppContext>) -> Result<Study
     state
         .service()
         .get_study_card(&card_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_today_overview(
+    request: TodayRequest,
+    state: State<'_, AppContext>,
+) -> Result<TodayOverviewDto, String> {
+    state
+        .service()
+        .get_today_overview(&request)
         .map_err(|error| error.to_string())
 }
 
@@ -268,6 +281,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             initialize_collection,
             get_study_card,
+            get_today_overview,
             get_authoring_draft_for_card,
             check_answer,
             grade_review,

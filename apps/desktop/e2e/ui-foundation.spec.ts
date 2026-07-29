@@ -1,10 +1,15 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
 });
+
+async function openStudy(page: Page, url: string): Promise<void> {
+  await page.goto(url);
+  await page.getByRole("button", { name: "Study", exact: true }).click();
+}
 
 test("all primary screens have labelled responsive shells", async ({
   page,
@@ -107,7 +112,10 @@ test("light and dark themes preserve text contrast and focus visibility", async 
     expect(contrast).toBeGreaterThanOrEqual(4.5);
   }
 
-  const studyButton = page.getByRole("button", { name: "Study" });
+  const studyButton = page.getByRole("button", {
+    name: "Study",
+    exact: true,
+  });
   await studyButton.focus();
   expect(
     await studyButton.evaluate(
@@ -120,7 +128,10 @@ test("scheduler controls save, personalize, and rebuild explicitly", async ({
   page,
 }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Settings" })
+    .click();
   await expect(
     page.getByRole("group", { name: "Study intensity" }),
   ).toBeVisible();
@@ -160,7 +171,7 @@ test("reduced motion and offline feedback are explicit", async ({
   page,
 }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/?fixture=loading");
+  await openStudy(page, "/?fixture=loading");
   await expect(page.getByText("Opening your local collection…")).toBeVisible();
   const animationDuration = await page
     .locator(".spinner")
@@ -173,7 +184,7 @@ test("reduced motion and offline feedback are explicit", async ({
 });
 
 test("collection errors expose a labelled retry state", async ({ page }) => {
-  await page.goto("/?fixture=error");
+  await openStudy(page, "/?fixture=error");
   await expect(
     page.getByRole("alert").getByText("The collection could not be opened"),
   ).toBeVisible();
@@ -183,7 +194,7 @@ test("collection errors expose a labelled retry state", async ({ page }) => {
 for (const fixture of ["ltr", "rtl", "cjk", "mixed"] as const) {
   test(`study card visual snapshot: ${fixture}`, async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 760 });
-    await page.goto(`/?fixture=${fixture}`);
+    await openStudy(page, `/?fixture=${fixture}`);
     const prompt = page.locator("#study-prompt");
     await expect(prompt).toBeVisible();
     if (fixture === "rtl") {

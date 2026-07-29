@@ -28,7 +28,7 @@
   let intensity = $state<StudyIntensityDto>("balanced");
   let targetRetention = $state(9000);
   let newCardsPerDay = $state(20);
-  let dailyBudget = $state("");
+  let dailyBudget = $state<number | "">("");
   let maximumIntervalDays = $state(36500);
   let dayBoundaryMinutes = $state(240);
   let autoplayPromptAudio = $state(false);
@@ -46,7 +46,7 @@
     intensity = next.intensity;
     targetRetention = next.target_retention_basis_points;
     newCardsPerDay = next.new_cards_per_day;
-    dailyBudget = next.daily_time_budget_minutes?.toString() ?? "";
+    dailyBudget = next.daily_time_budget_minutes ?? "";
     maximumIntervalDays = next.maximum_interval_days;
     dayBoundaryMinutes = next.day_boundary_minutes;
   }
@@ -79,8 +79,7 @@
           intensity,
           target_retention_basis_points: targetRetention,
           new_cards_per_day: newCardsPerDay,
-          daily_time_budget_minutes:
-            dailyBudget.trim() === "" ? null : Number(dailyBudget),
+          daily_time_budget_minutes: dailyBudget === "" ? null : dailyBudget,
           maximum_interval_days: maximumIntervalDays,
           day_boundary_minutes: dayBoundaryMinutes,
         }),

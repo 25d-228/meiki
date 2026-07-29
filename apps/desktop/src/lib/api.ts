@@ -22,6 +22,8 @@ import type { DirectionDto } from "./generated/DirectionDto";
 import type { ImportMediaRequest } from "./generated/ImportMediaRequest";
 import type { MediaRoleDto } from "./generated/MediaRoleDto";
 import type { StudyMediaDto } from "./generated/StudyMediaDto";
+import type { TodayOverviewDto } from "./generated/TodayOverviewDto";
+import type { TodayRequest } from "./generated/TodayRequest";
 
 function invoke<T>(
   command: string,
@@ -40,6 +42,10 @@ export const api = {
 
   getStudyCard(cardId: string): Promise<StudyCardDto> {
     return invoke("get_study_card", { cardId });
+  },
+
+  getTodayOverview(request: TodayRequest): Promise<TodayOverviewDto> {
+    return invoke("get_today_overview", { request });
   },
 
   getAuthoringDraftForCard(cardId: string): Promise<AuthoringDraftDto> {

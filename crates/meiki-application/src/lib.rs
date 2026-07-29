@@ -31,12 +31,14 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod authoring;
+mod today;
 
 pub use authoring::{
     AnnotationDraftDto, AuthoringClozeDto, AuthoringDraftDto, AuthoringPreviewDto,
     AuthoringSegmentDto, AuthoringSegmentKindDto, MakeClozeRequest, MatchingPolicyDto,
     RemoveClozeRequest, ReorderSegmentsRequest,
 };
+pub use today::{TodayDeckDto, TodayOverviewDto, TodayQueueCardDto, TodayRequest};
 
 #[derive(Debug, Error)]
 pub enum ApplicationError {
@@ -52,6 +54,8 @@ pub enum ApplicationError {
     NumericRange(&'static str),
     #[error("invalid authoring draft: {0}")]
     InvalidAuthoring(String),
+    #[error("invalid Today request: {0}")]
+    InvalidToday(String),
     #[error("invalid text selection: {0}")]
     TextBoundary(#[from] meiki_text::TextBoundaryError),
     #[error("scheduler operation failed: {0}")]
@@ -1473,6 +1477,10 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     MakeClozeRequest::export_all_to(output)?;
     RemoveClozeRequest::export_all_to(output)?;
     ReorderSegmentsRequest::export_all_to(output)?;
+    TodayRequest::export_all_to(output)?;
+    TodayDeckDto::export_all_to(output)?;
+    TodayQueueCardDto::export_all_to(output)?;
+    TodayOverviewDto::export_all_to(output)?;
     Ok(())
 }
 

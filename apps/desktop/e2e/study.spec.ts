@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
 
@@ -6,10 +6,15 @@ test.beforeEach(async ({ page }) => {
   await installMockApi(page);
 });
 
+async function openStudy(page: Page, url: string): Promise<void> {
+  await page.goto(url);
+  await page.getByRole("button", { name: "Study", exact: true }).click();
+}
+
 test("checks, grades, and restores the walking-skeleton card", async ({
   page,
 }) => {
-  await page.goto("/");
+  await openStudy(page, "/");
   await expect(page.getByText("日曜日は図書館に[…]")).toBeVisible();
 
   await page.getByLabel("Your answer").fill("行きます");
@@ -23,13 +28,14 @@ test("checks, grades, and restores the walking-skeleton card", async ({
   ).toBeVisible();
 
   await page.reload();
+  await page.getByRole("button", { name: "Study", exact: true }).click();
   await expect(page.getByText("1 review saved")).toBeVisible();
 });
 
 test("plays prompt and answer audio, reveals an image, and tolerates missing media", async ({
   page,
 }) => {
-  await page.goto("/?media=ready");
+  await openStudy(page, "/?media=ready");
   await expect(
     page.getByRole("button", { name: "Replay audio" }),
   ).toBeVisible();
@@ -60,13 +66,13 @@ test("plays prompt and answer audio, reveals an image, and tolerates missing med
     )
     .toBe(2);
 
-  await page.goto("/?media=missing");
+  await openStudy(page, "/?media=missing");
   await expect(page.getByText("Media file is missing")).toBeVisible();
   await expect(page.getByLabel("Your answer")).toBeEnabled();
 });
 
 test("does not submit Enter during IME composition", async ({ page }) => {
-  await page.goto("/");
+  await openStudy(page, "/");
   const input = page.getByLabel("Your answer");
   await input.dispatchEvent("compositionstart");
   await input.press("Enter");
@@ -90,7 +96,7 @@ test("preserves multilingual and multi-code-point review input", async ({
   ] as const;
 
   for (const [fixture, response] of fixtures) {
-    await page.goto(`/?fixture=${fixture}`);
+    await openStudy(page, `/?fixture=${fixture}`);
     const input = page.getByLabel("Your answer");
     await input.fill(response);
     await expect(input).toHaveValue(response);
@@ -109,7 +115,7 @@ test("preserves multilingual and multi-code-point review input", async ({
 test("renders grapheme difference semantics without altering raw input", async ({
   page,
 }) => {
-  await page.goto("/?fixture=cjk");
+  await openStudy(page, "/?fixture=cjk");
   await page.getByLabel("Your answer").fill(" 図書館 ");
   await page.getByLabel("Your answer").press("Enter");
 
@@ -125,7 +131,7 @@ test("renders grapheme difference semantics without altering raw input", async (
 test("completes and undoes a review with keyboard-only controls", async ({
   page,
 }) => {
-  await page.goto("/?fixture=cjk");
+  await openStudy(page, "/?fixture=cjk");
   await page.keyboard.type("行きます");
   await page.waitForTimeout(20);
   await page.keyboard.press("Enter");
@@ -152,7 +158,7 @@ test("completes and undoes a review with keyboard-only controls", async ({
 test("retries interrupted checks and commits without losing review state", async ({
   page,
 }) => {
-  await page.goto("/?fixture=ltr&failure=check");
+  await openStudy(page, "/?fixture=ltr&failure=check");
   const input = page.getByLabel("Your answer");
   await input.fill(" la bibliothe\u{300}que ");
   await input.press("Enter");
@@ -166,7 +172,7 @@ test("retries interrupted checks and commits without losing review state", async
     page.locator(".answer-comparison strong").nth(1),
   ).toHaveJSProperty("textContent", " la bibliothe\u{300}que ");
 
-  await page.goto("/?fixture=cjk&failure=grade");
+  await openStudy(page, "/?fixture=cjk&failure=grade");
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
   await page.keyboard.press("Enter");
@@ -182,7 +188,7 @@ test("retries interrupted checks and commits without losing review state", async
 test("edits and suspends the active card without losing the reveal", async ({
   page,
 }) => {
-  await page.goto("/?fixture=cjk");
+  await openStudy(page, "/?fixture=cjk");
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
   await page.keyboard.press("e");
