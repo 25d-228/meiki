@@ -4,7 +4,10 @@
 //! dependency. Text is stored losslessly; language metadata is optional, and
 //! cloze identity is represented by semantic segments rather than offsets.
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Direction {
     #[default]
     Auto,
@@ -12,21 +15,22 @@ pub enum Direction {
     RightToLeft,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MatchingPolicy {
     #[default]
     Strict,
     Forgiving,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LocalizedText {
     pub value: String,
     pub language_tag: Option<String>,
     pub direction: Direction,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StudySettings {
     /// Desired recall probability in basis points (for example, 9000 = 90%).
     pub target_retention_basis_points: u16,
@@ -44,7 +48,7 @@ impl Default for StudySettings {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StudySettingsOverride {
     pub target_retention_basis_points: Option<u16>,
     pub new_cards_per_day: Option<u32>,
@@ -76,7 +80,7 @@ impl StudySettings {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Deck {
     pub id: String,
     pub name: String,
@@ -89,7 +93,7 @@ pub struct Deck {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Tag {
     pub id: String,
     pub name: String,
@@ -97,7 +101,7 @@ pub struct Tag {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Annotation {
     pub id: String,
     pub label: String,
@@ -106,20 +110,22 @@ pub struct Annotation {
     pub direction: Direction,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MediaKind {
     Audio,
     Image,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MediaRole {
     PromptAudio,
     AnswerAudio,
     RevealImage,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MediaReference {
     pub id: String,
     pub content_hash: String,
@@ -137,7 +143,7 @@ pub struct MediaReference {
     pub created_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceItem {
     pub id: String,
     pub deck_id: String,
@@ -155,20 +161,21 @@ pub struct SourceItem {
 /// Product-language alias for a persisted source item.
 pub type SourceNote = SourceItem;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SemanticSegment {
     pub id: String,
     pub ordinal: u32,
     pub content: SegmentContent,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SegmentContent {
     Text(String),
     Cloze { cloze_id: String, text: String },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Cloze {
     pub id: String,
     pub source_item_id: String,
@@ -185,7 +192,7 @@ pub struct Cloze {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Card {
     pub id: String,
     pub cloze_id: String,
@@ -196,7 +203,7 @@ pub struct Card {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SchedulerParameterSet {
     pub id: String,
     pub engine_version: String,
@@ -204,7 +211,8 @@ pub struct SchedulerParameterSet {
     pub created_at_ms: i64,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StudyIntensity {
     Light,
     #[default]
@@ -212,7 +220,8 @@ pub enum StudyIntensity {
     Intensive,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OptimizerStatus {
     #[default]
     NeverRun,
@@ -223,7 +232,7 @@ pub enum OptimizerStatus {
     RolledBack,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SchedulerProfile {
     pub deck_id: String,
     pub engine_version: String,
@@ -238,7 +247,8 @@ pub struct SchedulerProfile {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ComparisonResult {
     Exact,
     AcceptedVariant,
@@ -247,7 +257,8 @@ pub enum ComparisonResult {
     Empty,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Grade {
     Again,
     Hard,
@@ -255,13 +266,14 @@ pub enum Grade {
     Easy,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReviewEventKind {
     Review,
     Undo,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ScheduleState {
     pub card_id: String,
     pub version: u64,
@@ -278,7 +290,7 @@ pub struct ScheduleState {
     pub last_review_event_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ReviewEvent {
     pub id: String,
     pub card_id: String,

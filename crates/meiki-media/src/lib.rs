@@ -217,6 +217,34 @@ impl MediaStore {
         Ok(restored)
     }
 
+    /// Verifies a backup and restores any missing objects into this store.
+    ///
+    /// Existing objects are checksum-verified and never overwritten. Extra
+    /// objects in the current store are preserved because content-addressed
+    /// media is immutable and may support another recovery point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either store is corrupt or an object cannot be
+    /// copied atomically.
+    pub fn merge_from_backup(&self, backup: &Path) -> Result<(), MediaError> {
+        let backup_store = Self::new(backup);
+        let hashes = backup_store.verify_all()?;
+        for hash in hashes {
+            match self.verify(&hash) {
+                Ok(_) => {}
+                Err(MediaError::MissingObject(_)) => {
+                    let source = backup_store.verify(&hash)?;
+                    let destination = self.object_path(&hash)?;
+                    copy_atomically(&source, &destination)?;
+                    self.verify(&hash)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     /// Removes one verified, unreferenced object.
     ///
     /// Reference checks belong to the application/storage transaction and
@@ -596,7 +624,16 @@ mod tests {
         store.backup_to(&backup).unwrap();
         let restored_path = directory.path().join("restored");
         let restored = MediaStore::restore_from_backup(&backup, &restored_path).unwrap();
-        assert_eq!(restored.verify_all().unwrap(), vec![imported.content_hash]);
+        assert_eq!(
+            restored.verify_all().unwrap(),
+            vec![imported.content_hash.clone()]
+        );
+
+        let existing_path = directory.path().join("existing");
+        let existing = MediaStore::new(&existing_path);
+        existing.merge_from_backup(&backup).unwrap();
+        existing.merge_from_backup(&backup).unwrap();
+        assert_eq!(existing.verify_all().unwrap(), vec![imported.content_hash]);
     }
 
     #[test]

@@ -115,6 +115,119 @@ impl Storage {
             .map_err(|_| StorageError::NumericRange("review count"))
     }
 
+    /// Loads the immutable schedule baseline used to rebuild a card.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the card or baseline does not exist.
+    pub fn load_schedule_baseline(&self, card_id: &str) -> Result<ScheduleState, StorageError> {
+        load_schedule_row(&self.connection, "schedule_baselines", card_id)?
+            .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))
+    }
+
+    /// Restores validated immutable history and its current projection.
+    ///
+    /// This operation is intended for a staging collection during portable
+    /// import. The card must have no existing events and its current schedule
+    /// must still equal the supplied baseline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the history chain is inconsistent, the
+    /// card is not pristine, or the transaction cannot be committed.
+    pub fn restore_card_history(
+        &mut self,
+        card_id: &str,
+        baseline: &ScheduleState,
+        current: &ScheduleState,
+        events: &[ReviewEvent],
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        let stored_baseline = load_schedule_row(&transaction, "schedule_baselines", card_id)?
+            .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))?;
+        let stored_current = load_schedule_row(&transaction, "schedule_states", card_id)?
+            .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))?;
+        let existing_events = load_review_events(&transaction, card_id)?;
+        if stored_baseline != *baseline
+            || stored_current != *baseline
+            || !existing_events.is_empty()
+            || baseline.card_id != card_id
+            || current.card_id != card_id
+        {
+            return Err(StorageError::ProjectionMismatch(
+                "portable history requires a pristine card baseline".into(),
+            ));
+        }
+
+        let mut projected = baseline.clone();
+        let mut event_ids = std::collections::HashSet::new();
+        for event in events {
+            if event.card_id != card_id
+                || event.previous_schedule != projected
+                || event.next_schedule.card_id != card_id
+                || event.next_schedule.version != event.previous_schedule.version + 1
+                || event.next_schedule.last_review_event_id.as_deref() != Some(event.id.as_str())
+                || !event_ids.insert(event.id.as_str())
+            {
+                return Err(StorageError::ProjectionMismatch(
+                    "portable review history is not a continuous projection chain".into(),
+                ));
+            }
+            insert_review_event(&transaction, event)?;
+            projected = event.next_schedule.clone();
+        }
+        if projected != *current {
+            return Err(StorageError::ProjectionMismatch(
+                "portable current schedule does not match its history".into(),
+            ));
+        }
+        active_reviews(events.to_vec())?;
+
+        let changed = transaction.execute(
+            "UPDATE schedule_states
+             SET version = ?1,
+                 due_at_ms = ?2,
+                 ideal_due_at_ms = ?3,
+                 interval_milliseconds = ?4,
+                 interval_seconds = ?5,
+                 repetitions = ?6,
+                 stability_milliseconds = ?7,
+                 difficulty_millipoints = ?8,
+                 last_reviewed_at_ms = ?9,
+                 last_review_event_id = ?10
+             WHERE card_id = ?11",
+            params![
+                current.version,
+                current.due_at_ms,
+                current.ideal_due_at_ms,
+                current.interval_milliseconds,
+                current.interval_seconds,
+                current.repetitions,
+                current.stability_milliseconds,
+                current.difficulty_millipoints,
+                current.last_reviewed_at_ms,
+                current.last_review_event_id,
+                card_id,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::CardNotFound(card_id.to_owned()));
+        }
+        transaction.execute(
+            "UPDATE cards
+             SET queue_updated_at_ms = ?1
+             WHERE id = ?2",
+            params![
+                events
+                    .last()
+                    .map_or(current.due_at_ms, |event| event.reviewed_at_ms),
+                card_id
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Loads all immutable review events for a deck in chronological order.
     ///
     /// # Errors

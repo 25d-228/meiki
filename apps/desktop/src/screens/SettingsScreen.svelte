@@ -3,10 +3,14 @@
 
   import { api } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
+  import Dialog from "../lib/components/Dialog.svelte";
   import Feedback from "../lib/components/Feedback.svelte";
   import Field from "../lib/components/Field.svelte";
   import SurfaceCard from "../lib/components/SurfaceCard.svelte";
   import type { SchedulerSettingsDto } from "../lib/generated/SchedulerSettingsDto";
+  import type { ArchiveImportModeDto } from "../lib/generated/ArchiveImportModeDto";
+  import type { BackupDto } from "../lib/generated/BackupDto";
+  import type { PortableArchivePreviewDto } from "../lib/generated/PortableArchivePreviewDto";
   import type { StudyIntensityDto } from "../lib/generated/StudyIntensityDto";
   import type { ThemeMode } from "../lib/ui";
 
@@ -35,10 +39,17 @@
   let busy = $state(false);
   let notice = $state("");
   let error = $state("");
+  let backups = $state<BackupDto[]>([]);
+  let archivePath = $state("");
+  let importMode = $state<ArchiveImportModeDto>("merge");
+  let importPreview = $state<PortableArchivePreviewDto | null>(null);
+  let importConfirmation = $state("");
+  let restoreTarget = $state<BackupDto | null>(null);
+  let restoreConfirmation = $state("");
 
   onMount(() => {
     autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
-    void loadSettings();
+    void loadSettings().then(loadBackups);
   });
 
   function applySettings(next: SchedulerSettingsDto): void {
@@ -120,6 +131,7 @@
     try {
       const result = await api.rebuildScheduler(deckId);
       notice = `Rebuilt ${result.rebuilt_cards} cards. Backup: ${result.backup_path}`;
+      await loadBackups();
     } catch (cause) {
       error = message(cause);
     } finally {
@@ -134,6 +146,100 @@
     try {
       const result = await api.exportSchedulerDiagnostics(deckId);
       notice = `Diagnostics exported: ${result.path}`;
+    } catch (cause) {
+      error = message(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function exportArchive(
+    scope: "full_collection" | "selected_decks",
+  ): Promise<void> {
+    busy = true;
+    notice = "";
+    error = "";
+    try {
+      const result = await api.exportArchive({
+        scope,
+        selected_ids: scope === "selected_decks" ? [deckId] : [],
+        now_ms: Date.now(),
+      });
+      notice = `Exported ${result.notes} notes and ${result.media_objects} media objects to ${result.path}`;
+    } catch (cause) {
+      error = message(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function chooseArchive(): Promise<void> {
+    const path = await api.pickArchiveFile();
+    if (!path) return;
+    archivePath = path;
+    await previewImport();
+  }
+
+  async function previewImport(): Promise<void> {
+    if (!archivePath) return;
+    busy = true;
+    error = "";
+    importConfirmation = "";
+    try {
+      importPreview = await api.previewArchive(archivePath, importMode);
+    } catch (cause) {
+      importPreview = null;
+      error = message(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function runImport(): Promise<void> {
+    if (!importPreview?.can_import) return;
+    busy = true;
+    notice = "";
+    error = "";
+    try {
+      const result = await api.importArchive({
+        path: archivePath,
+        mode: importMode,
+        confirmation: importConfirmation,
+      });
+      notice = `Imported ${result.imported_notes} notes. Recovery backup: ${result.backup_path}`;
+      importPreview = null;
+      archivePath = "";
+      importConfirmation = "";
+      await Promise.all([loadSettings(), loadBackups()]);
+    } catch (cause) {
+      error = message(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function loadBackups(): Promise<void> {
+    try {
+      backups = await api.listBackups();
+    } catch (cause) {
+      error = message(cause);
+    }
+  }
+
+  async function restoreBackup(): Promise<void> {
+    if (!restoreTarget) return;
+    busy = true;
+    notice = "";
+    error = "";
+    try {
+      const recovery = await api.restoreBackup(
+        restoreTarget.path,
+        restoreConfirmation,
+      );
+      notice = `Backup restored. The replaced collection is recoverable at ${recovery.path}`;
+      restoreTarget = null;
+      restoreConfirmation = "";
+      await Promise.all([loadSettings(), loadBackups()]);
     } catch (cause) {
       error = message(cause);
     } finally {
@@ -160,6 +266,12 @@
 
   function message(cause: unknown): string {
     return cause instanceof Error ? cause.message : String(cause);
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
   }
 </script>
 
@@ -394,11 +506,175 @@
       </details>
     </div>
   </SurfaceCard>
+
+  <SurfaceCard>
+    <div class="portability">
+      <div>
+        <span class="eyebrow">Data portability</span>
+        <h2>Archives and recovery</h2>
+        <p>
+          Versioned .meiki archives preserve text, review history, scheduling
+          metadata, and checksum-verified media. Imports are validated before
+          they can change this collection.
+        </p>
+      </div>
+      <div class="scheduler-actions">
+        <Button
+          size="small"
+          disabled={busy}
+          onclick={() => exportArchive("full_collection")}
+          >Export full collection</Button
+        >
+        <Button
+          size="small"
+          disabled={busy}
+          onclick={() => exportArchive("selected_decks")}
+          >Export this deck</Button
+        >
+        <Button
+          variant="primary"
+          size="small"
+          disabled={busy}
+          onclick={chooseArchive}>Preview an import</Button
+        >
+      </div>
+
+      <div class="backup-list">
+        <div>
+          <strong>Rolling backups</strong>
+          <p>
+            The newest five backups are kept for each migration, import,
+            restore, and schedule-rebuild operation.
+          </p>
+        </div>
+        {#if backups.length}
+          {#each backups as backup (backup.path)}
+            <div class="backup-row">
+              <span>
+                <strong>{backup.file_name}</strong>
+                <small>{formatBytes(backup.byte_size)}</small>
+              </span>
+              <Button
+                variant="danger"
+                size="small"
+                disabled={busy}
+                onclick={() => {
+                  restoreTarget = backup;
+                  restoreConfirmation = "";
+                }}>Restore</Button
+              >
+            </div>
+          {/each}
+        {:else}
+          <p class="advanced-note">No managed backups yet.</p>
+        {/if}
+      </div>
+    </div>
+  </SurfaceCard>
 </section>
+
+<Dialog
+  open={Boolean(importPreview)}
+  title="Preview archive import"
+  description="Review the validated contents before importing."
+  onClose={() => {
+    importPreview = null;
+    importConfirmation = "";
+  }}
+>
+  {#if importPreview}
+    <div class="dialog-stack">
+      <label>
+        <strong>Import mode</strong>
+        <select
+          bind:value={importMode}
+          disabled={busy}
+          onchange={() => void previewImport()}
+        >
+          <option value="merge">Merge as a namespaced copy</option>
+          <option value="replace">Replace this collection</option>
+        </select>
+      </label>
+      <p>{importPreview.summary}</p>
+      <dl class="scheduler-status">
+        <div>
+          <dt>Format</dt>
+          <dd>Version {importPreview.format_version}</dd>
+        </div>
+        <div>
+          <dt>Notes</dt>
+          <dd>{importPreview.notes}</dd>
+        </div>
+        <div>
+          <dt>Cards</dt>
+          <dd>{importPreview.cards}</dd>
+        </div>
+        <div>
+          <dt>Reviews</dt>
+          <dd>{importPreview.review_events}</dd>
+        </div>
+        <div>
+          <dt>Media</dt>
+          <dd>{importPreview.media_objects}</dd>
+        </div>
+        <div>
+          <dt>Media reused</dt>
+          <dd>{importPreview.duplicate_media_objects}</dd>
+        </div>
+      </dl>
+      {#if importPreview.can_import}
+        <label>
+          <strong>Type {importPreview.confirmation} to confirm</strong>
+          <input bind:value={importConfirmation} autocomplete="off" />
+        </label>
+      {/if}
+    </div>
+  {/if}
+  {#snippet actions()}
+    <Button
+      variant="primary"
+      disabled={busy ||
+        !importPreview?.can_import ||
+        importConfirmation !== importPreview?.confirmation}
+      onclick={runImport}>Import archive</Button
+    >
+  {/snippet}
+</Dialog>
+
+<Dialog
+  open={Boolean(restoreTarget)}
+  title="Restore rolling backup"
+  description="This replaces the current database after creating a new recovery backup."
+  onClose={() => {
+    restoreTarget = null;
+    restoreConfirmation = "";
+  }}
+>
+  {#if restoreTarget}
+    <div class="dialog-stack">
+      <p>{restoreTarget.file_name}</p>
+      <label>
+        <strong>Type the exact filename to confirm</strong>
+        <input bind:value={restoreConfirmation} autocomplete="off" />
+      </label>
+    </div>
+  {/if}
+  {#snippet actions()}
+    <Button
+      variant="danger"
+      disabled={busy || restoreConfirmation !== restoreTarget?.file_name}
+      onclick={restoreBackup}>Restore backup</Button
+    >
+  {/snippet}
+</Dialog>
 
 <style>
   .settings-screen {
     width: min(100%, 54rem);
+  }
+
+  .settings-screen > :global(* + *) {
+    margin-top: var(--space-5);
   }
 
   .settings-list {
@@ -435,6 +711,67 @@
     color: var(--color-text);
     background: var(--color-surface);
     font: inherit;
+  }
+
+  select {
+    width: 100%;
+    min-height: var(--control-height);
+    margin-top: var(--space-2);
+    padding-inline: var(--space-3);
+    border: var(--border-width) solid var(--color-border-strong);
+    border-radius: var(--radius-control);
+    color: var(--color-text);
+    background: var(--color-surface);
+    font: inherit;
+  }
+
+  .portability,
+  .backup-list,
+  .dialog-stack {
+    display: grid;
+    gap: var(--space-4);
+  }
+
+  .portability h2,
+  .portability p,
+  .backup-list p,
+  .dialog-stack p {
+    margin: 0;
+  }
+
+  .portability h2 {
+    margin-block: var(--space-1) var(--space-2);
+    font-family: var(--font-display);
+    font-size: var(--text-xl);
+  }
+
+  .portability p,
+  .backup-list p,
+  .backup-row small {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .backup-list {
+    padding-top: var(--space-4);
+    border-top: var(--border-width) solid var(--color-border);
+  }
+
+  .backup-row {
+    display: flex;
+    gap: var(--space-4);
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .backup-row span {
+    display: grid;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .backup-row strong {
+    overflow-wrap: anywhere;
   }
 
   .setting-row {

@@ -11,14 +11,16 @@ Internal dependencies point inward:
 Svelte UI → Tauri adapter → meiki-application
                               ├── meiki-domain
                               ├── meiki-media
+                              ├── meiki-portable → meiki-domain
                               ├── meiki-text → meiki-domain
                               ├── meiki-scheduler → meiki-domain
                               └── meiki-storage → meiki-domain
+```
 
 meiki-media remains an independent filesystem ownership boundary. The
 application coordinates it with domain and storage references. meiki-portable
-remains independent until its issue introduces concrete dependencies.
-```
+owns the versioned archive container and serializes domain values, while the
+application coordinates selection, storage staging, and media import.
 
 `meiki-domain` has no framework dependency. Only `meiki-storage` may depend on
 SQLite. Tauri commands create an application service and delegate one use case;

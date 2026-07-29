@@ -7,6 +7,7 @@ declare global {
   interface Window {
     __MEIKI_TEST_INVOKE__?: typeof invoke;
     __MEIKI_TEST_PICK_FILE__?: (role: MediaRoleDto) => Promise<string | null>;
+    __MEIKI_TEST_PICK_ARCHIVE__?: () => Promise<string | null>;
   }
 }
 

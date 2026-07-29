@@ -36,6 +36,7 @@ unicode-normalization = "0.1"
 unicode-segmentation = "1.13"
 unicode-general-category = "1.1"
 uuid = { version = "1", features = ["v4"] }
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
