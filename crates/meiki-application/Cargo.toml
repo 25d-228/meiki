@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 chrono.workspace = true
 meiki-domain = { path = "../meiki-domain" }
+meiki-media = { path = "../meiki-media" }
 meiki-scheduler = { path = "../meiki-scheduler" }
 meiki-storage = { path = "../meiki-storage" }
 meiki-text = { path = "../meiki-text" }

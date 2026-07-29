@@ -16,6 +16,8 @@
   import type { AuthoringPreviewDto } from "../lib/generated/AuthoringPreviewDto";
   import type { DirectionDto } from "../lib/generated/DirectionDto";
   import type { MatchingPolicyDto } from "../lib/generated/MatchingPolicyDto";
+  import type { MediaRoleDto } from "../lib/generated/MediaRoleDto";
+  import { mediaAssetSource } from "../lib/media";
 
   type Props = {
     cardId?: string | null;
@@ -262,6 +264,54 @@
         (annotation) => annotation.id !== annotationId,
       ),
     }));
+  }
+
+  async function attachMedia(role: MediaRoleDto): Promise<void> {
+    const cloze = activeCloze();
+    if (!cloze || busy) return;
+    busy = true;
+    try {
+      const path = await api.pickMediaFile(role);
+      if (!path) return;
+      const media = await api.importMedia(
+        path,
+        role,
+        cloze.language_tag ?? draft?.language_tag ?? null,
+        cloze.direction,
+      );
+      updateActiveCloze((value) => ({
+        ...value,
+        media: [...value.media, media],
+      }));
+    } catch (reason) {
+      reportFailure(reason);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function updateMediaAlt(mediaId: string, altText: string): void {
+    updateActiveCloze((cloze) => ({
+      ...cloze,
+      media: cloze.media.map((media) =>
+        media.id === mediaId
+          ? { ...media, alt_text: altText.trim() || null }
+          : media,
+      ),
+    }));
+  }
+
+  function removeMedia(mediaId: string): void {
+    updateActiveCloze((cloze) => ({
+      ...cloze,
+      media: cloze.media.filter((media) => media.id !== mediaId),
+    }));
+  }
+
+  function mediaRoleLabel(role: MediaRoleDto): string {
+    if (role === "prompt_audio") return "Prompt audio";
+    if (role === "answer_audio") return "Answer audio";
+    return "Reveal image";
   }
 
   async function removeActiveCloze(): Promise<void> {
@@ -770,13 +820,76 @@
         </SurfaceCard>
         <SurfaceCard padding="compact" tone="quiet">
           <div class="stack compact-stack">
-            <span class="eyebrow">Optional media hooks</span>
-            <MediaFrame kind="audio" label="Prompt audio" />
-            <MediaFrame kind="image" label="Reveal image" />
-            <p class="default-note">
-              Media references attach to the active cloze without changing its
-              identity.
-            </p>
+            <span class="eyebrow">Local media</span>
+            {#if activeCloze()}
+              {@const mediaCloze = activeCloze()!}
+              <div class="media-actions">
+                <Button
+                  variant="secondary"
+                  size="small"
+                  disabled={busy}
+                  onclick={() => attachMedia("prompt_audio")}
+                  >Add prompt audio</Button
+                >
+                <Button
+                  variant="secondary"
+                  size="small"
+                  disabled={busy}
+                  onclick={() => attachMedia("answer_audio")}
+                  >Add answer audio</Button
+                >
+                <Button
+                  variant="secondary"
+                  size="small"
+                  disabled={busy}
+                  onclick={() => attachMedia("reveal_image")}
+                  >Add reveal image</Button
+                >
+              </div>
+              {#each mediaCloze.media as media (media.id)}
+                <div class="media-attachment">
+                  <MediaFrame
+                    kind={media.kind}
+                    label={media.original_file_name ??
+                      mediaRoleLabel(media.role)}
+                    role={media.role}
+                    availability={media.availability}
+                    source={mediaAssetSource(media.asset_path)}
+                    mediaType={media.media_type}
+                    altText={media.alt_text}
+                    width={media.width}
+                    height={media.height}
+                  />
+                  <TextInput
+                    aria-label={`${mediaRoleLabel(media.role)} alternative text`}
+                    placeholder={media.kind === "image"
+                      ? "Describe this image"
+                      : "Optional audio label"}
+                    value={media.alt_text ?? ""}
+                    oninput={(event) =>
+                      updateMediaAlt(media.id, event.currentTarget.value)}
+                  />
+                  <Button
+                    variant="danger"
+                    size="small"
+                    disabled={busy}
+                    onclick={() => removeMedia(media.id)}
+                    >Remove {mediaRoleLabel(media.role).toLowerCase()}</Button
+                  >
+                </div>
+              {:else}
+                <MediaFrame kind="audio" label="Prompt or answer audio" />
+                <MediaFrame kind="image" label="Reveal image" />
+              {/each}
+              <p class="default-note">
+                Files stay on this device in a checksum-addressed store.
+                Identical files share one object.
+              </p>
+            {:else}
+              <p class="default-note">
+                Select or create a cloze before attaching media.
+              </p>
+            {/if}
           </div>
         </SurfaceCard>
       </aside>
@@ -868,6 +981,19 @@
 
   .source-heading kbd {
     white-space: nowrap;
+  }
+
+  .media-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .media-attachment {
+    display: grid;
+    gap: var(--space-2);
+    padding-bottom: var(--space-3);
+    border-bottom: var(--border-width) solid var(--color-border);
   }
 
   .semantic-source {

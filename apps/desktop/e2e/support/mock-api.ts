@@ -97,6 +97,34 @@ export async function installMockApi(page: Page): Promise<void> {
       ]);
     };
     const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    const mediaFixture = (
+      role: "prompt_audio" | "answer_audio" | "reveal_image",
+      availability: "ready" | "missing" = "ready",
+    ) => {
+      const image = role === "reveal_image";
+      return {
+        id: `${role}-e2e`,
+        content_hash: `sha256:${role.padEnd(64, "0").slice(0, 64)}`,
+        kind: image ? "image" : "audio",
+        role,
+        media_type: image ? "image/png" : "audio/wav",
+        byte_size: 68,
+        original_file_name: image ? "library.png" : `${role}.wav`,
+        alt_text: image ? "A quiet library reading room" : null,
+        width: image ? 1 : null,
+        height: image ? 1 : null,
+        duration_ms: image ? null : 1000,
+        language_tag: null,
+        direction: "auto",
+        asset_path:
+          availability === "ready"
+            ? image
+              ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+              : "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
+            : null,
+        availability,
+      };
+    };
     let schedulerSettings = {
       deck_id: "default-deck",
       intensity: "balanced",
@@ -114,9 +142,20 @@ export async function installMockApi(page: Page): Promise<void> {
     let failedCheck = false;
     let failedGrade = false;
 
+    window.__MEIKI_TEST_PICK_FILE__ = async (role) => `/mock/${role}`;
+    HTMLMediaElement.prototype.play = async function () {
+      localStorage.setItem(
+        "meiki-e2e-media-play-count",
+        String(
+          Number(localStorage.getItem("meiki-e2e-media-play-count") ?? "0") + 1,
+        ),
+      );
+    };
+
     window.__MEIKI_TEST_INVOKE__ = async (command, args) => {
       const state = readState();
       const fixtureName = new URLSearchParams(location.search).get("fixture");
+      const requestedMedia = new URLSearchParams(location.search).get("media");
       const fixture = selectedFixture();
       if (command === "initialize_collection" || command === "get_study_card") {
         if (fixtureName === "error") {
@@ -136,7 +175,14 @@ export async function installMockApi(page: Page): Promise<void> {
           completed_reviews: state.completedReviews,
           suspended: state.suspended ?? false,
           hint: null,
-          prompt_media: [],
+          prompt_media: requestedMedia
+            ? [
+                mediaFixture(
+                  "prompt_audio",
+                  requestedMedia === "missing" ? "missing" : "ready",
+                ),
+              ]
+            : [],
         };
       }
       if (command === "check_answer") {
@@ -188,7 +234,12 @@ export async function installMockApi(page: Page): Promise<void> {
           ],
           annotations: [],
           explanation: null,
-          answer_media: [],
+          answer_media:
+            requestedMedia === "ready"
+              ? [mediaFixture("answer_audio"), mediaFixture("reveal_image")]
+              : requestedMedia === "missing"
+                ? [mediaFixture("reveal_image", "missing")]
+                : [],
         };
       }
       if (command === "grade_review") {
@@ -306,6 +357,7 @@ export async function installMockApi(page: Page): Promise<void> {
               matching_policy: null,
               annotations: [],
               explanation_markdown: "",
+              media: [],
             },
           ],
           active_cloze_id: "sample-cloze",
@@ -359,6 +411,19 @@ export async function installMockApi(page: Page): Promise<void> {
       }
       if (command === "new_authoring_draft") {
         return newDraft();
+      }
+      if (command === "import_media") {
+        const request = (
+          args as {
+            request: {
+              role: "prompt_audio" | "answer_audio" | "reveal_image";
+            };
+          }
+        ).request;
+        return {
+          ...mediaFixture(request.role),
+          id: authoringId("media"),
+        };
       }
       if (command === "make_cloze") {
         const request = (
@@ -430,6 +495,7 @@ export async function installMockApi(page: Page): Promise<void> {
           matching_policy: null,
           annotations: [],
           explanation_markdown: "",
+          media: [],
         });
         draft.active_cloze_id = clozeId;
         return draft;

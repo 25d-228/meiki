@@ -112,14 +112,26 @@ pub enum MediaKind {
     Image,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaRole {
+    PromptAudio,
+    AnswerAudio,
+    RevealImage,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaReference {
     pub id: String,
     pub content_hash: String,
     pub kind: MediaKind,
+    pub role: MediaRole,
     pub media_type: String,
+    pub byte_size: u64,
     pub original_file_name: Option<String>,
     pub alt_text: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration_ms: Option<u64>,
     pub language_tag: Option<String>,
     pub direction: Direction,
     pub created_at_ms: i64,

@@ -75,6 +75,38 @@ test("authors multiple stable Japanese clozes, previews each, and saves", async 
   ).toBeVisible();
 });
 
+test("attaches role-specific local media, labels it, and saves references", async ({
+  page,
+}) => {
+  const source = await sourceTextarea(page);
+  await source.fill("図書館");
+  await selectRange(page, 0, 3);
+  await page.getByRole("button", { name: "Make cloze" }).click();
+
+  await page.getByRole("button", { name: "Add prompt audio" }).click();
+  await page.getByRole("button", { name: "Add answer audio" }).click();
+  await page.getByRole("button", { name: "Add reveal image" }).click();
+  await expect(page.locator("audio")).toHaveCount(2);
+  await expect(page.locator("img")).toHaveCount(1);
+  await page
+    .getByLabel("Reveal image alternative text")
+    .fill("Library shelves with study tables");
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const media = await page.evaluate(() => {
+    const saved = JSON.parse(
+      localStorage.getItem("meiki-e2e-authoring") ?? "{}",
+    );
+    return saved.clozes[0].media;
+  });
+  expect(media.map((item: { role: string }) => item.role)).toEqual([
+    "prompt_audio",
+    "answer_audio",
+    "reveal_image",
+  ]);
+  expect(media[2].alt_text).toBe("Library shelves with study tables");
+});
+
 const multilingualCases = [
   { text: "أنا أقرأ كتابًا", answer: "كتابًا", direction: "rtl" },
   { text: "मैं पुस्तक पढ़ता हूँ", answer: "पुस्तक", direction: "ltr" },

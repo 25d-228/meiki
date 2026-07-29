@@ -1,4 +1,5 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import type { CheckAnswerRequest } from "./generated/CheckAnswerRequest";
 import type { AuthoringDraftDto } from "./generated/AuthoringDraftDto";
@@ -17,6 +18,10 @@ import type { RebuildSchedulerResultDto } from "./generated/RebuildSchedulerResu
 import type { SchedulerSettingsDto } from "./generated/SchedulerSettingsDto";
 import type { SchedulerDiagnosticsExportDto } from "./generated/SchedulerDiagnosticsExportDto";
 import type { UpdateSchedulerSettingsRequest } from "./generated/UpdateSchedulerSettingsRequest";
+import type { DirectionDto } from "./generated/DirectionDto";
+import type { ImportMediaRequest } from "./generated/ImportMediaRequest";
+import type { MediaRoleDto } from "./generated/MediaRoleDto";
+import type { StudyMediaDto } from "./generated/StudyMediaDto";
 
 function invoke<T>(
   command: string,
@@ -87,6 +92,43 @@ export const api = {
 
   newAuthoringDraft(): Promise<AuthoringDraftDto> {
     return invoke("new_authoring_draft");
+  },
+
+  async pickMediaFile(role: MediaRoleDto): Promise<string | null> {
+    const testPick = window.__MEIKI_TEST_PICK_FILE__;
+    if (testPick) return testPick(role);
+    const audio = role !== "reveal_image";
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [
+        audio
+          ? {
+              name: "Audio",
+              extensions: ["mp3", "m4a", "opus", "ogg", "flac", "wav", "aac"],
+            }
+          : {
+              name: "Images",
+              extensions: ["png", "jpg", "jpeg", "gif", "webp"],
+            },
+      ],
+    });
+    return typeof selected === "string" ? selected : null;
+  },
+
+  importMedia(
+    path: string,
+    role: MediaRoleDto,
+    languageTag: string | null,
+    direction: DirectionDto,
+  ): Promise<StudyMediaDto> {
+    const request: ImportMediaRequest = {
+      path,
+      role,
+      language_tag: languageTag,
+      direction,
+    };
+    return invoke("import_media", { request });
   },
 
   makeCloze(request: MakeClozeRequest): Promise<AuthoringDraftDto> {

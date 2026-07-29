@@ -128,12 +128,18 @@ test("scheduler controls save, personalize, and rebuild explicitly", async ({
     .getByRole("group", { name: "Study intensity" })
     .getByRole("button", { name: "Light", exact: true })
     .click();
+  await page.getByLabel("Enable").check();
   await page.getByLabel("New cards per day").fill("12");
   await page.getByText("Advanced", { exact: true }).click();
   await expect(page.getByText("fsrs-7", { exact: true })).toBeVisible();
   await page.getByLabel("Target retention (basis points)").fill("8750");
   await page.getByRole("button", { name: "Save preferences" }).click();
   await expect(page.getByText("Scheduling preferences saved.")).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("meiki-autoplay-prompt-audio"),
+    ),
+  ).toBe("true");
 
   await page.getByRole("button", { name: "Personalize now" }).click();
   await expect(page.getByLabel("Scheduler diagnostics")).toContainText(

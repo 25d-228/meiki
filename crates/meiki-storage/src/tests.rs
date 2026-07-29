@@ -1,16 +1,18 @@
 use meiki_domain::{
     Annotation, Card, Cloze, ComparisonResult, Deck, Direction, Grade, LocalizedText,
-    MatchingPolicy, MediaKind, MediaReference, ReviewEvent, ReviewEventKind, ScheduleState,
-    SchedulerParameterSet, SegmentContent, SemanticSegment, SourceItem, StudySettingsOverride, Tag,
+    MatchingPolicy, MediaKind, MediaReference, MediaRole, ReviewEvent, ReviewEventKind,
+    ScheduleState, SchedulerParameterSet, SegmentContent, SemanticSegment, SourceItem,
+    StudySettingsOverride, Tag,
 };
 use rusqlite::Connection;
 use tempfile::tempdir;
 
 use super::{
-    AnnotationRepository, CardRepository, ClozeRepository, DEFAULT_DECK_ID, DeckRepository,
-    FOUNDATION_MIGRATION, MediaRepository, SAMPLE_CARD_ID, SchedulerParameterSetRepository,
-    SchedulerProfileRepository, SourceNoteRepository, Storage, StorageError, StoredSourceNote,
-    TagRepository,
+    AUTHORING_DEFAULTS_MIGRATION, AnnotationRepository, CORE_MODEL_MIGRATION, CardRepository,
+    ClozeRepository, DEFAULT_DECK_ID, DeckRepository, FOUNDATION_MIGRATION,
+    FSRS7_SCHEDULER_MIGRATION, MediaRepository, SAMPLE_CARD_ID, STUDY_SESSION_MIGRATION,
+    SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository, Storage,
+    StorageError, StoredSourceNote, TagRepository,
 };
 
 fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent {
@@ -160,13 +162,21 @@ fn media(id: &str, kind: MediaKind) -> MediaReference {
         id: id.into(),
         content_hash: format!("sha256-{id}"),
         kind,
+        role: match kind {
+            MediaKind::Audio => MediaRole::AnswerAudio,
+            MediaKind::Image => MediaRole::RevealImage,
+        },
         media_type: match kind {
             MediaKind::Audio => "audio/ogg",
             MediaKind::Image => "image/png",
         }
         .into(),
+        byte_size: 1_024,
         original_file_name: Some("کتاب-図書館.png".into()),
         alt_text: Some("کتابと図書館 👩🏽‍💻".into()),
+        width: (kind == MediaKind::Image).then_some(640),
+        height: (kind == MediaKind::Image).then_some(480),
+        duration_ms: (kind == MediaKind::Audio).then_some(2_500),
         language_tag: None,
         direction: Direction::Auto,
         created_at_ms: 1_000,
@@ -528,7 +538,7 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 5);
+    assert_eq!(storage.schema_version().unwrap(), 6);
     let restored = storage.load_study_card("legacy-card").unwrap();
     assert!(!restored.card.suspended);
     assert_eq!(restored.source_item.deck_id, DEFAULT_DECK_ID);
@@ -548,6 +558,47 @@ fn version_one_collection_migrates_to_the_core_model() {
         storage.rebuild_schedule_projection("legacy-card").unwrap(),
         before
     );
+}
+
+#[test]
+fn version_five_media_migrates_to_roles_and_technical_metadata() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("legacy-media.db");
+    let connection = Connection::open(&path).unwrap();
+    connection.execute_batch(FOUNDATION_MIGRATION).unwrap();
+    connection.execute_batch(CORE_MODEL_MIGRATION).unwrap();
+    connection
+        .execute_batch(AUTHORING_DEFAULTS_MIGRATION)
+        .unwrap();
+    connection.execute_batch(FSRS7_SCHEDULER_MIGRATION).unwrap();
+    connection.execute_batch(STUDY_SESSION_MIGRATION).unwrap();
+    connection
+        .execute(
+            "INSERT INTO media_references(
+                id, content_hash, kind, media_type, direction, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, 'auto', 1000)",
+            rusqlite::params!["legacy-image", "sha256:legacy-image", "image", "image/png"],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO media_references(
+                id, content_hash, kind, media_type, direction, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, 'auto', 1000)",
+            rusqlite::params!["legacy-audio", "sha256:legacy-audio", "audio", "audio/ogg"],
+        )
+        .unwrap();
+    drop(connection);
+
+    let storage = Storage::open(&path).unwrap();
+    assert_eq!(storage.schema_version().unwrap(), 6);
+    let image = storage.get_media_reference("legacy-image").unwrap();
+    assert_eq!(image.role, MediaRole::RevealImage);
+    assert_eq!(image.byte_size, 0);
+    assert_eq!(image.width, None);
+    let audio = storage.get_media_reference("legacy-audio").unwrap();
+    assert_eq!(audio.role, MediaRole::AnswerAudio);
+    assert_eq!(audio.duration_ms, None);
 }
 
 #[test]
@@ -638,6 +689,42 @@ fn mutable_core_entities_support_create_read_update_delete() {
     storage
         .delete_scheduler_parameter_set(&parameter_set.id)
         .unwrap();
+}
+
+#[test]
+fn media_reference_deletion_requires_unlinking_and_hash_counts_track_deduplication() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.create_deck(&deck("deck-mixed")).unwrap();
+    let mut note = mixed_note();
+    storage.create_source_note(&note).unwrap();
+
+    assert_eq!(storage.media_reference_usage("media-cloze").unwrap(), 1);
+    assert!(matches!(
+        storage.delete_media_reference("media-cloze"),
+        Err(StorageError::MediaInUse { references: 1, .. })
+    ));
+
+    let mut duplicate = media("media-duplicate", MediaKind::Audio);
+    duplicate.content_hash = note.clozes[0].media[0].content_hash.clone();
+    storage.create_media_reference(&duplicate).unwrap();
+    assert_eq!(
+        storage
+            .media_reference_count_for_hash(&duplicate.content_hash)
+            .unwrap(),
+        2
+    );
+    storage.delete_media_reference(&duplicate.id).unwrap();
+    assert_eq!(
+        storage
+            .media_reference_count_for_hash(&duplicate.content_hash)
+            .unwrap(),
+        1
+    );
+
+    note.clozes[0].media.clear();
+    storage.update_source_note(&note).unwrap();
+    assert_eq!(storage.media_reference_usage("media-cloze").unwrap(), 0);
+    storage.delete_media_reference("media-cloze").unwrap();
 }
 
 #[test]

@@ -8,10 +8,11 @@ use std::{
 use chrono::{DateTime, Utc};
 use meiki_domain::{
     Annotation, ComparisonResult, Direction, Grade, LocalizedText, MatchingPolicy, MediaKind,
-    MediaReference, OptimizerStatus, ReviewEvent, ReviewEventKind, SchedulerParameterSet,
-    SchedulerProfile, SegmentContent, SourceItem, StudyIntensity, StudySettings,
-    StudySettingsOverride,
+    MediaReference, MediaRole, OptimizerStatus, ReviewEvent, ReviewEventKind,
+    SchedulerParameterSet, SchedulerProfile, SegmentContent, SourceItem, StudyIntensity,
+    StudySettings, StudySettingsOverride,
 };
+use meiki_media::{DetectedMediaKind, MediaError, MediaStore};
 use meiki_scheduler::{
     ENGINE_VERSION, Fsrs7Engine, MINIMUM_OPTIMIZATION_REVIEWS, OptimizationDiagnostics,
     OptimizationResult, ReviewHistoryEntry, SchedulerConfig, SchedulerEngine, SchedulerError,
@@ -61,6 +62,8 @@ pub enum ApplicationError {
     DiagnosticExport(#[source] std::io::Error),
     #[error("failed to serialize scheduler diagnostics: {0}")]
     DiagnosticSerialization(#[source] serde_json::Error),
+    #[error("media operation failed: {0}")]
+    Media(#[from] MediaError),
 }
 
 #[derive(Debug, Error)]
@@ -139,6 +142,33 @@ pub enum MediaKindDto {
     Image,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum MediaRoleDto {
+    PromptAudio,
+    AnswerAudio,
+    RevealImage,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum MediaAvailabilityDto {
+    Ready,
+    Missing,
+    Corrupt,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct ImportMediaRequest {
+    pub path: String,
+    pub role: MediaRoleDto,
+    pub language_tag: Option<String>,
+    pub direction: DirectionDto,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct LocalizedTextDto {
     pub value: String,
@@ -157,12 +187,22 @@ pub struct StudyAnnotationDto {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct StudyMediaDto {
     pub id: String,
+    pub content_hash: String,
     pub kind: MediaKindDto,
+    pub role: MediaRoleDto,
     pub media_type: String,
+    #[ts(type = "number")]
+    pub byte_size: u64,
     pub original_file_name: Option<String>,
     pub alt_text: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    #[ts(type = "number | null")]
+    pub duration_ms: Option<u64>,
     pub language_tag: Option<String>,
     pub direction: DirectionDto,
+    pub asset_path: Option<String>,
+    pub availability: MediaAvailabilityDto,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -321,6 +361,48 @@ impl ApplicationService {
         }
     }
 
+    /// Imports one local audio or image into the collection's content-addressed store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path cannot be read, the file signature is
+    /// unsupported, or the requested role does not match the detected media kind.
+    pub fn import_media(
+        &self,
+        request: &ImportMediaRequest,
+    ) -> Result<StudyMediaDto, ApplicationError> {
+        let store = self.media_store();
+        let imported = store.import_file(Path::new(&request.path))?;
+        let kind = match imported.kind {
+            DetectedMediaKind::Audio => MediaKind::Audio,
+            DetectedMediaKind::Image => MediaKind::Image,
+        };
+        let role: MediaRole = request.role.into();
+        if let Err(error) = ensure_role_matches_kind(role, kind) {
+            if !imported.deduplicated {
+                store.remove(&imported.content_hash)?;
+            }
+            return Err(error);
+        }
+        let media = MediaReference {
+            id: Uuid::new_v4().to_string(),
+            content_hash: imported.content_hash,
+            kind,
+            role,
+            media_type: imported.media_type,
+            byte_size: imported.byte_size,
+            original_file_name: Some(imported.original_file_name),
+            alt_text: None,
+            width: imported.width,
+            height: imported.height,
+            duration_ms: imported.duration_ms,
+            language_tag: request.language_tag.clone(),
+            direction: request.direction.into(),
+            created_at_ms: Utc::now().timestamp_millis(),
+        };
+        Ok(self.study_media_dto(&media))
+    }
+
     /// Ensures the walking-skeleton collection exists and returns its card.
     ///
     /// # Errors
@@ -330,7 +412,7 @@ impl ApplicationService {
     pub fn initialize_collection(&self) -> Result<StudyCardDto, ApplicationError> {
         let mut storage = self.open_storage()?;
         storage.seed_walking_skeleton(Utc::now().timestamp_millis())?;
-        study_card_dto(&storage, SAMPLE_CARD_ID)
+        self.study_card_dto(&storage, SAMPLE_CARD_ID)
     }
 
     /// Restores a study card from the collection.
@@ -340,7 +422,7 @@ impl ApplicationService {
     /// Returns [`ApplicationError`] when the card cannot be loaded.
     pub fn get_study_card(&self, card_id: &str) -> Result<StudyCardDto, ApplicationError> {
         let storage = self.open_storage()?;
-        study_card_dto(&storage, card_id)
+        self.study_card_dto(&storage, card_id)
     }
 
     /// Compares a raw answer and returns the reveal without mutating history.
@@ -412,7 +494,16 @@ impl ApplicationService {
                 .as_ref()
                 .or(stored.source_item.explanation.as_ref())
                 .map(localized_text_dto),
-            answer_media: study_media(&stored.cloze.media),
+            answer_media: self
+                .study_media(&stored.cloze.media)
+                .into_iter()
+                .filter(|media| {
+                    matches!(
+                        media.role,
+                        MediaRoleDto::AnswerAudio | MediaRoleDto::RevealImage
+                    )
+                })
+                .collect(),
         })
     }
 
@@ -526,7 +617,7 @@ impl ApplicationService {
         card.suspended = true;
         card.updated_at_ms = Utc::now().timestamp_millis();
         storage.update_card(&card)?;
-        study_card_dto(&storage, &request.card_id)
+        self.study_card_dto(&storage, &request.card_id)
     }
 
     /// Compensates the latest committed review and returns the restored queue
@@ -744,6 +835,95 @@ impl ApplicationService {
         }
         Ok(Storage::open(&self.collection_path)?)
     }
+
+    fn media_store(&self) -> MediaStore {
+        MediaStore::new(self.collection_path.with_extension("media"))
+    }
+
+    fn study_card_dto(
+        &self,
+        storage: &Storage,
+        card_id: &str,
+    ) -> Result<StudyCardDto, ApplicationError> {
+        let stored = storage.load_study_card(card_id)?;
+        let deck = storage.get_deck(&stored.source_item.deck_id)?;
+        let completed_reviews = storage.review_count(card_id)?;
+        Ok(StudyCardDto {
+            card_id: stored.card.id,
+            card_content_version: desktop_u32(stored.card.content_version, "card content version")?,
+            schedule_version: desktop_u32(stored.schedule.version, "schedule version")?,
+            prompt: render_source(&stored.source_item, Some(&stored.cloze.id)),
+            language_tag: stored
+                .cloze
+                .language_tag
+                .or(stored.source_item.language_tag)
+                .or(deck.language_tag),
+            direction: resolve_direction(
+                stored.cloze.direction,
+                stored.source_item.direction,
+                deck.direction,
+            )
+            .into(),
+            due_at: timestamp_string(stored.schedule.due_at_ms)?,
+            completed_reviews: desktop_u32(completed_reviews, "completed review count")?,
+            suspended: stored.card.suspended,
+            hint: stored.cloze.hint.as_ref().map(localized_text_dto),
+            prompt_media: self.study_media(
+                &stored
+                    .source_item
+                    .media
+                    .iter()
+                    .chain(&stored.cloze.media)
+                    .filter(|media| media.role == MediaRole::PromptAudio)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
+        })
+    }
+
+    fn study_media(&self, media: &[MediaReference]) -> Vec<StudyMediaDto> {
+        media
+            .iter()
+            .map(|media| self.study_media_dto(media))
+            .collect()
+    }
+
+    fn study_media_dto(&self, media: &MediaReference) -> StudyMediaDto {
+        let role_is_valid = ensure_role_matches_kind(media.role, media.kind).is_ok();
+        let media_type_is_valid = media_type_matches_kind(&media.media_type, media.kind);
+        let (asset_path, availability) = if !role_is_valid || !media_type_is_valid {
+            (None, MediaAvailabilityDto::Unsupported)
+        } else {
+            match self.media_store().resolve(&media.content_hash) {
+                Ok(path) => (
+                    Some(path.to_string_lossy().into_owned()),
+                    MediaAvailabilityDto::Ready,
+                ),
+                Err(MediaError::MissingObject(_)) => (None, MediaAvailabilityDto::Missing),
+                Err(MediaError::InvalidHash(_) | MediaError::UnsupportedFormat) => {
+                    (None, MediaAvailabilityDto::Unsupported)
+                }
+                Err(_) => (None, MediaAvailabilityDto::Corrupt),
+            }
+        };
+        StudyMediaDto {
+            id: media.id.clone(),
+            content_hash: media.content_hash.clone(),
+            kind: media.kind.into(),
+            role: media.role.into(),
+            media_type: media.media_type.clone(),
+            byte_size: media.byte_size,
+            original_file_name: media.original_file_name.clone(),
+            alt_text: media.alt_text.clone(),
+            width: media.width,
+            height: media.height,
+            duration_ms: media.duration_ms,
+            language_tag: media.language_tag.clone(),
+            direction: media.direction.into(),
+            asset_path,
+            availability,
+        }
+    }
 }
 
 fn scheduler_for_card(
@@ -947,37 +1127,6 @@ const fn optimizer_status_name(status: OptimizerStatusDto) -> &'static str {
     }
 }
 
-fn study_card_dto(storage: &Storage, card_id: &str) -> Result<StudyCardDto, ApplicationError> {
-    let stored = storage.load_study_card(card_id)?;
-    let deck = storage.get_deck(&stored.source_item.deck_id)?;
-    let completed_reviews = storage.review_count(card_id)?;
-    Ok(StudyCardDto {
-        card_id: stored.card.id,
-        card_content_version: desktop_u32(stored.card.content_version, "card content version")?,
-        schedule_version: desktop_u32(stored.schedule.version, "schedule version")?,
-        prompt: render_source(&stored.source_item, Some(&stored.cloze.id)),
-        language_tag: stored
-            .cloze
-            .language_tag
-            .or(stored.source_item.language_tag)
-            .or(deck.language_tag),
-        direction: resolve_direction(
-            stored.cloze.direction,
-            stored.source_item.direction,
-            deck.direction,
-        )
-        .into(),
-        due_at: timestamp_string(stored.schedule.due_at_ms)?,
-        completed_reviews: desktop_u32(completed_reviews, "completed review count")?,
-        suspended: stored.card.suspended,
-        hint: stored.cloze.hint.as_ref().map(localized_text_dto),
-        prompt_media: study_media(&stored.source_item.media)
-            .into_iter()
-            .filter(|media| media.kind == MediaKindDto::Audio)
-            .collect(),
-    })
-}
-
 fn grade_review_result(event: &ReviewEvent) -> Result<GradeReviewResultDto, ApplicationError> {
     Ok(GradeReviewResultDto {
         review_event_id: event.id.clone(),
@@ -1097,19 +1246,33 @@ fn study_annotations(source: &[Annotation], cloze: &[Annotation]) -> Vec<StudyAn
         .collect()
 }
 
-fn study_media(media: &[MediaReference]) -> Vec<StudyMediaDto> {
-    media
-        .iter()
-        .map(|media| StudyMediaDto {
-            id: media.id.clone(),
-            kind: media.kind.into(),
-            media_type: media.media_type.clone(),
-            original_file_name: media.original_file_name.clone(),
-            alt_text: media.alt_text.clone(),
-            language_tag: media.language_tag.clone(),
-            direction: media.direction.into(),
-        })
-        .collect()
+fn ensure_role_matches_kind(role: MediaRole, kind: MediaKind) -> Result<(), ApplicationError> {
+    if matches!(
+        (role, kind),
+        (
+            MediaRole::PromptAudio | MediaRole::AnswerAudio,
+            MediaKind::Audio
+        ) | (MediaRole::RevealImage, MediaKind::Image)
+    ) {
+        Ok(())
+    } else {
+        Err(ApplicationError::InvalidAuthoring(
+            "the selected media file does not match its prompt, answer, or reveal role".to_owned(),
+        ))
+    }
+}
+
+fn media_type_matches_kind(media_type: &str, kind: MediaKind) -> bool {
+    matches!(
+        (kind, media_type),
+        (
+            MediaKind::Audio,
+            "audio/mpeg" | "audio/mp4" | "audio/ogg" | "audio/flac" | "audio/wav" | "audio/aac"
+        ) | (
+            MediaKind::Image,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+        )
+    )
 }
 
 const fn suggested_grade(comparison: ComparisonResult) -> Grade {
@@ -1157,6 +1320,35 @@ impl From<MediaKind> for MediaKindDto {
         match value {
             MediaKind::Audio => Self::Audio,
             MediaKind::Image => Self::Image,
+        }
+    }
+}
+
+impl From<MediaKindDto> for MediaKind {
+    fn from(value: MediaKindDto) -> Self {
+        match value {
+            MediaKindDto::Audio => Self::Audio,
+            MediaKindDto::Image => Self::Image,
+        }
+    }
+}
+
+impl From<MediaRole> for MediaRoleDto {
+    fn from(value: MediaRole) -> Self {
+        match value {
+            MediaRole::PromptAudio => Self::PromptAudio,
+            MediaRole::AnswerAudio => Self::AnswerAudio,
+            MediaRole::RevealImage => Self::RevealImage,
+        }
+    }
+}
+
+impl From<MediaRoleDto> for MediaRole {
+    fn from(value: MediaRoleDto) -> Self {
+        match value {
+            MediaRoleDto::PromptAudio => Self::PromptAudio,
+            MediaRoleDto::AnswerAudio => Self::AnswerAudio,
+            MediaRoleDto::RevealImage => Self::RevealImage,
         }
     }
 }
@@ -1250,6 +1442,9 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     OptimizerStatusDto::export_all_to(output)?;
     TextDiffKindDto::export_all_to(output)?;
     MediaKindDto::export_all_to(output)?;
+    MediaRoleDto::export_all_to(output)?;
+    MediaAvailabilityDto::export_all_to(output)?;
+    ImportMediaRequest::export_all_to(output)?;
     LocalizedTextDto::export_all_to(output)?;
     StudyAnnotationDto::export_all_to(output)?;
     StudyMediaDto::export_all_to(output)?;

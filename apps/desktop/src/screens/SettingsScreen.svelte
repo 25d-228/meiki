@@ -16,6 +16,7 @@
   };
 
   const deckId = "default-deck";
+  const autoplayKey = "meiki-autoplay-prompt-audio";
   const retentionPreset: Record<StudyIntensityDto, number> = {
     light: 8500,
     balanced: 9000,
@@ -30,11 +31,13 @@
   let dailyBudget = $state("");
   let maximumIntervalDays = $state(36500);
   let dayBoundaryMinutes = $state(240);
+  let autoplayPromptAudio = $state(false);
   let busy = $state(false);
   let notice = $state("");
   let error = $state("");
 
   onMount(() => {
+    autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
     void loadSettings();
   });
 
@@ -82,6 +85,7 @@
           day_boundary_minutes: dayBoundaryMinutes,
         }),
       );
+      localStorage.setItem(autoplayKey, String(autoplayPromptAudio));
       notice = "Scheduling preferences saved.";
     } catch (cause) {
       error = message(cause);
@@ -237,6 +241,25 @@
           {/each}
         </div>
       </Field>
+
+      <div class="setting-row">
+        <div>
+          <strong>Prompt audio autoplay</strong>
+          <p>
+            Off by default. When enabled, only the first prompt audio clip may
+            start automatically.
+          </p>
+        </div>
+        <label class="toggle">
+          <input
+            id="autoplay-prompt-audio"
+            type="checkbox"
+            bind:checked={autoplayPromptAudio}
+            disabled={busy}
+          />
+          <span>Enable</span>
+        </label>
+      </div>
 
       <div class="control-grid">
         <Field
@@ -404,7 +427,7 @@
     gap: var(--space-5);
   }
 
-  input {
+  input:not([type="checkbox"]) {
     width: 100%;
     min-height: var(--control-height);
     padding-inline: var(--space-3);
@@ -420,6 +443,21 @@
     gap: var(--space-6);
     align-items: center;
     justify-content: space-between;
+  }
+
+  .toggle {
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: var(--space-2);
+    align-items: center;
+    font-size: var(--text-sm);
+    font-weight: 650;
+  }
+
+  .toggle input {
+    width: 1.1rem;
+    height: 1.1rem;
+    accent-color: var(--color-accent);
   }
 
   strong,
