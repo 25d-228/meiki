@@ -1,0 +1,22 @@
+[package]
+name = "meiki-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "meiki_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+ico.workspace = true
+tauri-build.workspace = true
+
+[dependencies]
+meiki-application = { path = "../../../crates/meiki-application" }
+tauri.workspace = true
+
+[lints]
+workspace = true

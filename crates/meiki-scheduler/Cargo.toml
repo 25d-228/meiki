@@ -1,0 +1,13 @@
+[package]
+name = "meiki-scheduler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+meiki-domain = { path = "../meiki-domain" }
+
+[lints]
+workspace = true
