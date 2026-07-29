@@ -15,6 +15,20 @@ export async function installMockApi(page: Page): Promise<void> {
         languageTag: "ja",
         direction: "auto",
       },
+      devanagari: {
+        prompt: "मैं […] पढ़ता हूँ",
+        fullSource: "मैं पुस्तक पढ़ता हूँ",
+        answer: "पुस्तक",
+        languageTag: "hi",
+        direction: "ltr",
+      },
+      emoji: {
+        prompt: "Family: […]",
+        fullSource: "Family: 👨‍👩‍👧‍👦",
+        answer: "👨‍👩‍👧‍👦",
+        languageTag: null,
+        direction: "ltr",
+      },
       ltr: {
         prompt: "Le dimanche, je vais à […]",
         fullSource: "Le dimanche, je vais à la bibliothèque",
@@ -71,8 +85,8 @@ export async function installMockApi(page: Page): Promise<void> {
       }
       if (command === "check_answer") {
         const request = (args as { request: { raw_response: string } }).request;
-        const exact =
-          request.raw_response.trim().normalize("NFC") === fixture.answer;
+        const normalizedResponse = request.raw_response.trim().normalize("NFC");
+        const exact = normalizedResponse === fixture.answer;
         return {
           card_id: "sample-card",
           card_content_version: 0,
@@ -80,7 +94,14 @@ export async function installMockApi(page: Page): Promise<void> {
           full_source: fixture.fullSource,
           expected_answer: fixture.answer,
           raw_response: request.raw_response,
+          normalized_response: normalizedResponse,
           comparison: exact ? "exact" : "incorrect",
+          difference: exact
+            ? [{ kind: "equal", text: fixture.answer }]
+            : [
+                { kind: "delete", text: fixture.answer },
+                { kind: "insert", text: normalizedResponse },
+              ],
           suggested_grade: exact ? "good" : "again",
         };
       }

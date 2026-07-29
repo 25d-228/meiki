@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use meiki_domain::{ComparisonResult, Direction, Grade, ReviewEvent, SegmentContent, SourceItem};
 use meiki_scheduler::schedule_review;
 use meiki_storage::{SAMPLE_CARD_ID, Storage, StorageError, StoredStudyCard};
-use meiki_text::compare_answer;
+use meiki_text::{DiffKind, DiffSegment, compare_answer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
@@ -67,6 +67,21 @@ pub enum GradeDto {
     Easy,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum TextDiffKindDto {
+    Equal,
+    Delete,
+    Insert,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct TextDiffSegmentDto {
+    pub kind: TextDiffKindDto,
+    pub text: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct StudyCardDto {
     pub card_id: String,
@@ -95,7 +110,9 @@ pub struct RevealDto {
     pub full_source: String,
     pub expected_answer: String,
     pub raw_response: String,
+    pub normalized_response: String,
     pub comparison: ComparisonResultDto,
+    pub difference: Vec<TextDiffSegmentDto>,
     pub suggested_grade: GradeDto,
 }
 
@@ -182,7 +199,9 @@ impl ApplicationService {
             full_source: render_source(&stored.source_item, None),
             expected_answer: stored.cloze.answer,
             raw_response: request.raw_response.clone(),
+            normalized_response: comparison.normalized_response,
             comparison: comparison.result.into(),
+            difference: comparison.difference.into_iter().map(Into::into).collect(),
             suggested_grade: suggested_grade.into(),
         })
     }
@@ -360,6 +379,25 @@ impl From<GradeDto> for Grade {
     }
 }
 
+impl From<DiffKind> for TextDiffKindDto {
+    fn from(value: DiffKind) -> Self {
+        match value {
+            DiffKind::Equal => Self::Equal,
+            DiffKind::Delete => Self::Delete,
+            DiffKind::Insert => Self::Insert,
+        }
+    }
+}
+
+impl From<DiffSegment> for TextDiffSegmentDto {
+    fn from(value: DiffSegment) -> Self {
+        Self {
+            kind: value.kind.into(),
+            text: value.text,
+        }
+    }
+}
+
 /// Generates TypeScript files for every desktop DTO.
 ///
 /// # Errors
@@ -371,6 +409,8 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     DirectionDto::export_all_to(output)?;
     ComparisonResultDto::export_all_to(output)?;
     GradeDto::export_all_to(output)?;
+    TextDiffKindDto::export_all_to(output)?;
+    TextDiffSegmentDto::export_all_to(output)?;
     StudyCardDto::export_all_to(output)?;
     CheckAnswerRequest::export_all_to(output)?;
     RevealDto::export_all_to(output)?;
@@ -405,6 +445,9 @@ mod tests {
             .unwrap();
         assert_eq!(reveal.comparison, ComparisonResultDto::Exact);
         assert_eq!(reveal.suggested_grade, GradeDto::Good);
+        assert_eq!(reveal.raw_response, " 行きます ");
+        assert_eq!(reveal.normalized_response, "行きます");
+        assert_eq!(reveal.difference.len(), 1);
 
         let result = service
             .grade_review(&GradeReviewRequest {

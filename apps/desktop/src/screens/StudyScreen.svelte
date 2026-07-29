@@ -235,6 +235,30 @@
                 >
               </div>
             </div>
+            <div
+              class="answer-difference"
+              aria-label={messages.answerDifference}
+              data-testid="answer-difference"
+            >
+              <span class="eyebrow">{messages.answerDifference}</span>
+              <p class="content-text" dir="auto">
+                {#each reveal.difference as segment, index (`${segment.kind}-${index}`)}
+                  {#if segment.kind === "delete"}
+                    <del>{segment.text}</del>
+                  {:else if segment.kind === "insert"}
+                    <ins>{segment.text}</ins>
+                  {:else}
+                    <span>{segment.text}</span>
+                  {/if}
+                {/each}
+              </p>
+              {#if reveal.normalized_response !== reveal.raw_response}
+                <small>
+                  {messages.comparedAs}:
+                  <bdi>{reveal.normalized_response || "—"}</bdi>
+                </small>
+              {/if}
+            </div>
             <span
               class:correct={reveal.comparison === "exact" ||
                 reveal.comparison === "accepted_variant"}
@@ -326,6 +350,41 @@
     display: block;
     overflow-wrap: anywhere;
     font-size: var(--text-lg);
+  }
+
+  .answer-difference {
+    display: grid;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
+  }
+
+  .answer-difference p {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-size: var(--text-lg);
+    line-height: 1.7;
+  }
+
+  .answer-difference del,
+  .answer-difference ins {
+    padding: 0.08em 0.18em;
+    border-radius: var(--radius-xs);
+    text-decoration-thickness: 0.08em;
+  }
+
+  .answer-difference del {
+    color: var(--color-danger);
+    background: var(--color-danger-soft);
+  }
+
+  .answer-difference ins {
+    color: var(--color-success);
+    background: var(--color-success-soft);
+    text-decoration: none;
+  }
+
+  .answer-difference small {
+    color: var(--color-text-muted);
   }
 
   .result-pill {

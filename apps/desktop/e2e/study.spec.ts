@@ -37,3 +37,48 @@ test("does not submit Enter during IME composition", async ({ page }) => {
   await page.getByRole("button", { name: /Check answer/ }).click();
   await expect(page.getByText("Expected answer")).toBeVisible();
 });
+
+test("preserves multilingual and multi-code-point review input", async ({
+  page,
+}) => {
+  const fixtures = [
+    ["cjk", "行きます"],
+    ["rtl", "کتاب"],
+    ["devanagari", "पुस्तक"],
+    ["ltr", " la bibliothe\u{300}que "],
+    ["mixed", "三時"],
+    ["emoji", "👨‍👩‍👧‍👦"],
+  ] as const;
+
+  for (const [fixture, response] of fixtures) {
+    await page.goto(`/?fixture=${fixture}`);
+    const input = page.getByLabel("Your answer");
+    await input.fill(response);
+    await expect(input).toHaveValue(response);
+    await input.press("Enter");
+    await expect(page.getByText("exact", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("answer-difference")).toBeVisible();
+    if (fixture === "ltr") {
+      await expect(page.getByText("Compared as:")).toBeVisible();
+      await expect(
+        page.getByTestId("answer-difference").locator("bdi"),
+      ).toHaveText("la bibliothèque");
+    }
+  }
+});
+
+test("renders grapheme difference semantics without altering raw input", async ({
+  page,
+}) => {
+  await page.goto("/?fixture=cjk");
+  await page.getByLabel("Your answer").fill(" 図書館 ");
+  await page.getByLabel("Your answer").press("Enter");
+
+  const difference = page.getByTestId("answer-difference");
+  await expect(difference.locator("del")).toHaveText("行きます");
+  await expect(difference.locator("ins")).toHaveText("図書館");
+  await expect(
+    page.locator(".answer-comparison strong").nth(1),
+  ).toHaveJSProperty("textContent", " 図書館 ");
+  await expect(page.getByText("Compared as:")).toBeVisible();
+});
