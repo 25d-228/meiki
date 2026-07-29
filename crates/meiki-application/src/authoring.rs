@@ -145,6 +145,91 @@ impl ApplicationService {
         })
     }
 
+    /// Loads the source note that owns a study card as an editable draft.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the card aggregate or one of its sibling card
+    /// identities cannot be loaded.
+    pub fn get_authoring_draft_for_card(
+        &self,
+        card_id: &str,
+    ) -> Result<AuthoringDraftDto, ApplicationError> {
+        let storage = self.open_storage()?;
+        let studied = storage.load_study_card(card_id)?;
+        let note = storage.get_source_note(&studied.source_item.id)?;
+        let deck = storage.get_deck(&note.source_item.deck_id)?;
+        let clozes = note
+            .clozes
+            .iter()
+            .map(|cloze| {
+                let card = storage.get_card_for_cloze(&cloze.id)?;
+                Ok(AuthoringClozeDto {
+                    id: cloze.id.clone(),
+                    card_id: card.id,
+                    answer: cloze.answer.clone(),
+                    accepted_answers: cloze.accepted_answers.clone(),
+                    hint: cloze
+                        .hint
+                        .as_ref()
+                        .map_or_else(String::new, |hint| hint.value.clone()),
+                    language_tag: cloze.language_tag.clone(),
+                    direction: cloze.direction.into(),
+                    matching_policy: cloze.matching_policy.map(Into::into),
+                    annotations: cloze
+                        .annotations
+                        .iter()
+                        .map(|annotation| AnnotationDraftDto {
+                            id: annotation.id.clone(),
+                            label: annotation.label.clone(),
+                            value: annotation.value.clone(),
+                            language_tag: annotation.language_tag.clone(),
+                            direction: annotation.direction.into(),
+                        })
+                        .collect(),
+                    explanation_markdown: cloze
+                        .explanation
+                        .as_ref()
+                        .map_or_else(String::new, |explanation| explanation.value.clone()),
+                })
+            })
+            .collect::<Result<Vec<_>, ApplicationError>>()?;
+
+        Ok(AuthoringDraftDto {
+            source_id: note.source_item.id,
+            deck_id: note.source_item.deck_id,
+            persisted: true,
+            created_at_ms: note.source_item.created_at_ms,
+            deck_language_tag: deck.language_tag,
+            deck_direction: deck.direction.into(),
+            deck_matching_policy: deck.matching_policy.into(),
+            language_tag: note.source_item.language_tag,
+            direction: note.source_item.direction.into(),
+            segments: note
+                .source_item
+                .segments
+                .into_iter()
+                .map(|segment| {
+                    let (kind, text, cloze_id) = match segment.content {
+                        SegmentContent::Text(text) => (AuthoringSegmentKindDto::Text, text, None),
+                        SegmentContent::Cloze { cloze_id, text } => {
+                            (AuthoringSegmentKindDto::Cloze, text, Some(cloze_id))
+                        }
+                    };
+                    AuthoringSegmentDto {
+                        id: segment.id,
+                        ordinal: segment.ordinal,
+                        kind,
+                        text,
+                        cloze_id,
+                    }
+                })
+                .collect(),
+            clozes,
+            active_cloze_id: Some(studied.cloze.id),
+        })
+    }
+
     /// Turns a browser selection in a plain segment into a stable cloze.
     ///
     /// # Errors
@@ -328,11 +413,25 @@ impl ApplicationService {
     ) -> Result<AuthoringDraftDto, ApplicationError> {
         validate_for_save(draft)?;
         let now_ms = Utc::now().timestamp_millis();
-        let note = stored_note(draft, now_ms);
+        let mut note = stored_note(draft, now_ms);
         let mut storage = self.open_storage()?;
 
         if draft.persisted {
             let existing = storage.get_source_note(&draft.source_id)?;
+            note.source_item.tags = existing.source_item.tags;
+            note.source_item.annotations = existing.source_item.annotations;
+            note.source_item.explanation = existing.source_item.explanation;
+            note.source_item.media = existing.source_item.media;
+            for stored_cloze in &existing.clozes {
+                if let Some(cloze) = note
+                    .clozes
+                    .iter_mut()
+                    .find(|cloze| cloze.id == stored_cloze.id)
+                {
+                    cloze.media.clone_from(&stored_cloze.media);
+                    cloze.created_at_ms = stored_cloze.created_at_ms;
+                }
+            }
             let requested = draft
                 .clozes
                 .iter()
@@ -364,6 +463,7 @@ impl ApplicationService {
                         id: cloze.card_id.clone(),
                         cloze_id: cloze.id.clone(),
                         content_version: 0,
+                        suspended: false,
                         settings: StudySettingsOverride::default(),
                         created_at_ms: now_ms,
                         updated_at_ms: now_ms,
@@ -793,6 +893,13 @@ mod tests {
         assert!(saved.persisted);
         let card = service.get_study_card(&saved.clozes[0].card_id).unwrap();
         assert_eq!(card.prompt, "c[…]a");
+        let editable = service
+            .get_authoring_draft_for_card(&saved.clozes[0].card_id)
+            .unwrap();
+        assert!(editable.persisted);
+        assert_eq!(editable.source_id, saved.source_id);
+        assert_eq!(editable.active_cloze_id, Some(saved.clozes[0].id.clone()));
+        assert_eq!(editable.clozes[0].card_id, saved.clozes[0].card_id);
     }
 
     #[test]

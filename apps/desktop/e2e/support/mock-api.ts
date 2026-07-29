@@ -6,6 +6,7 @@ export async function installMockApi(page: Page): Promise<void> {
       scheduleVersion: 0,
       completedReviews: 0,
       dueAt: "2026-07-29T09:00:00+00:00",
+      suspended: false,
     };
     const fixtures = {
       cjk: {
@@ -110,6 +111,8 @@ export async function installMockApi(page: Page): Promise<void> {
       optimizer_status: "never_run",
       optimizer_diagnostics: null as string | null,
     };
+    let failedCheck = false;
+    let failedGrade = false;
 
     window.__MEIKI_TEST_INVOKE__ = async (command, args) => {
       const state = readState();
@@ -131,17 +134,41 @@ export async function installMockApi(page: Page): Promise<void> {
           direction: fixture.direction,
           due_at: state.dueAt,
           completed_reviews: state.completedReviews,
+          suspended: state.suspended ?? false,
+          hint: null,
+          prompt_media: [],
         };
       }
       if (command === "check_answer") {
+        if (
+          new URLSearchParams(location.search).get("failure") === "check" &&
+          !failedCheck
+        ) {
+          failedCheck = true;
+          throw new Error("The answer check was interrupted.");
+        }
         const request = (args as { request: { raw_response: string } }).request;
         const normalizedResponse = request.raw_response.trim().normalize("NFC");
         const exact = normalizedResponse === fixture.answer;
+        const answerStart = fixture.fullSource.indexOf(fixture.answer);
         return {
           card_id: "sample-card",
           card_content_version: 0,
           schedule_version: state.scheduleVersion,
           full_source: fixture.fullSource,
+          source_segments: [
+            {
+              text: fixture.fullSource.slice(0, answerStart),
+              highlighted: false,
+            },
+            { text: fixture.answer, highlighted: true },
+            {
+              text: fixture.fullSource.slice(
+                answerStart + fixture.answer.length,
+              ),
+              highlighted: false,
+            },
+          ],
           expected_answer: fixture.answer,
           raw_response: request.raw_response,
           normalized_response: normalizedResponse,
@@ -153,20 +180,135 @@ export async function installMockApi(page: Page): Promise<void> {
                 { kind: "insert", text: normalizedResponse },
               ],
           suggested_grade: exact ? "good" : "again",
+          grade_previews: [
+            { grade: "again", due_at: state.dueAt, interval_seconds: 60 },
+            { grade: "hard", due_at: state.dueAt, interval_seconds: 3600 },
+            { grade: "good", due_at: state.dueAt, interval_seconds: 259200 },
+            { grade: "easy", due_at: state.dueAt, interval_seconds: 604800 },
+          ],
+          annotations: [],
+          explanation: null,
+          answer_media: [],
         };
       }
       if (command === "grade_review") {
+        if (
+          new URLSearchParams(location.search).get("failure") === "grade" &&
+          !failedGrade
+        ) {
+          failedGrade = true;
+          throw new Error("The review commit was interrupted.");
+        }
+        localStorage.setItem(
+          "meiki-e2e-last-grade-request",
+          JSON.stringify((args as { request: unknown }).request),
+        );
+        const request = (args as { request: { review_event_id: string } })
+          .request;
         const nextState = {
           scheduleVersion: state.scheduleVersion + 1,
           completedReviews: state.completedReviews + 1,
           dueAt: "2026-08-01T09:00:00+00:00",
+          suspended: false,
         };
         localStorage.setItem("meiki-e2e-state", JSON.stringify(nextState));
         return {
-          review_event_id: "review-e2e",
+          review_event_id: request.review_event_id,
           schedule_version: nextState.scheduleVersion,
           due_at: nextState.dueAt,
           interval_seconds: 259200,
+        };
+      }
+      if (command === "suspend_card") {
+        const nextState = { ...state, suspended: true };
+        localStorage.setItem("meiki-e2e-state", JSON.stringify(nextState));
+        return {
+          card_id: "sample-card",
+          card_content_version: 0,
+          schedule_version: nextState.scheduleVersion,
+          prompt: fixture.prompt,
+          language_tag: fixture.languageTag,
+          direction: fixture.direction,
+          due_at: nextState.dueAt,
+          completed_reviews: nextState.completedReviews,
+          suspended: true,
+          hint: null,
+          prompt_media: [],
+        };
+      }
+      if (command === "undo_review") {
+        const request = (args as { request: { undo_event_id: string } })
+          .request;
+        const nextState = {
+          ...state,
+          scheduleVersion: state.scheduleVersion + 1,
+          completedReviews: Math.max(0, state.completedReviews - 1),
+          dueAt: initialState.dueAt,
+        };
+        localStorage.setItem("meiki-e2e-state", JSON.stringify(nextState));
+        return {
+          undo_event_id: request.undo_event_id,
+          schedule_version: nextState.scheduleVersion,
+          due_at: nextState.dueAt,
+          interval_seconds: 0,
+          completed_reviews: nextState.completedReviews,
+        };
+      }
+      if (command === "get_authoring_draft_for_card") {
+        return {
+          source_id: "sample-source",
+          deck_id: "default-deck",
+          persisted: true,
+          created_at_ms: Date.now(),
+          deck_language_tag: fixture.languageTag,
+          deck_direction: fixture.direction,
+          deck_matching_policy: "strict",
+          language_tag: fixture.languageTag,
+          direction: fixture.direction,
+          segments: [
+            {
+              id: "segment-context",
+              ordinal: 0,
+              kind: "text",
+              text: fixture.fullSource.slice(
+                0,
+                fixture.fullSource.indexOf(fixture.answer),
+              ),
+              cloze_id: null,
+            },
+            {
+              id: "segment-cloze",
+              ordinal: 1,
+              kind: "cloze",
+              text: fixture.answer,
+              cloze_id: "sample-cloze",
+            },
+            {
+              id: "segment-after",
+              ordinal: 2,
+              kind: "text",
+              text: fixture.fullSource.slice(
+                fixture.fullSource.indexOf(fixture.answer) +
+                  fixture.answer.length,
+              ),
+              cloze_id: null,
+            },
+          ],
+          clozes: [
+            {
+              id: "sample-cloze",
+              card_id: "sample-card",
+              answer: fixture.answer,
+              accepted_answers: [],
+              hint: "",
+              language_tag: fixture.languageTag,
+              direction: fixture.direction,
+              matching_policy: null,
+              annotations: [],
+              explanation_markdown: "",
+            },
+          ],
+          active_cloze_id: "sample-cloze",
         };
       }
       if (command === "get_scheduler_settings") {

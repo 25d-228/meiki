@@ -7,6 +7,9 @@ import type { GradeReviewRequest } from "./generated/GradeReviewRequest";
 import type { GradeReviewResultDto } from "./generated/GradeReviewResultDto";
 import type { RevealDto } from "./generated/RevealDto";
 import type { StudyCardDto } from "./generated/StudyCardDto";
+import type { SuspendCardRequest } from "./generated/SuspendCardRequest";
+import type { UndoReviewRequest } from "./generated/UndoReviewRequest";
+import type { UndoReviewResultDto } from "./generated/UndoReviewResultDto";
 import type { MakeClozeRequest } from "./generated/MakeClozeRequest";
 import type { RemoveClozeRequest } from "./generated/RemoveClozeRequest";
 import type { ReorderSegmentsRequest } from "./generated/ReorderSegmentsRequest";
@@ -34,12 +37,24 @@ export const api = {
     return invoke("get_study_card", { cardId });
   },
 
+  getAuthoringDraftForCard(cardId: string): Promise<AuthoringDraftDto> {
+    return invoke("get_authoring_draft_for_card", { cardId });
+  },
+
   checkAnswer(request: CheckAnswerRequest): Promise<RevealDto> {
     return invoke("check_answer", { request });
   },
 
   gradeReview(request: GradeReviewRequest): Promise<GradeReviewResultDto> {
     return invoke("grade_review", { request });
+  },
+
+  suspendCard(request: SuspendCardRequest): Promise<StudyCardDto> {
+    return invoke("suspend_card", { request });
+  },
+
+  undoReview(request: UndoReviewRequest): Promise<UndoReviewResultDto> {
+    return invoke("undo_review", { request });
   },
 
   getSchedulerSettings(deckId: string): Promise<SchedulerSettingsDto> {

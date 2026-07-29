@@ -17,6 +17,13 @@
   import type { DirectionDto } from "../lib/generated/DirectionDto";
   import type { MatchingPolicyDto } from "../lib/generated/MatchingPolicyDto";
 
+  type Props = {
+    cardId?: string | null;
+    onReturn?: () => void;
+  };
+
+  let { cardId = null, onReturn }: Props = $props();
+
   type Selection = {
     segmentId: string;
     start: number;
@@ -37,7 +44,11 @@
   const shortcut = navigator.platform.includes("Mac") ? "⌘" : "Ctrl";
 
   onMount(() => {
-    void startNew(false);
+    if (cardId) {
+      void loadCardDraft(cardId);
+    } else {
+      void startNew(false);
+    }
   });
 
   onDestroy(() => {
@@ -91,6 +102,23 @@
     busy = true;
     try {
       draft = await api.newAuthoringDraft();
+      selection = null;
+      previews = [];
+      previewOpen = false;
+      dirty = false;
+      error = "";
+      savedMessage = "";
+    } catch (reason) {
+      reportFailure(reason);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function loadCardDraft(activeCardId: string): Promise<void> {
+    busy = true;
+    try {
+      draft = await api.getAuthoringDraftForCard(activeCardId);
       selection = null;
       previews = [];
       previewOpen = false;
@@ -343,6 +371,11 @@
       </p>
     </div>
     <div class="cluster">
+      {#if cardId && onReturn}
+        <Button variant="quiet" disabled={busy} onclick={onReturn}
+          >Return to study</Button
+        >
+      {/if}
       <Button
         variant="quiet"
         shortcut={`${shortcut} N`}

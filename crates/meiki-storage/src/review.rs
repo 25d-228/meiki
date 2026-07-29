@@ -1,4 +1,4 @@
-use meiki_domain::{ComparisonResult, Grade, ReviewEvent, ScheduleState};
+use meiki_domain::{ComparisonResult, Grade, ReviewEvent, ReviewEventKind, ScheduleState};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::{Storage, StorageError, repository::load_schedule_row};
@@ -14,78 +14,76 @@ impl Storage {
     /// fails.
     pub fn commit_review(&mut self, event: &ReviewEvent) -> Result<ScheduleState, StorageError> {
         let transaction = self.connection.transaction()?;
-        validate_review_preconditions(&transaction, event)?;
-        insert_review_event(&transaction, event)?;
-
-        let changed = transaction.execute(
-            "UPDATE schedule_states
-             SET version = ?1,
-                 due_at_ms = ?2,
-                 ideal_due_at_ms = ?3,
-                 interval_milliseconds = ?4,
-                 interval_seconds = ?5,
-                 repetitions = ?6,
-                 stability_milliseconds = ?7,
-                 difficulty_millipoints = ?8,
-                 last_reviewed_at_ms = ?9,
-                 last_review_event_id = ?10
-             WHERE card_id = ?11
-               AND version = ?12
-               AND due_at_ms = ?13
-               AND ideal_due_at_ms = ?14
-               AND interval_milliseconds = ?15
-               AND interval_seconds = ?16
-               AND repetitions = ?17
-               AND stability_milliseconds = ?18
-               AND difficulty_millipoints = ?19
-               AND last_reviewed_at_ms IS ?20
-               AND last_review_event_id IS ?21",
-            params![
-                event.next_schedule.version,
-                event.next_schedule.due_at_ms,
-                event.next_schedule.ideal_due_at_ms,
-                event.next_schedule.interval_milliseconds,
-                event.next_schedule.interval_seconds,
-                event.next_schedule.repetitions,
-                event.next_schedule.stability_milliseconds,
-                event.next_schedule.difficulty_millipoints,
-                event.next_schedule.last_reviewed_at_ms,
-                event.id,
-                event.card_id,
-                event.previous_schedule.version,
-                event.previous_schedule.due_at_ms,
-                event.previous_schedule.ideal_due_at_ms,
-                event.previous_schedule.interval_milliseconds,
-                event.previous_schedule.interval_seconds,
-                event.previous_schedule.repetitions,
-                event.previous_schedule.stability_milliseconds,
-                event.previous_schedule.difficulty_millipoints,
-                event.previous_schedule.last_reviewed_at_ms,
-                event.previous_schedule.last_review_event_id,
-            ],
-        )?;
-        if changed != 1 {
-            return Err(StorageError::StaleReview);
-        }
-
-        let changed = transaction.execute(
-            "UPDATE cards
-             SET queue_updated_at_ms = ?1
-             WHERE id = ?2 AND content_version = ?3",
-            params![
-                event.reviewed_at_ms,
-                event.card_id,
-                event.card_content_version,
-            ],
-        )?;
-        if changed != 1 {
-            return Err(StorageError::StaleReview);
-        }
-
+        persist_review_event(&transaction, event)?;
         transaction.commit()?;
         let mut committed = event.next_schedule.clone();
         committed.last_review_event_id = Some(event.id.clone());
         Ok(committed)
+    }
+
+    /// Appends a compensating event for the latest review and restores the
+    /// schedule values that existed immediately before that review.
+    ///
+    /// The restored projection receives a new monotonically increasing
+    /// version, so stale callers cannot commit against the pre-undo snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::NothingToUndo`] unless the current projection
+    /// points at an active review event.
+    pub fn undo_last_review(
+        &mut self,
+        card_id: &str,
+        expected_review_event_id: &str,
+        undo_event_id: &str,
+        undone_at_ms: i64,
+    ) -> Result<ScheduleState, StorageError> {
+        let transaction = self.connection.transaction()?;
+        let current = load_schedule_row(&transaction, "schedule_states", card_id)?
+            .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))?;
+        let latest_id = current
+            .last_review_event_id
+            .as_deref()
+            .ok_or_else(|| StorageError::NothingToUndo(card_id.to_owned()))?;
+        let target = load_review_events(&transaction, card_id)?
+            .into_iter()
+            .find(|event| event.id == latest_id && event.kind == ReviewEventKind::Review)
+            .ok_or_else(|| StorageError::NothingToUndo(card_id.to_owned()))?;
+        if target.id != expected_review_event_id {
+            return Err(StorageError::StaleReview);
+        }
+
+        let card_content_version = transaction.query_row(
+            "SELECT content_version FROM cards WHERE id = ?1",
+            [card_id],
+            |row| row.get::<_, u64>(0),
+        )?;
+        let mut restored = target.previous_schedule.clone();
+        restored.version = current.version + 1;
+        restored.last_review_event_id = Some(undo_event_id.to_owned());
+        let event = ReviewEvent {
+            id: undo_event_id.to_owned(),
+            card_id: card_id.to_owned(),
+            card_content_version,
+            kind: ReviewEventKind::Undo,
+            undoes_review_event_id: Some(target.id),
+            raw_response: String::new(),
+            normalized_response: String::new(),
+            comparison: target.comparison,
+            suggested_grade: target.suggested_grade,
+            chosen_grade: target.chosen_grade,
+            grade_overridden: false,
+            response_duration_ms: 0,
+            reviewed_at_ms: undone_at_ms,
+            scheduler_version: target.scheduler_version,
+            scheduler_parameter_set_id: target.scheduler_parameter_set_id,
+            target_retention_basis_points: target.target_retention_basis_points,
+            previous_schedule: current,
+            next_schedule: restored.clone(),
+        };
+        persist_review_event(&transaction, &event)?;
+        transaction.commit()?;
+        Ok(restored)
     }
 
     /// Loads immutable review events in deterministic chronological order.
@@ -97,18 +95,24 @@ impl Storage {
         load_review_events(&self.connection, card_id)
     }
 
-    /// Counts immutable review events for a card.
+    /// Loads graded reviews that have not been compensated by an undo event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when stored values cannot be decoded or an
+    /// invalid compensating chain is encountered.
+    pub fn active_review_events(&self, card_id: &str) -> Result<Vec<ReviewEvent>, StorageError> {
+        active_reviews(load_review_events(&self.connection, card_id)?)
+    }
+
+    /// Counts active graded reviews for a card.
     ///
     /// # Errors
     ///
     /// Returns [`StorageError`] when the query fails.
     pub fn review_count(&self, card_id: &str) -> Result<u64, StorageError> {
-        let count = self.connection.query_row(
-            "SELECT COUNT(*) FROM review_events WHERE card_id = ?1",
-            [card_id],
-            |row| row.get::<_, u64>(0),
-        )?;
-        Ok(count)
+        u64::try_from(self.active_review_events(card_id)?.len())
+            .map_err(|_| StorageError::NumericRange("review count"))
     }
 
     /// Loads all immutable review events for a deck in chronological order.
@@ -122,6 +126,38 @@ impl Storage {
         let mut events = Vec::new();
         for card_id in card_ids {
             events.extend(load_review_events(&self.connection, &card_id)?);
+        }
+        events.sort_by(|left, right| {
+            left.reviewed_at_ms
+                .cmp(&right.reviewed_at_ms)
+                .then_with(|| left.card_id.cmp(&right.card_id))
+                .then_with(|| {
+                    left.previous_schedule
+                        .version
+                        .cmp(&right.previous_schedule.version)
+                })
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(events)
+    }
+
+    /// Loads active graded reviews for a deck in chronological order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the deck or stored history cannot be
+    /// loaded.
+    pub fn active_review_events_for_deck(
+        &self,
+        deck_id: &str,
+    ) -> Result<Vec<ReviewEvent>, StorageError> {
+        let card_ids = self.card_ids_for_deck(deck_id)?;
+        let mut events = Vec::new();
+        for card_id in card_ids {
+            events.extend(active_reviews(load_review_events(
+                &self.connection,
+                &card_id,
+            )?)?);
         }
         events.sort_by(|left, right| {
             left.reviewed_at_ms
@@ -337,6 +373,8 @@ fn validate_review_preconditions(
     if event.previous_schedule.card_id != event.card_id
         || event.next_schedule.card_id != event.card_id
         || event.next_schedule.last_review_event_id.as_deref() != Some(event.id.as_str())
+        || (event.kind == ReviewEventKind::Review && event.undoes_review_event_id.is_some())
+        || (event.kind == ReviewEventKind::Undo && event.undoes_review_event_id.is_none())
         || card_version != event.card_content_version
         || stored_schedule != event.previous_schedule
         || event.next_schedule.version != event.previous_schedule.version + 1
@@ -344,6 +382,105 @@ fn validate_review_preconditions(
         return Err(StorageError::StaleReview);
     }
     Ok(())
+}
+
+fn persist_review_event(
+    transaction: &Transaction<'_>,
+    event: &ReviewEvent,
+) -> Result<(), StorageError> {
+    validate_review_preconditions(transaction, event)?;
+    insert_review_event(transaction, event)?;
+
+    let changed = transaction.execute(
+        "UPDATE schedule_states
+         SET version = ?1,
+             due_at_ms = ?2,
+             ideal_due_at_ms = ?3,
+             interval_milliseconds = ?4,
+             interval_seconds = ?5,
+             repetitions = ?6,
+             stability_milliseconds = ?7,
+             difficulty_millipoints = ?8,
+             last_reviewed_at_ms = ?9,
+             last_review_event_id = ?10
+         WHERE card_id = ?11
+           AND version = ?12
+           AND due_at_ms = ?13
+           AND ideal_due_at_ms = ?14
+           AND interval_milliseconds = ?15
+           AND interval_seconds = ?16
+           AND repetitions = ?17
+           AND stability_milliseconds = ?18
+           AND difficulty_millipoints = ?19
+           AND last_reviewed_at_ms IS ?20
+           AND last_review_event_id IS ?21",
+        params![
+            event.next_schedule.version,
+            event.next_schedule.due_at_ms,
+            event.next_schedule.ideal_due_at_ms,
+            event.next_schedule.interval_milliseconds,
+            event.next_schedule.interval_seconds,
+            event.next_schedule.repetitions,
+            event.next_schedule.stability_milliseconds,
+            event.next_schedule.difficulty_millipoints,
+            event.next_schedule.last_reviewed_at_ms,
+            event.id,
+            event.card_id,
+            event.previous_schedule.version,
+            event.previous_schedule.due_at_ms,
+            event.previous_schedule.ideal_due_at_ms,
+            event.previous_schedule.interval_milliseconds,
+            event.previous_schedule.interval_seconds,
+            event.previous_schedule.repetitions,
+            event.previous_schedule.stability_milliseconds,
+            event.previous_schedule.difficulty_millipoints,
+            event.previous_schedule.last_reviewed_at_ms,
+            event.previous_schedule.last_review_event_id,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(StorageError::StaleReview);
+    }
+
+    let changed = transaction.execute(
+        "UPDATE cards
+         SET queue_updated_at_ms = ?1
+         WHERE id = ?2 AND content_version = ?3",
+        params![
+            event.reviewed_at_ms,
+            event.card_id,
+            event.card_content_version,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(StorageError::StaleReview);
+    }
+    Ok(())
+}
+
+fn active_reviews(events: Vec<ReviewEvent>) -> Result<Vec<ReviewEvent>, StorageError> {
+    let mut active = Vec::<ReviewEvent>::new();
+    for event in events {
+        match event.kind {
+            ReviewEventKind::Review => active.push(event),
+            ReviewEventKind::Undo => {
+                let target = event.undoes_review_event_id.as_deref().ok_or_else(|| {
+                    StorageError::ProjectionMismatch(format!(
+                        "undo event {} has no review reference",
+                        event.id
+                    ))
+                })?;
+                if active.last().map(|review| review.id.as_str()) != Some(target) {
+                    return Err(StorageError::ProjectionMismatch(format!(
+                        "undo event {} does not compensate the latest active review",
+                        event.id
+                    )));
+                }
+                active.pop();
+            }
+        }
+    }
+    Ok(active)
 }
 
 fn insert_review_event(
@@ -381,11 +518,16 @@ fn insert_review_event(
             next_repetitions,
             next_stability_milliseconds,
             next_difficulty_millipoints,
-            next_last_reviewed_at_ms
+            next_last_reviewed_at_ms,
+            event_kind,
+            undoes_review_event_id,
+            response_duration_ms,
+            grade_overridden
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
+            ?31, ?32, ?33, ?34
          )",
         params![
             event.id,
@@ -418,6 +560,10 @@ fn insert_review_event(
             event.next_schedule.stability_milliseconds,
             event.next_schedule.difficulty_millipoints,
             event.next_schedule.last_reviewed_at_ms,
+            review_event_kind_to_database(event.kind),
+            event.undoes_review_event_id,
+            event.response_duration_ms,
+            event.grade_overridden,
         ],
     )?;
     Ok(())
@@ -458,7 +604,11 @@ fn load_review_events(
             next_repetitions,
             next_stability_milliseconds,
             next_difficulty_millipoints,
-            next_last_reviewed_at_ms
+            next_last_reviewed_at_ms,
+            event_kind,
+            undoes_review_event_id,
+            response_duration_ms,
+            grade_overridden
          FROM review_events
          WHERE card_id = ?1
          ORDER BY previous_schedule_version, reviewed_at_ms, id",
@@ -510,11 +660,18 @@ struct StoredReviewEvent {
     next_stability_milliseconds: u64,
     next_difficulty_millipoints: u32,
     next_last_reviewed_at_ms: Option<i64>,
+    event_kind: String,
+    undoes_review_event_id: Option<String>,
+    response_duration_ms: u64,
+    grade_overridden: bool,
 }
 
 impl StoredReviewEvent {
     fn into_domain(self, previous_event_id: Option<String>) -> Result<ReviewEvent, StorageError> {
         let is_legacy = self.scheduler_version != "fsrs-7";
+        let kind = review_event_kind_from_database(&self.event_kind)?;
+        let grade_overridden = self.grade_overridden
+            || (kind == ReviewEventKind::Review && self.chosen_grade != self.suggested_grade);
         let previous_schedule = ScheduleState {
             card_id: self.card_id.clone(),
             version: self.previous_version,
@@ -561,11 +718,15 @@ impl StoredReviewEvent {
             id: self.id,
             card_id: self.card_id,
             card_content_version: self.card_content_version,
+            kind,
+            undoes_review_event_id: self.undoes_review_event_id,
             raw_response: self.raw_response,
             normalized_response: self.normalized_response,
             comparison: comparison_from_database(&self.comparison)?,
             suggested_grade: grade_from_database(&self.suggested_grade)?,
             chosen_grade: grade_from_database(&self.chosen_grade)?,
+            grade_overridden,
+            response_duration_ms: self.response_duration_ms,
             reviewed_at_ms: self.reviewed_at_ms,
             scheduler_version: self.scheduler_version,
             scheduler_parameter_set_id: self.scheduler_parameter_set_id,
@@ -608,7 +769,29 @@ fn stored_review_event_from_row(row: &Row<'_>) -> rusqlite::Result<StoredReviewE
         next_stability_milliseconds: row.get(27)?,
         next_difficulty_millipoints: row.get(28)?,
         next_last_reviewed_at_ms: row.get(29)?,
+        event_kind: row.get(30)?,
+        undoes_review_event_id: row.get(31)?,
+        response_duration_ms: row.get(32)?,
+        grade_overridden: row.get(33)?,
     })
+}
+
+const fn review_event_kind_to_database(value: ReviewEventKind) -> &'static str {
+    match value {
+        ReviewEventKind::Review => "review",
+        ReviewEventKind::Undo => "undo",
+    }
+}
+
+fn review_event_kind_from_database(value: &str) -> Result<ReviewEventKind, StorageError> {
+    match value {
+        "review" => Ok(ReviewEventKind::Review),
+        "undo" => Ok(ReviewEventKind::Undo),
+        _ => Err(StorageError::InvalidStoredValue {
+            field: "review event kind",
+            value: value.to_owned(),
+        }),
+    }
 }
 
 const fn comparison_to_database(value: ComparisonResult) -> &'static str {

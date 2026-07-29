@@ -662,17 +662,19 @@ impl CardRepository for Storage {
                 id,
                 cloze_id,
                 content_version,
+                suspended,
                 target_retention_basis_points,
                 new_cards_per_day,
                 maximum_interval_days,
                 created_at_ms,
                 updated_at_ms,
                 queue_updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
             params![
                 card.id,
                 card.cloze_id,
                 card.content_version,
+                card.suspended,
                 card.settings.target_retention_basis_points,
                 card.settings.new_cards_per_day,
                 card.settings.maximum_interval_days,
@@ -714,13 +716,15 @@ impl CardRepository for Storage {
         let changed = self.connection.execute(
             "UPDATE cards
              SET content_version = ?1,
-                 target_retention_basis_points = ?2,
-                 new_cards_per_day = ?3,
-                 maximum_interval_days = ?4,
-                 updated_at_ms = ?5
-             WHERE id = ?6",
+                 suspended = ?2,
+                 target_retention_basis_points = ?3,
+                 new_cards_per_day = ?4,
+                 maximum_interval_days = ?5,
+                 updated_at_ms = ?6
+             WHERE id = ?7",
             params![
                 card.content_version,
+                card.suspended,
                 card.settings.target_retention_basis_points,
                 card.settings.new_cards_per_day,
                 card.settings.maximum_interval_days,
@@ -1893,6 +1897,7 @@ fn load_card(connection: &Connection, id: &str) -> Result<Card, StorageError> {
                 id,
                 cloze_id,
                 content_version,
+                suspended,
                 target_retention_basis_points,
                 new_cards_per_day,
                 maximum_interval_days,
@@ -1906,13 +1911,14 @@ fn load_card(connection: &Connection, id: &str) -> Result<Card, StorageError> {
                     id: row.get(0)?,
                     cloze_id: row.get(1)?,
                     content_version: row.get(2)?,
+                    suspended: row.get(3)?,
                     settings: meiki_domain::StudySettingsOverride {
-                        target_retention_basis_points: row.get(3)?,
-                        new_cards_per_day: row.get(4)?,
-                        maximum_interval_days: row.get(5)?,
+                        target_retention_basis_points: row.get(4)?,
+                        new_cards_per_day: row.get(5)?,
+                        maximum_interval_days: row.get(6)?,
                     },
-                    created_at_ms: row.get(6)?,
-                    updated_at_ms: row.get(7)?,
+                    created_at_ms: row.get(7)?,
+                    updated_at_ms: row.get(8)?,
                 })
             },
         )
