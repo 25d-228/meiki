@@ -287,7 +287,7 @@ fn render_source(source: &SourceItem, hidden_cloze_id: Option<&str>) -> String {
         .segments
         .iter()
         .map(|segment| match &segment.content {
-            SegmentContent::Cloze { cloze_id, text }
+            SegmentContent::Cloze { cloze_id, text: _ }
                 if hidden_cloze_id == Some(cloze_id.as_str()) =>
             {
                 "[…]"

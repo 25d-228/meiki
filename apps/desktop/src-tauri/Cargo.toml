@@ -11,6 +11,7 @@ name = "meiki_desktop_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]
+ico.workspace = true
 tauri-build.workspace = true
 
 [dependencies]

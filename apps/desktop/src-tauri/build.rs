@@ -14,5 +14,17 @@ fn main() {
         ],
     )
     .expect("failed to write the development icon");
+
+    let mut windows_icon = ico::IconDir::new(ico::ResourceType::Icon);
+    let image = ico::IconImage::from_rgba_data(1, 1, vec![45, 102, 77, 255]);
+    windows_icon.add_entry(
+        ico::IconDirEntry::encode(&image).expect("failed to encode the development Windows icon"),
+    );
+    let icon_file = std::fs::File::create(icon_directory.join("icon.ico"))
+        .expect("failed to create the development Windows icon");
+    windows_icon
+        .write(icon_file)
+        .expect("failed to write the development Windows icon");
+
     tauri_build::build();
 }
