@@ -463,10 +463,10 @@ pub fn validate_collection(collection: &PortableCollection) -> Result<(), Portab
             }
         }
         for segment in &source.segments {
-            if let meiki_domain::SegmentContent::Cloze { cloze_id, .. } = &segment.content
-                && !cloze_ids.contains(cloze_id.as_str())
-            {
-                return invalid_collection("segment references a missing cloze");
+            if let meiki_domain::SegmentContent::Cloze { cloze_id, .. } = &segment.content {
+                if !cloze_ids.contains(cloze_id.as_str()) {
+                    return invalid_collection("segment references a missing cloze");
+                }
             }
         }
         for portable in &note.cards {
@@ -497,10 +497,10 @@ pub fn validate_collection(collection: &PortableCollection) -> Result<(), Portab
             if tag.id.trim().is_empty() {
                 return invalid_collection("tag IDs must be non-empty");
             }
-            if let Some(existing) = tags.insert(tag.id.as_str(), tag)
-                && existing != tag
-            {
-                return invalid_collection("a reused tag ID has conflicting content");
+            if let Some(existing) = tags.insert(tag.id.as_str(), tag) {
+                if existing != tag {
+                    return invalid_collection("a reused tag ID has conflicting content");
+                }
             }
         }
         for media in source
@@ -511,10 +511,12 @@ pub fn validate_collection(collection: &PortableCollection) -> Result<(), Portab
             if media.id.trim().is_empty() {
                 return invalid_collection("media reference IDs must be non-empty");
             }
-            if let Some(existing) = media_references.insert(media.id.as_str(), media)
-                && existing != media
-            {
-                return invalid_collection("a reused media reference ID has conflicting metadata");
+            if let Some(existing) = media_references.insert(media.id.as_str(), media) {
+                if existing != media {
+                    return invalid_collection(
+                        "a reused media reference ID has conflicting metadata",
+                    );
+                }
             }
         }
     }
@@ -704,13 +706,13 @@ fn validate_media_manifest_alignment(
             media.height,
             media.duration_ms,
         );
-        if let Some(existing) = technical_metadata.insert(media.content_hash.as_str(), metadata)
-            && existing != metadata
-        {
-            return Err(PortableError::InvalidMedia(format!(
-                "{} has conflicting technical metadata",
-                media.content_hash
-            )));
+        if let Some(existing) = technical_metadata.insert(media.content_hash.as_str(), metadata) {
+            if existing != metadata {
+                return Err(PortableError::InvalidMedia(format!(
+                    "{} has conflicting technical metadata",
+                    media.content_hash
+                )));
+            }
         }
     }
     Ok(())
@@ -1246,14 +1248,13 @@ mod tests {
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).unwrap();
             writer.start_file(&name, options).unwrap();
-            if let Some(corrupt) = corrupt_media
-                && name != MANIFEST_ENTRY
-                && name != COLLECTION_ENTRY
-            {
-                writer.write_all(corrupt).unwrap();
-            } else {
-                writer.write_all(&bytes).unwrap();
+            if name != MANIFEST_ENTRY && name != COLLECTION_ENTRY {
+                if let Some(corrupt) = corrupt_media {
+                    writer.write_all(corrupt).unwrap();
+                    continue;
+                }
             }
+            writer.write_all(&bytes).unwrap();
         }
         if let Some((name, bytes)) = extra {
             writer.start_file(name, options).unwrap();
