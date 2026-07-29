@@ -6,7 +6,9 @@ sample, type the hidden text, reveal and grade the answer, then restore the
 persisted review and next due time after restart.
 
 This repository is implementing [the v0.1 epic](https://github.com/25d-228/meiki/issues/1).
-The present milestone is [issue #2](https://github.com/25d-228/meiki/issues/2).
+The foundation and core persistence milestones are tracked in
+[issue #2](https://github.com/25d-228/meiki/issues/2) and
+[issue #3](https://github.com/25d-228/meiki/issues/3).
 
 ## Verify a clean checkout
 
@@ -54,10 +56,10 @@ Generate TypeScript contracts after changing a desktop DTO:
 ```text
 apps/desktop/             Svelte 5 UI and thin Tauri 2 adapter
 crates/meiki-application/ Use cases and versioned desktop DTOs
-crates/meiki-domain/      Framework-free entities
+crates/meiki-domain/      Framework-free, language-neutral entities
 crates/meiki-text/        Centralized text comparison
 crates/meiki-scheduler/   Pure scheduling boundary
-crates/meiki-storage/     SQLite migrations and repositories
+crates/meiki-storage/     Versioned SQLite migrations, repositories, and backups
 crates/meiki-media/       Reserved media ownership boundary
 crates/meiki-portable/    Reserved portable-format boundary
 docs/adr/                 Architecture decisions
