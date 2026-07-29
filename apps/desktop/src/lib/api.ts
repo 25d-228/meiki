@@ -30,6 +30,13 @@ import type { MediaRoleDto } from "./generated/MediaRoleDto";
 import type { StudyMediaDto } from "./generated/StudyMediaDto";
 import type { TodayOverviewDto } from "./generated/TodayOverviewDto";
 import type { TodayRequest } from "./generated/TodayRequest";
+import type { ArchiveExportRequest } from "./generated/ArchiveExportRequest";
+import type { ArchiveImportModeDto } from "./generated/ArchiveImportModeDto";
+import type { ArchiveImportRequest } from "./generated/ArchiveImportRequest";
+import type { ArchiveImportResultDto } from "./generated/ArchiveImportResultDto";
+import type { BackupDto } from "./generated/BackupDto";
+import type { PortableArchivePreviewDto } from "./generated/PortableArchivePreviewDto";
+import type { PortableExportResultDto } from "./generated/PortableExportResultDto";
 
 function invoke<T>(
   command: string,
@@ -68,6 +75,44 @@ export const api = {
     request: LibraryExportRequest,
   ): Promise<LibraryExportResultDto> {
     return invoke("export_library_selection", { request });
+  },
+
+  exportArchive(
+    request: ArchiveExportRequest,
+  ): Promise<PortableExportResultDto> {
+    return invoke("export_archive", { request });
+  },
+
+  async pickArchiveFile(): Promise<string | null> {
+    const testPick = window.__MEIKI_TEST_PICK_ARCHIVE__;
+    if (testPick) return testPick();
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Meiki archive", extensions: ["meiki"] }],
+    });
+    return typeof selected === "string" ? selected : null;
+  },
+
+  previewArchive(
+    path: string,
+    mode: ArchiveImportModeDto,
+  ): Promise<PortableArchivePreviewDto> {
+    return invoke("preview_archive", { path, mode });
+  },
+
+  importArchive(
+    request: ArchiveImportRequest,
+  ): Promise<ArchiveImportResultDto> {
+    return invoke("import_archive", { request });
+  },
+
+  listBackups(): Promise<BackupDto[]> {
+    return invoke("list_backups");
+  },
+
+  restoreBackup(path: string, confirmation: string): Promise<BackupDto> {
+    return invoke("restore_backup", { path, confirmation });
   },
 
   getAuthoringDraftForCard(cardId: string): Promise<AuthoringDraftDto> {

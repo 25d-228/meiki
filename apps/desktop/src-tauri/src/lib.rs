@@ -1,13 +1,15 @@
 use std::path::PathBuf;
 
 use meiki_application::{
-    ApplicationService, AuthoringDraftDto, AuthoringPreviewDto, CheckAnswerRequest,
+    ApplicationService, ArchiveExportRequest, ArchiveImportModeDto, ArchiveImportRequest,
+    ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto, BackupDto, CheckAnswerRequest,
     GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, LibraryBulkRequest,
     LibraryBulkResultDto, LibraryExportRequest, LibraryExportResultDto, LibraryOverviewDto,
-    LibraryRequest, MakeClozeRequest, RebuildSchedulerResultDto, RemoveClozeRequest,
-    ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto, SchedulerSettingsDto,
-    StudyCardDto, StudyMediaDto, SuspendCardRequest, TodayOverviewDto, TodayRequest,
-    UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
+    LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
+    RebuildSchedulerResultDto, RemoveClozeRequest, ReorderSegmentsRequest, RevealDto,
+    SchedulerDiagnosticsExportDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto,
+    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -84,6 +86,65 @@ fn export_library_selection(
     state
         .service()
         .export_library_selection(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn export_archive(
+    request: ArchiveExportRequest,
+    state: State<'_, AppContext>,
+) -> Result<PortableExportResultDto, String> {
+    state
+        .service()
+        .export_archive(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn preview_archive(
+    path: String,
+    mode: ArchiveImportModeDto,
+    state: State<'_, AppContext>,
+) -> Result<PortableArchivePreviewDto, String> {
+    state
+        .service()
+        .preview_archive(&path, mode)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn import_archive(
+    request: ArchiveImportRequest,
+    state: State<'_, AppContext>,
+) -> Result<ArchiveImportResultDto, String> {
+    state
+        .service()
+        .import_archive(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_backups(state: State<'_, AppContext>) -> Result<Vec<BackupDto>, String> {
+    state
+        .service()
+        .list_backups()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn restore_backup(
+    path: String,
+    confirmation: String,
+    state: State<'_, AppContext>,
+) -> Result<BackupDto, String> {
+    state
+        .service()
+        .restore_backup(&path, &confirmation)
         .map_err(|error| error.to_string())
 }
 
@@ -322,6 +383,11 @@ pub fn run() {
             get_library,
             apply_library_bulk_action,
             export_library_selection,
+            export_archive,
+            preview_archive,
+            import_archive,
+            list_backups,
+            restore_backup,
             get_authoring_draft_for_card,
             check_answer,
             grade_review,

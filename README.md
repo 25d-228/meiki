@@ -60,10 +60,33 @@ crates/meiki-domain/      Framework-free, language-neutral entities
 crates/meiki-text/        Centralized text comparison
 crates/meiki-scheduler/   Pure scheduling boundary
 crates/meiki-storage/     Versioned SQLite migrations, repositories, and backups
-crates/meiki-media/       Reserved media ownership boundary
-crates/meiki-portable/    Reserved portable-format boundary
+crates/meiki-media/       Content-addressed media ownership boundary
+crates/meiki-portable/    Versioned, validated .meiki archive boundary
 docs/adr/                 Architecture decisions
 ```
 
 SQLite is created in the operating system's application-data directory. The
 application needs no account or network connection.
+
+## Data portability and recovery
+
+Settings can export a full collection or one deck as a `.meiki` archive, and
+Library can export selected notes. The versioned archive contains canonical
+UTF-8 structured data, immutable review history and current projections,
+scheduler metadata, a manifest, and checksum-addressed media. It does not
+contain SQLite, and imports validate the complete archive before staging any
+database change.
+
+Merge import deterministically namespaces incoming identities and reuses media
+with identical SHA-256 checksums. Replace import is available only for a full
+collection. Both modes show a preview and require explicit typed confirmation.
+The existing Library JSON export is a lightweight interoperability format and
+does not promise to preserve scheduling state.
+
+Meiki keeps the newest five backups for each automatic backup category.
+Migrations, full schedule rebuilds, imports, and restores create a backup
+before changing durable collection state. Settings lists these backups and
+requires the exact filename before restore. Pruning is lexical by the
+timestamp-and-sequence filename, so it remains deterministic even when
+multiple backups are created within one millisecond. Application recovery
+points include a checksum-verified media-store companion.

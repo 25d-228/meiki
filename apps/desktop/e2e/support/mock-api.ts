@@ -2,6 +2,8 @@ import type { Page } from "@playwright/test";
 
 export async function installMockApi(page: Page): Promise<void> {
   await page.addInitScript(() => {
+    window.__MEIKI_TEST_PICK_ARCHIVE__ = async () =>
+      "/tmp/exports/meiki-e2e.meiki";
     const initialState = {
       scheduleVersion: 0,
       completedReviews: 0,
@@ -489,6 +491,62 @@ export async function installMockApi(page: Page): Promise<void> {
         return {
           path: "/tmp/exports/library-selection-e2e.json",
           exported_notes: request.source_ids.length,
+        };
+      }
+      if (command === "export_archive") {
+        const request = (
+          args as {
+            request: { scope: string; selected_ids: string[] };
+          }
+        ).request;
+        const notes =
+          request.scope === "selected_notes"
+            ? request.selected_ids.length
+            : readLibraryNotes().length;
+        return {
+          path: "/tmp/exports/meiki-e2e.meiki",
+          decks: request.scope === "selected_notes" ? 1 : libraryDecks.length,
+          notes,
+          cards: notes,
+          review_events: 1,
+          media_objects: 1,
+        };
+      }
+      if (command === "preview_archive") {
+        return {
+          path: (args as { path: string }).path,
+          format_version: 1,
+          scope: "full_collection",
+          decks: 2,
+          notes: 2,
+          cards: 2,
+          review_events: 1,
+          media_objects: 1,
+          duplicate_media_objects: 1,
+          identity_collisions: 0,
+          can_import: true,
+          confirmation:
+            (args as { mode: string }).mode === "replace"
+              ? "REPLACE"
+              : "IMPORT",
+          summary: "Validated 2 note(s), 2 card(s), and 1 media object(s).",
+        };
+      }
+      if (command === "import_archive") {
+        return {
+          backup_path: "/tmp/backups/collection.db.pre-import.bak",
+          imported_notes: 2,
+          imported_cards: 2,
+          imported_media_objects: 0,
+          deduplicated_media_objects: 1,
+        };
+      }
+      if (command === "list_backups") return [];
+      if (command === "restore_backup") {
+        return {
+          path: "/tmp/backups/collection.db.pre-restore.bak",
+          file_name: "collection.db.pre-restore.bak",
+          byte_size: 4096,
         };
       }
       if (command === "get_today_overview") {

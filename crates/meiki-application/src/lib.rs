@@ -32,6 +32,7 @@ use uuid::Uuid;
 
 mod authoring;
 mod library;
+mod portable;
 mod today;
 
 pub use authoring::{
@@ -44,6 +45,10 @@ pub use library::{
     LibraryDueFilterDto, LibraryExportRequest, LibraryExportResultDto, LibraryMediaFilterDto,
     LibraryNoteDto, LibraryOverviewDto, LibraryRequest, LibrarySuspendedFilterDto, LibraryTagDto,
     LibraryTrashFilterDto,
+};
+pub use portable::{
+    ArchiveExportRequest, ArchiveImportModeDto, ArchiveImportRequest, ArchiveImportResultDto,
+    ArchiveScopeDto, BackupDto, PortableArchivePreviewDto, PortableExportResultDto,
 };
 pub use today::{TodayDeckDto, TodayOverviewDto, TodayQueueCardDto, TodayRequest};
 
@@ -81,6 +86,12 @@ pub enum ApplicationError {
     DiagnosticSerialization(#[source] serde_json::Error),
     #[error("media operation failed: {0}")]
     Media(#[from] MediaError),
+    #[error("portable archive operation failed: {0}")]
+    Portable(#[from] meiki_portable::PortableError),
+    #[error("invalid portability request: {0}")]
+    InvalidPortable(String),
+    #[error("portable data filesystem operation failed: {0}")]
+    PortableIo(#[source] std::io::Error),
 }
 
 #[derive(Debug, Error)]
@@ -791,8 +802,7 @@ impl ApplicationService {
         deck_id: &str,
     ) -> Result<RebuildSchedulerResultDto, ApplicationError> {
         let mut storage = self.open_storage()?;
-        let backup_path = scheduler_backup_path(&self.collection_path);
-        storage.backup_to(&backup_path)?;
+        let backup_path = self.create_recovery_backup(&storage, "scheduler-rebuild")?;
 
         let cards = storage.study_cards_for_deck(deck_id)?;
         let mut rebuilt = Vec::with_capacity(cards.len());
@@ -1107,18 +1117,6 @@ fn maybe_run_automatic_optimizer(
         run_optimizer(storage, deck_id, now_ms)?;
     }
     Ok(())
-}
-
-fn scheduler_backup_path(collection_path: &Path) -> PathBuf {
-    let name = collection_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("collection.db");
-    collection_path.with_file_name(format!(
-        "{name}.scheduler-rebuild-{}-{}.bak",
-        Utc::now().timestamp_millis(),
-        Uuid::new_v4()
-    ))
 }
 
 fn scheduler_diagnostics_path(collection_path: &Path) -> PathBuf {
@@ -1509,6 +1507,14 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     LibraryBulkResultDto::export_all_to(output)?;
     LibraryExportRequest::export_all_to(output)?;
     LibraryExportResultDto::export_all_to(output)?;
+    ArchiveScopeDto::export_all_to(output)?;
+    ArchiveExportRequest::export_all_to(output)?;
+    PortableExportResultDto::export_all_to(output)?;
+    ArchiveImportModeDto::export_all_to(output)?;
+    ArchiveImportRequest::export_all_to(output)?;
+    PortableArchivePreviewDto::export_all_to(output)?;
+    ArchiveImportResultDto::export_all_to(output)?;
+    BackupDto::export_all_to(output)?;
     Ok(())
 }
 

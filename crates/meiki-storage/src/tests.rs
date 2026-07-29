@@ -50,6 +50,30 @@ fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent
     }
 }
 
+fn migration_backup_schema_version(directory: &std::path::Path, prefix: &str) -> u32 {
+    let backup = std::fs::read_dir(directory.join("backups"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .into_iter()
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(prefix))
+        })
+        .unwrap()
+        .path();
+    Connection::open(backup)
+        .unwrap()
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
 #[test]
 fn parameter_adoption_and_rollback_are_atomic_and_prospective() {
     let mut storage = Storage::open_in_memory().unwrap();
@@ -539,6 +563,10 @@ fn version_one_collection_migrates_to_the_core_model() {
 
     let mut storage = Storage::open(&path).unwrap();
     assert_eq!(storage.schema_version().unwrap(), 7);
+    assert_eq!(
+        migration_backup_schema_version(directory.path(), "v1.db.migration-v1-"),
+        1
+    );
     let restored = storage.load_study_card("legacy-card").unwrap();
     assert!(!restored.card.suspended);
     assert_eq!(restored.source_item.deck_id, DEFAULT_DECK_ID);
@@ -592,6 +620,10 @@ fn version_five_media_migrates_to_roles_and_technical_metadata() {
 
     let storage = Storage::open(&path).unwrap();
     assert_eq!(storage.schema_version().unwrap(), 7);
+    assert_eq!(
+        migration_backup_schema_version(directory.path(), "legacy-media.db.migration-v5-"),
+        5
+    );
     let image = storage.get_media_reference("legacy-image").unwrap();
     assert_eq!(image.role, MediaRole::RevealImage);
     assert_eq!(image.byte_size, 0);
@@ -630,6 +662,63 @@ fn backup_restores_content_history_and_projection() {
             .answer,
         "行きます"
     );
+}
+
+#[test]
+fn rolling_backups_prune_oldest_and_replace_an_existing_collection() {
+    let directory = tempdir().unwrap();
+    let source_path = directory.path().join("source.db");
+    let destination_path = directory.path().join("destination.db");
+    let backup;
+    {
+        let mut source = Storage::open(&source_path).unwrap();
+        source.seed_walking_skeleton(1_000).unwrap();
+        for _ in 0..5 {
+            source
+                .create_rolling_backup(&source_path, "test", 3)
+                .unwrap();
+        }
+        let backups = std::fs::read_dir(directory.path().join("backups"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(backups.len(), 3);
+        backup = backups
+            .into_iter()
+            .max_by_key(std::fs::DirEntry::file_name)
+            .unwrap()
+            .path();
+    }
+    drop(Storage::open(&destination_path).unwrap());
+
+    let replaced = Storage::replace_from_backup(&backup, &destination_path).unwrap();
+    assert_eq!(
+        replaced
+            .load_study_card(SAMPLE_CARD_ID)
+            .unwrap()
+            .cloze
+            .answer,
+        "行きます"
+    );
+}
+
+#[test]
+fn portable_history_restore_preserves_events_and_projection() {
+    let mut source = Storage::open_in_memory().unwrap();
+    source.seed_walking_skeleton(1_000).unwrap();
+    let event = sample_event(&source, "portable-review", 10_000);
+    let expected = source.commit_review(&event).unwrap();
+    let baseline = source.load_schedule_baseline(SAMPLE_CARD_ID).unwrap();
+    let events = source.review_events(SAMPLE_CARD_ID).unwrap();
+
+    let mut target = Storage::open_in_memory().unwrap();
+    target.seed_walking_skeleton(1_000).unwrap();
+    target
+        .restore_card_history(SAMPLE_CARD_ID, &baseline, &expected, &events)
+        .unwrap();
+
+    assert_eq!(target.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
+    assert_eq!(target.review_events(SAMPLE_CARD_ID).unwrap(), events);
 }
 
 #[test]

@@ -14,10 +14,11 @@ EXPECTED_INTERNAL_DEPENDENCIES = {
     "meiki-scheduler": {"meiki-domain"},
     "meiki-storage": {"meiki-domain"},
     "meiki-media": set(),
-    "meiki-portable": set(),
+    "meiki-portable": {"meiki-domain"},
     "meiki-application": {
         "meiki-domain",
         "meiki-media",
+        "meiki-portable",
         "meiki-text",
         "meiki-scheduler",
         "meiki-storage",

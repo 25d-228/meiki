@@ -11,7 +11,10 @@ pub use repository::{
     TagRepository,
 };
 
-use std::path::Path;
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use meiki_domain::{Card, Cloze, Direction, MatchingPolicy, ScheduleState, SourceItem};
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, params};
@@ -59,6 +62,13 @@ pub enum StorageError {
     UnsupportedSchema { found: u32, supported: u32 },
     #[error("backup destination already exists: {}", .0.display())]
     BackupDestinationExists(std::path::PathBuf),
+    #[error("storage filesystem operation {operation} failed for {}: {source}", path.display())]
+    Io {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("numeric value for {0} is outside the supported range")]
     NumericRange(&'static str),
 }
@@ -105,6 +115,10 @@ impl Storage {
         let connection = Connection::open(path)?;
         let mut storage = Self { connection };
         storage.configure()?;
+        let current = storage.current_schema_version()?;
+        if current > 0 && current < LATEST_SCHEMA_VERSION {
+            storage.create_rolling_backup(path, &format!("migration-v{current}"), 5)?;
+        }
         storage.migrate()?;
         Ok(storage)
     }
@@ -133,26 +147,7 @@ impl Storage {
     }
 
     fn migrate(&mut self) -> Result<(), StorageError> {
-        let has_schema_table = self
-            .connection
-            .query_row(
-                "SELECT 1
-                 FROM sqlite_schema
-                 WHERE type = 'table' AND name = 'schema_migrations'",
-                [],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        let current = if has_schema_table {
-            self.connection.query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-                [],
-                |row| row.get::<_, u32>(0),
-            )?
-        } else {
-            0
-        };
+        let current = self.current_schema_version()?;
 
         if current > LATEST_SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchema {
@@ -190,6 +185,29 @@ impl Storage {
         Ok(())
     }
 
+    fn current_schema_version(&self) -> Result<u32, StorageError> {
+        let has_schema_table = self
+            .connection
+            .query_row(
+                "SELECT 1
+                 FROM sqlite_schema
+                 WHERE type = 'table' AND name = 'schema_migrations'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if has_schema_table {
+            Ok(self.connection.query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                [],
+                |row| row.get::<_, u32>(0),
+            )?)
+        } else {
+            Ok(0)
+        }
+    }
+
     /// Returns the latest applied schema version.
     ///
     /// # Errors
@@ -222,6 +240,56 @@ impl Storage {
         Ok(())
     }
 
+    /// Creates and prunes a timestamped recovery backup beside a collection.
+    ///
+    /// The policy keeps the newest `keep` backups for the supplied reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the reason or retention count is invalid,
+    /// a directory operation fails, or `SQLite` cannot create the backup.
+    pub fn create_rolling_backup(
+        &self,
+        collection_path: &Path,
+        reason: &str,
+        keep: usize,
+    ) -> Result<PathBuf, StorageError> {
+        if keep == 0
+            || reason.is_empty()
+            || !reason
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(StorageError::InvalidAggregate(
+                "rolling backup policy is invalid".into(),
+            ));
+        }
+        let parent = collection_path.parent().unwrap_or_else(|| Path::new("."));
+        let directory = parent.join("backups");
+        fs::create_dir_all(&directory)
+            .map_err(|error| storage_io("create backup directory", &directory, error))?;
+        let name = collection_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("collection.db");
+        let timestamp = self.connection.query_row(
+            "SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER)",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let destination = (0_u16..=u16::MAX)
+            .map(|sequence| {
+                directory.join(format!("{name}.{reason}-{timestamp}-{sequence:04}.bak"))
+            })
+            .find(|candidate| !candidate.exists())
+            .ok_or_else(|| {
+                StorageError::InvalidAggregate("no rolling backup filename is available".into())
+            })?;
+        self.backup_to(&destination)?;
+        prune_rolling_backups(&directory, &format!("{name}.{reason}-"), keep)?;
+        Ok(destination)
+    }
+
     /// Restores a backup into a new collection path and applies pending
     /// migrations.
     ///
@@ -235,6 +303,35 @@ impl Storage {
                 destination.to_path_buf(),
             ));
         }
+        let mut connection = Connection::open(destination)?;
+        connection.restore(MAIN_DB, backup, None::<fn(rusqlite::backup::Progress)>)?;
+        let mut storage = Self { connection };
+        storage.configure()?;
+        storage.migrate()?;
+        Ok(storage)
+    }
+
+    /// Replaces a collection with a validated `SQLite` backup.
+    ///
+    /// Callers are responsible for creating a recovery backup before using
+    /// this operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the backup fails integrity checks or the
+    /// restore/migration cannot complete.
+    pub fn replace_from_backup(backup: &Path, destination: &Path) -> Result<Self, StorageError> {
+        let source =
+            Connection::open_with_flags(backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let integrity =
+            source.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))?;
+        if integrity != "ok" {
+            return Err(StorageError::InvalidAggregate(format!(
+                "backup integrity check failed: {integrity}"
+            )));
+        }
+        drop(source);
+
         let mut connection = Connection::open(destination)?;
         connection.restore(MAIN_DB, backup, None::<fn(rusqlite::backup::Progress)>)?;
         let mut storage = Self { connection };
@@ -305,6 +402,40 @@ impl Storage {
         )?;
         transaction.commit()?;
         Ok(())
+    }
+}
+
+fn prune_rolling_backups(directory: &Path, prefix: &str, keep: usize) -> Result<(), StorageError> {
+    let entries = fs::read_dir(directory)
+        .map_err(|error| storage_io("read backup directory", directory, error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| storage_io("read backup directory entry", directory, error))?;
+    let mut backups = entries
+        .into_iter()
+        .filter(|entry| {
+            entry.path().is_file()
+                && entry.file_name().to_str().is_some_and(|name| {
+                    name.starts_with(prefix)
+                        && Path::new(name)
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("bak"))
+                })
+        })
+        .collect::<Vec<_>>();
+    backups.sort_by_key(std::fs::DirEntry::file_name);
+    let remove_count = backups.len().saturating_sub(keep);
+    for entry in backups.into_iter().take(remove_count) {
+        let path = entry.path();
+        fs::remove_file(&path).map_err(|error| storage_io("prune backup", &path, error))?;
+    }
+    Ok(())
+}
+
+fn storage_io(operation: &'static str, path: &Path, source: io::Error) -> StorageError {
+    StorageError::Io {
+        operation,
+        path: path.to_path_buf(),
+        source,
     }
 }
 
