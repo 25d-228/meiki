@@ -8,7 +8,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::{
     Storage, StorageError, StoredSourceNote, StoredStudyCard, direction_from_database,
-    direction_to_database, entity_not_found,
+    direction_to_database, entity_not_found, matching_policy_from_database,
+    matching_policy_to_database,
 };
 
 /// Persistence operations for mutable decks.
@@ -128,6 +129,7 @@ pub trait CardRepository {
         initial_schedule: &ScheduleState,
     ) -> Result<(), StorageError>;
     fn get_card(&self, id: &str) -> Result<Card, StorageError>;
+    fn get_card_for_cloze(&self, cloze_id: &str) -> Result<Card, StorageError>;
     fn update_card(&mut self, card: &Card) -> Result<(), StorageError>;
     fn delete_card(&mut self, id: &str) -> Result<(), StorageError>;
 }
@@ -146,14 +148,20 @@ impl DeckRepository for Storage {
             "UPDATE decks
              SET name = ?1,
                  description = ?2,
-                 target_retention_basis_points = ?3,
-                 new_cards_per_day = ?4,
-                 maximum_interval_days = ?5,
-                 updated_at_ms = ?6
-             WHERE id = ?7",
+                 language_tag = ?3,
+                 direction = ?4,
+                 matching_policy = ?5,
+                 target_retention_basis_points = ?6,
+                 new_cards_per_day = ?7,
+                 maximum_interval_days = ?8,
+                 updated_at_ms = ?9
+             WHERE id = ?10",
             params![
                 deck.name,
                 deck.description,
+                deck.language_tag,
+                direction_to_database(deck.direction),
+                matching_policy_to_database(deck.matching_policy),
                 deck.settings.target_retention_basis_points,
                 deck.settings.new_cards_per_day,
                 deck.settings.maximum_interval_days,
@@ -541,6 +549,19 @@ impl CardRepository for Storage {
         load_card(&self.connection, id)
     }
 
+    fn get_card_for_cloze(&self, cloze_id: &str) -> Result<Card, StorageError> {
+        let card_id = self
+            .connection
+            .query_row(
+                "SELECT id FROM cards WHERE cloze_id = ?1",
+                [cloze_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| entity_not_found("card for cloze", cloze_id))?;
+        load_card(&self.connection, &card_id)
+    }
+
     fn update_card(&mut self, card: &Card) -> Result<(), StorageError> {
         let stored = load_card(&self.connection, &card.id)?;
         if stored.cloze_id != card.cloze_id {
@@ -869,13 +890,14 @@ fn insert_cloze(connection: &Connection, cloze: &Cloze) -> Result<(), StorageErr
             hint_direction,
             language_tag,
             direction,
+            matching_policy,
             explanation,
             explanation_language_tag,
             explanation_direction,
             created_at_ms,
             updated_at_ms
          ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
          )",
         params![
             cloze.id,
@@ -887,6 +909,7 @@ fn insert_cloze(connection: &Connection, cloze: &Cloze) -> Result<(), StorageErr
             hint_direction,
             cloze.language_tag,
             direction_to_database(cloze.direction),
+            cloze.matching_policy.map(matching_policy_to_database),
             explanation,
             explanation_language,
             explanation_direction,
@@ -911,11 +934,12 @@ fn update_cloze_row(connection: &Connection, cloze: &Cloze) -> Result<usize, Sto
              hint_direction = ?5,
              language_tag = ?6,
              direction = ?7,
-             explanation = ?8,
-             explanation_language_tag = ?9,
-             explanation_direction = ?10,
-             updated_at_ms = ?11
-         WHERE id = ?12 AND source_item_id = ?13",
+             matching_policy = ?8,
+             explanation = ?9,
+             explanation_language_tag = ?10,
+             explanation_direction = ?11,
+             updated_at_ms = ?12
+         WHERE id = ?13 AND source_item_id = ?14",
         params![
             cloze.answer,
             accepted_answers,
@@ -924,6 +948,7 @@ fn update_cloze_row(connection: &Connection, cloze: &Cloze) -> Result<usize, Sto
             hint_direction,
             cloze.language_tag,
             direction_to_database(cloze.direction),
+            cloze.matching_policy.map(matching_policy_to_database),
             explanation,
             explanation_language,
             explanation_direction,
@@ -948,6 +973,7 @@ fn load_cloze(connection: &Connection, id: &str) -> Result<Cloze, StorageError> 
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
         i64,
         i64,
     );
@@ -963,6 +989,7 @@ fn load_cloze(connection: &Connection, id: &str) -> Result<Cloze, StorageError> 
                 hint_direction,
                 language_tag,
                 direction,
+                matching_policy,
                 explanation,
                 explanation_language_tag,
                 explanation_direction,
@@ -987,6 +1014,7 @@ fn load_cloze(connection: &Connection, id: &str) -> Result<Cloze, StorageError> 
                     row.get(11)?,
                     row.get(12)?,
                     row.get(13)?,
+                    row.get(14)?,
                 ))
             },
         )
@@ -1001,11 +1029,16 @@ fn load_cloze(connection: &Connection, id: &str) -> Result<Cloze, StorageError> 
         hint: localized_text_from_columns(stored.4, stored.5, stored.6.as_deref())?,
         language_tag: stored.7,
         direction: direction_from_database(&stored.8)?,
+        matching_policy: stored
+            .9
+            .as_deref()
+            .map(matching_policy_from_database)
+            .transpose()?,
         annotations: load_owned_annotations(connection, "cloze_annotations", "cloze_id", id)?,
-        explanation: localized_text_from_columns(stored.9, stored.10, stored.11.as_deref())?,
+        explanation: localized_text_from_columns(stored.10, stored.11, stored.12.as_deref())?,
         media: load_linked_media(connection, "cloze_media", "cloze_id", id)?,
-        created_at_ms: stored.12,
-        updated_at_ms: stored.13,
+        created_at_ms: stored.13,
+        updated_at_ms: stored.14,
     })
 }
 
@@ -1076,16 +1109,22 @@ fn insert_deck(connection: &Connection, deck: &Deck) -> Result<(), StorageError>
             id,
             name,
             description,
+            language_tag,
+            direction,
+            matching_policy,
             target_retention_basis_points,
             new_cards_per_day,
             maximum_interval_days,
             created_at_ms,
             updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             deck.id,
             deck.name,
             deck.description,
+            deck.language_tag,
+            direction_to_database(deck.direction),
+            matching_policy_to_database(deck.matching_policy),
             deck.settings.target_retention_basis_points,
             deck.settings.new_cards_per_day,
             deck.settings.maximum_interval_days,
@@ -1103,6 +1142,9 @@ fn load_deck(connection: &Connection, id: &str) -> Result<Deck, StorageError> {
                 id,
                 name,
                 description,
+                language_tag,
+                direction,
+                matching_policy,
                 target_retention_basis_points,
                 new_cards_per_day,
                 maximum_interval_days,
@@ -1116,18 +1158,27 @@ fn load_deck(connection: &Connection, id: &str) -> Result<Deck, StorageError> {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     description: row.get(2)?,
+                    language_tag: row.get(3)?,
+                    direction: direction_from_database(&row.get::<_, String>(4)?)
+                        .map_err(to_sql_conversion_error)?,
+                    matching_policy: matching_policy_from_database(&row.get::<_, String>(5)?)
+                        .map_err(to_sql_conversion_error)?,
                     settings: meiki_domain::StudySettingsOverride {
-                        target_retention_basis_points: row.get(3)?,
-                        new_cards_per_day: row.get(4)?,
-                        maximum_interval_days: row.get(5)?,
+                        target_retention_basis_points: row.get(6)?,
+                        new_cards_per_day: row.get(7)?,
+                        maximum_interval_days: row.get(8)?,
                     },
-                    created_at_ms: row.get(6)?,
-                    updated_at_ms: row.get(7)?,
+                    created_at_ms: row.get(9)?,
+                    updated_at_ms: row.get(10)?,
                 })
             },
         )
         .optional()?
         .ok_or_else(|| entity_not_found("deck", id))
+}
+
+fn to_sql_conversion_error(error: StorageError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
 }
 
 fn insert_tag(connection: &Connection, tag: &Tag) -> Result<(), StorageError> {

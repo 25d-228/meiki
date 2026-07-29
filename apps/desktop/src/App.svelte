@@ -22,6 +22,8 @@
   let activeScreen: Screen = "study";
   let theme: ThemeMode = "system";
   let online = true;
+  let authoringDirty = false;
+  let authoringComposing = false;
   let mainElement: HTMLElement;
 
   onMount(() => {
@@ -32,11 +34,20 @@
 
     const markOnline = () => (online = true);
     const markOffline = () => (online = false);
+    const trackAuthoring = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ dirty: boolean; composing: boolean }>
+      ).detail;
+      authoringDirty = detail.dirty;
+      authoringComposing = detail.composing;
+    };
     window.addEventListener("online", markOnline);
     window.addEventListener("offline", markOffline);
+    window.addEventListener("meiki-authoring-state", trackAuthoring);
     return () => {
       window.removeEventListener("online", markOnline);
       window.removeEventListener("offline", markOffline);
+      window.removeEventListener("meiki-authoring-state", trackAuthoring);
     };
   });
 
@@ -56,6 +67,13 @@
 
   async function navigate(value: string): Promise<void> {
     if (!isScreen(value)) return;
+    if (activeScreen === "editor" && value !== "editor" && authoringDirty) {
+      if (authoringComposing) return;
+      if (!window.confirm("Leave the editor and discard unsaved changes?"))
+        return;
+    }
+    authoringDirty = false;
+    authoringComposing = false;
     activeScreen = value;
     await tick();
     mainElement.focus();
