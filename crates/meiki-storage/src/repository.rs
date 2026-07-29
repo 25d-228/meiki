@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use meiki_domain::{
-    Annotation, Card, Cloze, Deck, LocalizedText, MediaKind, MediaReference, OptimizerStatus,
-    ScheduleState, SchedulerParameterSet, SchedulerProfile, SegmentContent, SemanticSegment,
-    SourceItem, StudyIntensity, Tag,
+    Annotation, Card, Cloze, Deck, LocalizedText, MediaKind, MediaReference, MediaRole,
+    OptimizerStatus, ScheduleState, SchedulerParameterSet, SchedulerProfile, SegmentContent,
+    SemanticSegment, SourceItem, StudyIntensity, Tag,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -67,6 +67,8 @@ pub trait MediaRepository {
     fn get_media_reference(&self, id: &str) -> Result<MediaReference, StorageError>;
     fn update_media_reference(&mut self, media: &MediaReference) -> Result<(), StorageError>;
     fn delete_media_reference(&mut self, id: &str) -> Result<(), StorageError>;
+    fn media_reference_usage(&self, id: &str) -> Result<u64, StorageError>;
+    fn media_reference_count_for_hash(&self, content_hash: &str) -> Result<u64, StorageError>;
 }
 
 /// Persistence operations for versioned scheduler parameter sets.
@@ -269,33 +271,70 @@ impl MediaRepository for Storage {
     fn update_media_reference(&mut self, media: &MediaReference) -> Result<(), StorageError> {
         let changed = self.connection.execute(
             "UPDATE media_references
-             SET content_hash = ?1,
-                 kind = ?2,
-                 media_type = ?3,
-                 original_file_name = ?4,
-                 alt_text = ?5,
-                 language_tag = ?6,
-                 direction = ?7
-             WHERE id = ?8",
+             SET role = ?1,
+                 original_file_name = ?2,
+                 alt_text = ?3,
+                 language_tag = ?4,
+                 direction = ?5
+             WHERE id = ?6
+               AND content_hash = ?7
+               AND kind = ?8
+               AND media_type = ?9
+               AND byte_size = ?10
+               AND width IS ?11
+               AND height IS ?12
+               AND duration_ms IS ?13",
             params![
-                media.content_hash,
-                media_kind_to_database(media.kind),
-                media.media_type,
+                media_role_to_database(media.role),
                 media.original_file_name,
                 media.alt_text,
                 media.language_tag,
                 direction_to_database(media.direction),
                 media.id,
+                media.content_hash,
+                media_kind_to_database(media.kind),
+                media.media_type,
+                media.byte_size,
+                media.width,
+                media.height,
+                media.duration_ms,
             ],
         )?;
         ensure_changed(changed, "media reference", &media.id)
     }
 
     fn delete_media_reference(&mut self, id: &str) -> Result<(), StorageError> {
+        let references = self.media_reference_usage(id)?;
+        if references > 0 {
+            return Err(StorageError::MediaInUse {
+                id: id.to_owned(),
+                references,
+            });
+        }
         let changed = self
             .connection
             .execute("DELETE FROM media_references WHERE id = ?1", [id])?;
         ensure_changed(changed, "media reference", id)
+    }
+
+    fn media_reference_usage(&self, id: &str) -> Result<u64, StorageError> {
+        let count = self.connection.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM source_item_media WHERE media_reference_id = ?1)
+                + (SELECT COUNT(*) FROM cloze_media WHERE media_reference_id = ?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    fn media_reference_count_for_hash(&self, content_hash: &str) -> Result<u64, StorageError> {
+        let count = self.connection.query_row(
+            "SELECT COUNT(*) FROM media_references WHERE content_hash = ?1",
+            [content_hash],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 }
 
@@ -1556,20 +1595,30 @@ fn insert_media(connection: &Connection, media: &MediaReference) -> Result<(), S
             id,
             content_hash,
             kind,
+            role,
             media_type,
+            byte_size,
             original_file_name,
             alt_text,
+            width,
+            height,
+            duration_ms,
             language_tag,
             direction,
             created_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             media.id,
             media.content_hash,
             media_kind_to_database(media.kind),
+            media_role_to_database(media.role),
             media.media_type,
+            media.byte_size,
             media.original_file_name,
             media.alt_text,
+            media.width,
+            media.height,
+            media.duration_ms,
             media.language_tag,
             direction_to_database(media.direction),
             media.created_at_ms,
@@ -1579,38 +1628,60 @@ fn insert_media(connection: &Connection, media: &MediaReference) -> Result<(), S
 }
 
 fn upsert_media(connection: &Connection, media: &MediaReference) -> Result<(), StorageError> {
-    connection.execute(
+    let changed = connection.execute(
         "INSERT INTO media_references(
             id,
             content_hash,
             kind,
+            role,
             media_type,
+            byte_size,
             original_file_name,
             alt_text,
+            width,
+            height,
+            duration_ms,
             language_tag,
             direction,
             created_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(id) DO UPDATE SET
-            content_hash = excluded.content_hash,
-            kind = excluded.kind,
-            media_type = excluded.media_type,
+            role = excluded.role,
             original_file_name = excluded.original_file_name,
             alt_text = excluded.alt_text,
             language_tag = excluded.language_tag,
-            direction = excluded.direction",
+            direction = excluded.direction
+         WHERE
+            media_references.content_hash = excluded.content_hash
+            AND media_references.kind = excluded.kind
+            AND media_references.media_type = excluded.media_type
+            AND media_references.byte_size = excluded.byte_size
+            AND media_references.width IS excluded.width
+            AND media_references.height IS excluded.height
+            AND media_references.duration_ms IS excluded.duration_ms",
         params![
             media.id,
             media.content_hash,
             media_kind_to_database(media.kind),
+            media_role_to_database(media.role),
             media.media_type,
+            media.byte_size,
             media.original_file_name,
             media.alt_text,
+            media.width,
+            media.height,
+            media.duration_ms,
             media.language_tag,
             direction_to_database(media.direction),
             media.created_at_ms,
         ],
     )?;
+    if changed != 1 {
+        return Err(StorageError::InvalidAggregate(format!(
+            "media reference {} cannot change its stored object identity",
+            media.id
+        )));
+    }
     Ok(())
 }
 
@@ -1621,9 +1692,14 @@ fn load_media(connection: &Connection, id: &str) -> Result<MediaReference, Stora
                 id,
                 content_hash,
                 kind,
+                role,
                 media_type,
+                byte_size,
                 original_file_name,
                 alt_text,
+                width,
+                height,
+                duration_ms,
                 language_tag,
                 direction,
                 created_at_ms
@@ -1636,11 +1712,16 @@ fn load_media(connection: &Connection, id: &str) -> Result<MediaReference, Stora
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, u64>(5)?,
                     row.get::<_, Option<String>>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, i64>(8)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<u32>>(8)?,
+                    row.get::<_, Option<u32>>(9)?,
+                    row.get::<_, Option<u64>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, i64>(13)?,
                 ))
             },
         )
@@ -1650,12 +1731,17 @@ fn load_media(connection: &Connection, id: &str) -> Result<MediaReference, Stora
         id: stored.0,
         content_hash: stored.1,
         kind: media_kind_from_database(&stored.2)?,
-        media_type: stored.3,
-        original_file_name: stored.4,
-        alt_text: stored.5,
-        language_tag: stored.6,
-        direction: direction_from_database(&stored.7)?,
-        created_at_ms: stored.8,
+        role: media_role_from_database(&stored.3)?,
+        media_type: stored.4,
+        byte_size: stored.5,
+        original_file_name: stored.6,
+        alt_text: stored.7,
+        width: stored.8,
+        height: stored.9,
+        duration_ms: stored.10,
+        language_tag: stored.11,
+        direction: direction_from_database(&stored.12)?,
+        created_at_ms: stored.13,
     })
 }
 
@@ -2039,6 +2125,26 @@ fn media_kind_from_database(value: &str) -> Result<MediaKind, StorageError> {
         "image" => Ok(MediaKind::Image),
         _ => Err(StorageError::InvalidStoredValue {
             field: "media kind",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+const fn media_role_to_database(role: MediaRole) -> &'static str {
+    match role {
+        MediaRole::PromptAudio => "prompt_audio",
+        MediaRole::AnswerAudio => "answer_audio",
+        MediaRole::RevealImage => "reveal_image",
+    }
+}
+
+fn media_role_from_database(value: &str) -> Result<MediaRole, StorageError> {
+    match value {
+        "prompt_audio" => Ok(MediaRole::PromptAudio),
+        "answer_audio" => Ok(MediaRole::AnswerAudio),
+        "reveal_image" => Ok(MediaRole::RevealImage),
+        _ => Err(StorageError::InvalidStoredValue {
+            field: "media role",
             value: value.to_owned(),
         }),
     }

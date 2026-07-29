@@ -23,7 +23,8 @@ const AUTHORING_DEFAULTS_MIGRATION: &str =
     include_str!("../migrations/0003_authoring_defaults.sql");
 const FSRS7_SCHEDULER_MIGRATION: &str = include_str!("../migrations/0004_fsrs7_scheduler.sql");
 const STUDY_SESSION_MIGRATION: &str = include_str!("../migrations/0005_study_session.sql");
-const LATEST_SCHEMA_VERSION: u32 = 5;
+const MEDIA_PIPELINE_MIGRATION: &str = include_str!("../migrations/0006_media_pipeline.sql");
+const LATEST_SCHEMA_VERSION: u32 = 6;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -45,6 +46,8 @@ pub enum StorageError {
     StaleReview,
     #[error("card {0} has no latest review to undo")]
     NothingToUndo(String),
+    #[error("media reference {id} is still used by {references} owner(s)")]
+    MediaInUse { id: String, references: u64 },
     #[error("review history cannot rebuild the schedule projection: {0}")]
     ProjectionMismatch(String),
     #[error("invalid stored value for {field}: {value}")]
@@ -162,6 +165,9 @@ impl Storage {
         }
         if current < 5 {
             transaction.execute_batch(STUDY_SESSION_MIGRATION)?;
+        }
+        if current < 6 {
+            transaction.execute_batch(MEDIA_PIPELINE_MIGRATION)?;
         }
         transaction.commit()?;
         Ok(())

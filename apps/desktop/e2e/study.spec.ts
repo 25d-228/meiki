@@ -26,6 +26,45 @@ test("checks, grades, and restores the walking-skeleton card", async ({
   await expect(page.getByText("1 review saved")).toBeVisible();
 });
 
+test("plays prompt and answer audio, reveals an image, and tolerates missing media", async ({
+  page,
+}) => {
+  await page.goto("/?media=ready");
+  await expect(
+    page.getByRole("button", { name: "Replay audio" }),
+  ).toBeVisible();
+  await expect(page.locator("audio")).toHaveCount(1);
+  await expect(page.locator("audio")).not.toHaveAttribute("autoplay");
+  await page.locator("#study-prompt").click();
+  await page.keyboard.press("r");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Number(localStorage.getItem("meiki-e2e-media-play-count") ?? "0"),
+      ),
+    )
+    .toBe(1);
+
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await expect(page.locator("audio")).toHaveCount(1);
+  await expect(
+    page.getByRole("img", { name: "A quiet library reading room" }),
+  ).toBeVisible();
+  await page.keyboard.press("r");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Number(localStorage.getItem("meiki-e2e-media-play-count") ?? "0"),
+      ),
+    )
+    .toBe(2);
+
+  await page.goto("/?media=missing");
+  await expect(page.getByText("Media file is missing")).toBeVisible();
+  await expect(page.getByLabel("Your answer")).toBeEnabled();
+});
+
 test("does not submit Enter during IME composition", async ({ page }) => {
   await page.goto("/");
   const input = page.getByLabel("Your answer");

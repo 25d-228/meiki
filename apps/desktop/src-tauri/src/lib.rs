@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use meiki_application::{
     ApplicationService, AuthoringDraftDto, AuthoringPreviewDto, CheckAnswerRequest,
-    GradeReviewRequest, GradeReviewResultDto, MakeClozeRequest, RebuildSchedulerResultDto,
-    RemoveClozeRequest, ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto,
-    SchedulerSettingsDto, StudyCardDto, SuspendCardRequest, UndoReviewRequest, UndoReviewResultDto,
-    UpdateSchedulerSettingsRequest,
+    GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, MakeClozeRequest,
+    RebuildSchedulerResultDto, RemoveClozeRequest, ReorderSegmentsRequest, RevealDto,
+    SchedulerDiagnosticsExportDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto,
+    SuspendCardRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -180,6 +180,18 @@ fn new_authoring_draft(state: State<'_, AppContext>) -> Result<AuthoringDraftDto
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+fn import_media(
+    request: ImportMediaRequest,
+    state: State<'_, AppContext>,
+) -> Result<StudyMediaDto, String> {
+    state
+        .service()
+        .import_media(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 fn make_cloze(
     request: MakeClozeRequest,
     state: State<'_, AppContext>,
@@ -247,6 +259,7 @@ fn save_authoring_draft(
 /// failure.
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let collection_path = app.path().app_data_dir()?.join("collection.db");
             app.manage(AppContext { collection_path });
@@ -267,6 +280,7 @@ pub fn run() {
             rebuild_scheduler,
             export_scheduler_diagnostics,
             new_authoring_draft,
+            import_media,
             make_cloze,
             remove_cloze,
             reorder_segments,

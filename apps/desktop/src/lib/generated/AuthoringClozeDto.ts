@@ -2,5 +2,6 @@
 import type { AnnotationDraftDto } from "./AnnotationDraftDto";
 import type { DirectionDto } from "./DirectionDto";
 import type { MatchingPolicyDto } from "./MatchingPolicyDto";
+import type { StudyMediaDto } from "./StudyMediaDto";
 
-export type AuthoringClozeDto = { id: string, card_id: string, answer: string, accepted_answers: Array<string>, hint: string, language_tag: string | null, direction: DirectionDto, matching_policy: MatchingPolicyDto | null, annotations: Array<AnnotationDraftDto>, explanation_markdown: string, };
+export type AuthoringClozeDto = { id: string, card_id: string, answer: string, accepted_answers: Array<string>, hint: string, language_tag: string | null, direction: DirectionDto, matching_policy: MatchingPolicyDto | null, annotations: Array<AnnotationDraftDto>, explanation_markdown: string, media: Array<StudyMediaDto>, };

@@ -10,12 +10,14 @@ Internal dependencies point inward:
 ```text
 Svelte UI → Tauri adapter → meiki-application
                               ├── meiki-domain
+                              ├── meiki-media
                               ├── meiki-text → meiki-domain
                               ├── meiki-scheduler → meiki-domain
                               └── meiki-storage → meiki-domain
 
-meiki-media and meiki-portable remain independent ownership boundaries until
-their issues introduce concrete dependencies.
+meiki-media remains an independent filesystem ownership boundary. The
+application coordinates it with domain and storage references. meiki-portable
+remains independent until its issue introduces concrete dependencies.
 ```
 
 `meiki-domain` has no framework dependency. Only `meiki-storage` may depend on

@@ -17,6 +17,7 @@ EXPECTED_INTERNAL_DEPENDENCIES = {
     "meiki-portable": set(),
     "meiki-application": {
         "meiki-domain",
+        "meiki-media",
         "meiki-text",
         "meiki-scheduler",
         "meiki-storage",

@@ -2,19 +2,23 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use meiki_domain::{
-    Annotation, Card, Cloze, Direction, LocalizedText, MatchingPolicy, SegmentContent,
-    SemanticSegment, SourceItem, StudySettingsOverride,
+    Annotation, Card, Cloze, Direction, LocalizedText, MatchingPolicy, MediaReference,
+    SegmentContent, SemanticSegment, SourceItem, StudySettingsOverride,
 };
 use meiki_scheduler::{Fsrs7Engine, SchedulerConfig, SchedulerEngine};
 use meiki_storage::{
-    CardRepository, DEFAULT_DECK_ID, DeckRepository, SourceNoteRepository, StoredSourceNote,
+    CardRepository, DEFAULT_DECK_ID, DeckRepository, MediaRepository, SourceNoteRepository,
+    Storage, StorageError, StoredSourceNote,
 };
 use meiki_text::GraphemeIndex;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::{ApplicationError, ApplicationService, DirectionDto};
+use crate::{
+    ApplicationError, ApplicationService, DirectionDto, MediaAvailabilityDto, StudyMediaDto,
+    ensure_role_matches_kind, media_type_matches_kind,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +66,7 @@ pub struct AuthoringClozeDto {
     pub matching_policy: Option<MatchingPolicyDto>,
     pub annotations: Vec<AnnotationDraftDto>,
     pub explanation_markdown: String,
+    pub media: Vec<StudyMediaDto>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -191,6 +196,7 @@ impl ApplicationService {
                         .explanation
                         .as_ref()
                         .map_or_else(String::new, |explanation| explanation.value.clone()),
+                    media: self.study_media(&cloze.media),
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?;
@@ -289,6 +295,7 @@ impl ApplicationService {
             matching_policy: None,
             annotations: Vec::new(),
             explanation_markdown: String::new(),
+            media: Vec::new(),
         });
         draft.active_cloze_id = Some(cloze_id);
         renumber(&mut draft.segments)?;
@@ -413,8 +420,10 @@ impl ApplicationService {
     ) -> Result<AuthoringDraftDto, ApplicationError> {
         validate_for_save(draft)?;
         let now_ms = Utc::now().timestamp_millis();
-        let mut note = stored_note(draft, now_ms);
         let mut storage = self.open_storage()?;
+        self.validate_media_for_save(&storage, draft)?;
+        let mut note = stored_note(draft, now_ms)?;
+        let mut removed_media = Vec::new();
 
         if draft.persisted {
             let existing = storage.get_source_note(&draft.source_id)?;
@@ -422,15 +431,27 @@ impl ApplicationService {
             note.source_item.annotations = existing.source_item.annotations;
             note.source_item.explanation = existing.source_item.explanation;
             note.source_item.media = existing.source_item.media;
+            let requested_media = draft
+                .clozes
+                .iter()
+                .flat_map(|cloze| &cloze.media)
+                .map(|media| media.id.as_str())
+                .collect::<HashSet<_>>();
             for stored_cloze in &existing.clozes {
                 if let Some(cloze) = note
                     .clozes
                     .iter_mut()
                     .find(|cloze| cloze.id == stored_cloze.id)
                 {
-                    cloze.media.clone_from(&stored_cloze.media);
                     cloze.created_at_ms = stored_cloze.created_at_ms;
                 }
+                removed_media.extend(
+                    stored_cloze
+                        .media
+                        .iter()
+                        .filter(|media| !requested_media.contains(media.id.as_str()))
+                        .cloned(),
+                );
             }
             let requested = draft
                 .clozes
@@ -475,9 +496,51 @@ impl ApplicationService {
             }
         }
 
+        for media in removed_media {
+            if storage.media_reference_usage(&media.id)? == 0 {
+                storage.delete_media_reference(&media.id)?;
+                if storage.media_reference_count_for_hash(&media.content_hash)? == 0 {
+                    match self.media_store().remove(&media.content_hash) {
+                        Ok(()) | Err(meiki_media::MediaError::MissingObject(_)) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
+        }
+
         let mut saved = draft.clone();
         saved.persisted = true;
         Ok(saved)
+    }
+
+    fn validate_media_for_save(
+        &self,
+        storage: &Storage,
+        draft: &AuthoringDraftDto,
+    ) -> Result<(), ApplicationError> {
+        for attachment in draft.clozes.iter().flat_map(|cloze| &cloze.media) {
+            let media = media_reference(attachment, Utc::now().timestamp_millis())?;
+            match storage.get_media_reference(&media.id) {
+                Ok(existing) => {
+                    if !same_media_object(&existing, &media) {
+                        return Err(invalid(
+                            "an existing media attachment cannot change its stored object identity",
+                        ));
+                    }
+                }
+                Err(StorageError::EntityNotFound { .. }) => {
+                    let path = self.media_store().resolve(&media.content_hash)?;
+                    let actual_size = std::fs::metadata(path)
+                        .map_err(|_| invalid("the imported media object could not be inspected"))?
+                        .len();
+                    if actual_size != media.byte_size {
+                        return Err(invalid("the imported media size does not match its object"));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -544,6 +607,20 @@ fn validate_draft_shape(draft: &AuthoringDraftDto) -> Result<(), ApplicationErro
     if annotation_ids.len() != annotation_count {
         return Err(invalid("annotation identities must be unique"));
     }
+    let media_count = draft
+        .clozes
+        .iter()
+        .map(|cloze| cloze.media.len())
+        .sum::<usize>();
+    let media_ids = draft
+        .clozes
+        .iter()
+        .flat_map(|cloze| &cloze.media)
+        .map(|media| media.id.as_str())
+        .collect::<HashSet<_>>();
+    if media_ids.len() != media_count {
+        return Err(invalid("media attachment identities must be unique"));
+    }
     let segment_ids = draft
         .segments
         .iter()
@@ -608,8 +685,11 @@ fn validate_limited_markdown(value: &str) -> Result<(), ApplicationError> {
     Ok(())
 }
 
-fn stored_note(draft: &AuthoringDraftDto, now_ms: i64) -> StoredSourceNote {
-    StoredSourceNote {
+fn stored_note(
+    draft: &AuthoringDraftDto,
+    now_ms: i64,
+) -> Result<StoredSourceNote, ApplicationError> {
+    Ok(StoredSourceNote {
         source_item: SourceItem {
             id: draft.source_id.clone(),
             deck_id: draft.deck_id.clone(),
@@ -640,37 +720,94 @@ fn stored_note(draft: &AuthoringDraftDto, now_ms: i64) -> StoredSourceNote {
         clozes: draft
             .clozes
             .iter()
-            .map(|cloze| Cloze {
-                id: cloze.id.clone(),
-                source_item_id: draft.source_id.clone(),
-                answer: cloze.answer.clone(),
-                accepted_answers: cloze.accepted_answers.clone(),
-                hint: localized(&cloze.hint, cloze.language_tag.clone(), cloze.direction),
-                language_tag: cloze.language_tag.clone(),
-                direction: cloze.direction.into(),
-                matching_policy: cloze.matching_policy.map(Into::into),
-                annotations: cloze
-                    .annotations
-                    .iter()
-                    .map(|annotation| Annotation {
-                        id: annotation.id.clone(),
-                        label: annotation.label.clone(),
-                        value: annotation.value.clone(),
-                        language_tag: annotation.language_tag.clone(),
-                        direction: annotation.direction.into(),
-                    })
-                    .collect(),
-                explanation: localized(
-                    &cloze.explanation_markdown,
-                    cloze.language_tag.clone(),
-                    cloze.direction,
-                ),
-                media: Vec::new(),
-                created_at_ms: draft.created_at_ms,
-                updated_at_ms: now_ms,
+            .map(|cloze| {
+                Ok(Cloze {
+                    id: cloze.id.clone(),
+                    source_item_id: draft.source_id.clone(),
+                    answer: cloze.answer.clone(),
+                    accepted_answers: cloze.accepted_answers.clone(),
+                    hint: localized(&cloze.hint, cloze.language_tag.clone(), cloze.direction),
+                    language_tag: cloze.language_tag.clone(),
+                    direction: cloze.direction.into(),
+                    matching_policy: cloze.matching_policy.map(Into::into),
+                    annotations: cloze
+                        .annotations
+                        .iter()
+                        .map(|annotation| Annotation {
+                            id: annotation.id.clone(),
+                            label: annotation.label.clone(),
+                            value: annotation.value.clone(),
+                            language_tag: annotation.language_tag.clone(),
+                            direction: annotation.direction.into(),
+                        })
+                        .collect(),
+                    explanation: localized(
+                        &cloze.explanation_markdown,
+                        cloze.language_tag.clone(),
+                        cloze.direction,
+                    ),
+                    media: cloze
+                        .media
+                        .iter()
+                        .map(|media| media_reference(media, now_ms))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    created_at_ms: draft.created_at_ms,
+                    updated_at_ms: now_ms,
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>, ApplicationError>>()?,
+    })
+}
+
+fn media_reference(
+    media: &StudyMediaDto,
+    created_at_ms: i64,
+) -> Result<MediaReference, ApplicationError> {
+    let kind = media.kind.into();
+    let role = media.role.into();
+    ensure_role_matches_kind(role, kind)?;
+    if !media_type_matches_kind(&media.media_type, kind) {
+        return Err(invalid("the media type does not match the attachment kind"));
     }
+    if media.content_hash.is_empty() || media.byte_size == 0 {
+        return Err(invalid(
+            "media attachments require a hash and non-empty object",
+        ));
+    }
+    if media.availability == MediaAvailabilityDto::Unsupported {
+        return Err(invalid("unsupported media cannot be attached"));
+    }
+    Ok(MediaReference {
+        id: media.id.clone(),
+        content_hash: media.content_hash.clone(),
+        kind,
+        role,
+        media_type: media.media_type.clone(),
+        byte_size: media.byte_size,
+        original_file_name: media.original_file_name.clone(),
+        alt_text: media
+            .alt_text
+            .as_ref()
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty()),
+        width: media.width,
+        height: media.height,
+        duration_ms: media.duration_ms,
+        language_tag: media.language_tag.clone(),
+        direction: media.direction.into(),
+        created_at_ms,
+    })
+}
+
+fn same_media_object(left: &MediaReference, right: &MediaReference) -> bool {
+    left.id == right.id
+        && left.content_hash == right.content_hash
+        && left.kind == right.kind
+        && left.media_type == right.media_type
+        && left.byte_size == right.byte_size
+        && left.width == right.width
+        && left.height == right.height
+        && left.duration_ms == right.duration_ms
 }
 
 fn localized(
@@ -769,9 +906,14 @@ fn resolved_direction(
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, io::Write};
+
     use tempfile::tempdir;
 
-    use crate::{CheckAnswerRequest, ComparisonResultDto};
+    use crate::{
+        CheckAnswerRequest, ComparisonResultDto, DirectionDto, ImportMediaRequest,
+        MediaAvailabilityDto, MediaRoleDto,
+    };
 
     use super::{
         ApplicationService, AuthoringSegmentKindDto, MakeClozeRequest, MatchingPolicyDto,
@@ -782,6 +924,49 @@ mod tests {
         let directory = tempdir().unwrap();
         let service = ApplicationService::new(directory.path().join("collection.db"));
         (directory, service)
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = vec![
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        bytes.extend(width.to_be_bytes());
+        bytes.extend(height.to_be_bytes());
+        bytes.extend([8, 6, 0, 0, 0]);
+        bytes
+    }
+
+    fn wav() -> Vec<u8> {
+        let data_size = 16_000_u32;
+        let mut bytes = Vec::with_capacity(16_044);
+        bytes.extend(b"RIFF");
+        bytes.extend((36 + data_size).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16_u32.to_le_bytes());
+        bytes.extend(1_u16.to_le_bytes());
+        bytes.extend(1_u16.to_le_bytes());
+        bytes.extend(8_000_u32.to_le_bytes());
+        bytes.extend(16_000_u32.to_le_bytes());
+        bytes.extend(2_u16.to_le_bytes());
+        bytes.extend(16_u16.to_le_bytes());
+        bytes.extend(b"data");
+        bytes.extend(data_size.to_le_bytes());
+        bytes.resize(16_044, 0);
+        bytes
+    }
+
+    fn one_cloze_draft(service: &ApplicationService) -> super::AuthoringDraftDto {
+        let mut draft = service.new_authoring_draft().unwrap();
+        draft.segments[0].text = "図書館".into();
+        let segment_id = draft.segments[0].id.clone();
+        service
+            .make_cloze(MakeClozeRequest {
+                draft,
+                segment_id,
+                selection_start_utf16: 0,
+                selection_end_utf16: 3,
+            })
+            .unwrap()
     }
 
     #[test]
@@ -932,5 +1117,156 @@ mod tests {
         draft.persisted = true;
         draft.clozes[0].explanation_markdown = "<script>alert(1)</script>".into();
         assert!(service.save_authoring_draft(&draft).is_err());
+    }
+
+    #[test]
+    fn imports_deduplicates_reveals_and_deletes_portable_media_objects() {
+        let (directory, service) = service();
+        let source = directory.path().join("図書館.png");
+        fs::write(&source, png(320, 180)).unwrap();
+        let request = ImportMediaRequest {
+            path: source.to_string_lossy().into_owned(),
+            role: MediaRoleDto::RevealImage,
+            language_tag: Some("ja".into()),
+            direction: DirectionDto::Auto,
+        };
+        let first = service.import_media(&request).unwrap();
+        let second = service.import_media(&request).unwrap();
+        assert_eq!(first.content_hash, second.content_hash);
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.asset_path, second.asset_path);
+        assert_eq!(first.width, Some(320));
+        assert_eq!(first.height, Some(180));
+
+        let mut draft = one_cloze_draft(&service);
+        draft.clozes[0].media = vec![first.clone(), second.clone()];
+        let mut saved = service.save_authoring_draft(&draft).unwrap();
+        let card = service.get_study_card(&saved.clozes[0].card_id).unwrap();
+        let reveal = service
+            .check_answer(&CheckAnswerRequest {
+                card_id: card.card_id,
+                card_content_version: card.card_content_version,
+                schedule_version: card.schedule_version,
+                raw_response: "図書館".into(),
+            })
+            .unwrap();
+        assert_eq!(reveal.answer_media.len(), 2);
+        assert!(
+            reveal
+                .answer_media
+                .iter()
+                .all(|media| media.availability == MediaAvailabilityDto::Ready)
+        );
+
+        let object_path = first.asset_path.as_ref().unwrap();
+        saved.clozes[0].media.remove(0);
+        saved = service.save_authoring_draft(&saved).unwrap();
+        assert!(std::path::Path::new(object_path).is_file());
+        saved.clozes[0].media.clear();
+        service.save_authoring_draft(&saved).unwrap();
+        assert!(!std::path::Path::new(object_path).exists());
+    }
+
+    #[test]
+    fn missing_and_corrupt_media_do_not_block_study_or_editing() {
+        let (directory, service) = service();
+        let source = directory.path().join("reveal.png");
+        fs::write(&source, png(4, 3)).unwrap();
+        let media = service
+            .import_media(&ImportMediaRequest {
+                path: source.to_string_lossy().into_owned(),
+                role: MediaRoleDto::RevealImage,
+                language_tag: None,
+                direction: DirectionDto::Auto,
+            })
+            .unwrap();
+        let object_path = media.asset_path.clone().unwrap();
+        let mut draft = one_cloze_draft(&service);
+        draft.clozes[0].media.push(media);
+        let saved = service.save_authoring_draft(&draft).unwrap();
+
+        let mut object = fs::OpenOptions::new()
+            .append(true)
+            .open(&object_path)
+            .unwrap();
+        object.write_all(b"corrupt").unwrap();
+        let editable = service
+            .get_authoring_draft_for_card(&saved.clozes[0].card_id)
+            .unwrap();
+        assert_eq!(
+            editable.clozes[0].media[0].availability,
+            MediaAvailabilityDto::Corrupt
+        );
+
+        fs::remove_file(&object_path).unwrap();
+        let card = service.get_study_card(&saved.clozes[0].card_id).unwrap();
+        let reveal = service
+            .check_answer(&CheckAnswerRequest {
+                card_id: card.card_id,
+                card_content_version: card.card_content_version,
+                schedule_version: card.schedule_version,
+                raw_response: String::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            reveal.answer_media[0].availability,
+            MediaAvailabilityDto::Missing
+        );
+        assert!(reveal.answer_media[0].asset_path.is_none());
+    }
+
+    #[test]
+    fn prompt_and_answer_audio_are_exposed_only_on_their_card_side() {
+        let (directory, service) = service();
+        let source = directory.path().join("voice.wav");
+        fs::write(&source, wav()).unwrap();
+        let imported = |role| {
+            service
+                .import_media(&ImportMediaRequest {
+                    path: source.to_string_lossy().into_owned(),
+                    role,
+                    language_tag: Some("ja".into()),
+                    direction: DirectionDto::Auto,
+                })
+                .unwrap()
+        };
+        let prompt = imported(MediaRoleDto::PromptAudio);
+        let answer = imported(MediaRoleDto::AnswerAudio);
+        assert_eq!(prompt.content_hash, answer.content_hash);
+        assert_eq!(prompt.duration_ms, Some(1_000));
+
+        let mut draft = one_cloze_draft(&service);
+        draft.clozes[0].media = vec![prompt, answer];
+        let saved = service.save_authoring_draft(&draft).unwrap();
+        let card = service.get_study_card(&saved.clozes[0].card_id).unwrap();
+        assert_eq!(card.prompt_media.len(), 1);
+        assert_eq!(card.prompt_media[0].role, MediaRoleDto::PromptAudio);
+
+        let reveal = service
+            .check_answer(&CheckAnswerRequest {
+                card_id: card.card_id,
+                card_content_version: card.card_content_version,
+                schedule_version: card.schedule_version,
+                raw_response: "図書館".into(),
+            })
+            .unwrap();
+        assert_eq!(reveal.answer_media.len(), 1);
+        assert_eq!(reveal.answer_media[0].role, MediaRoleDto::AnswerAudio);
+    }
+
+    #[test]
+    fn import_rejects_a_file_whose_signature_does_not_match_the_requested_role() {
+        let (directory, service) = service();
+        let source = directory.path().join("not-audio.wav");
+        fs::write(&source, png(1, 1)).unwrap();
+        let error = service
+            .import_media(&ImportMediaRequest {
+                path: source.to_string_lossy().into_owned(),
+                role: MediaRoleDto::PromptAudio,
+                language_tag: None,
+                direction: DirectionDto::Auto,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("does not match"));
     }
 }

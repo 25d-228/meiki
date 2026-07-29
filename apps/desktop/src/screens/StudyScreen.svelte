@@ -14,6 +14,7 @@
   import type { GradeReviewResultDto } from "../lib/generated/GradeReviewResultDto";
   import type { RevealDto } from "../lib/generated/RevealDto";
   import type { StudyCardDto } from "../lib/generated/StudyCardDto";
+  import { mediaAssetSource } from "../lib/media";
   import { messages } from "../lib/messages";
 
   type Props = {
@@ -42,6 +43,7 @@
   };
 
   const sessionKey = "meiki-active-study-session";
+  const autoplayKey = "meiki-autoplay-prompt-audio";
   const grades: GradeDto[] = ["again", "hard", "good", "easy"];
 
   let { onEdit }: Props = $props();
@@ -64,9 +66,14 @@
   let hintVisible = $state(false);
   let composing = $state(false);
   let answerInput = $state<HTMLInputElement | undefined>();
+  let studyElement = $state<HTMLElement | undefined>();
   let promptStartedAt = $state(0);
+  let autoplayPromptAudio = $state(false);
 
-  onMount(restoreOrLoad);
+  onMount(() => {
+    autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
+    void restoreOrLoad();
+  });
 
   async function restoreOrLoad(): Promise<void> {
     const stored = sessionStorage.getItem(sessionKey);
@@ -258,13 +265,21 @@
   }
 
   function replayAudio(): void {
-    const media =
-      view === "revealed" && reveal
-        ? reveal.answer_media.find((item) => item.kind === "audio")
-        : card?.prompt_media.find((item) => item.kind === "audio");
-    audioNotice = media
-      ? `Audio replay requested: ${media.original_file_name ?? media.alt_text ?? "attached audio"}.`
-      : "No audio is attached to this side of the card.";
+    const role = view === "revealed" ? "answer_audio" : "prompt_audio";
+    const audio = studyElement?.querySelector<HTMLAudioElement>(
+      `[data-media-role="${role}"] audio`,
+    );
+    if (!audio) {
+      audioNotice = "No playable audio is attached to this side of the card.";
+      return;
+    }
+    audio.currentTime = 0;
+    void audio.play().then(
+      () => (audioNotice = ""),
+      () =>
+        (audioNotice =
+          "Audio playback was blocked. Use the visible audio control to play it."),
+    );
   }
 
   async function retry(): Promise<void> {
@@ -373,7 +388,11 @@
 
 <svelte:window onkeydown={handleWindowKeydown} />
 
-<section class="screen study-screen" aria-labelledby="study-title">
+<section
+  bind:this={studyElement}
+  class="screen study-screen"
+  aria-labelledby="study-title"
+>
   <header class="screen-header">
     <div>
       <span class="eyebrow">Focused recall</span>
@@ -487,13 +506,20 @@
               {card.hint.value}
             </p>
           {/if}
-          {#each card.prompt_media as media (media.id)}
+          {#each card.prompt_media as media, index (media.id)}
             <MediaFrame
               kind={media.kind}
               label={media.original_file_name ??
                 media.alt_text ??
                 "Prompt audio"}
-              state="ready"
+              role={media.role}
+              availability={media.availability}
+              source={mediaAssetSource(media.asset_path)}
+              mediaType={media.media_type}
+              altText={media.alt_text}
+              width={media.width}
+              height={media.height}
+              autoplay={autoplayPromptAudio && index === 0}
             />
           {/each}
           <form
@@ -613,7 +639,13 @@
                     label={media.original_file_name ??
                       media.alt_text ??
                       "Answer media"}
-                    state="ready"
+                    role={media.role}
+                    availability={media.availability}
+                    source={mediaAssetSource(media.asset_path)}
+                    mediaType={media.media_type}
+                    altText={media.alt_text}
+                    width={media.width}
+                    height={media.height}
                   />
                 {/each}
               </div>
