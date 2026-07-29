@@ -13,6 +13,7 @@ meiki-scheduler = { path = "../meiki-scheduler" }
 meiki-storage = { path = "../meiki-storage" }
 meiki-text = { path = "../meiki-text" }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true

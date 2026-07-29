@@ -191,6 +191,40 @@ pub struct SchedulerParameterSet {
     pub created_at_ms: i64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StudyIntensity {
+    Light,
+    #[default]
+    Balanced,
+    Intensive,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OptimizerStatus {
+    #[default]
+    NeverRun,
+    InsufficientData,
+    Adopted,
+    Rejected,
+    Failed,
+    RolledBack,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchedulerProfile {
+    pub deck_id: String,
+    pub engine_version: String,
+    pub active_parameter_set_id: String,
+    pub previous_parameter_set_id: Option<String>,
+    pub intensity: StudyIntensity,
+    pub daily_time_budget_minutes: Option<u32>,
+    pub day_boundary_minutes: u16,
+    pub optimizer_status: OptimizerStatus,
+    /// Deterministic diagnostic JSON that never includes learning content.
+    pub optimizer_diagnostics: Option<String>,
+    pub updated_at_ms: i64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComparisonResult {
     Exact,
@@ -213,8 +247,15 @@ pub struct ScheduleState {
     pub card_id: String,
     pub version: u64,
     pub due_at_ms: i64,
+    pub ideal_due_at_ms: i64,
+    pub interval_milliseconds: u64,
     pub interval_seconds: u64,
     pub repetitions: u32,
+    /// Stability as fixed-point milliseconds to preserve exact projections.
+    pub stability_milliseconds: u64,
+    /// Difficulty in the inclusive range 1,000–10,000.
+    pub difficulty_millipoints: u32,
+    pub last_reviewed_at_ms: Option<i64>,
     pub last_review_event_id: Option<String>,
 }
 
@@ -231,6 +272,7 @@ pub struct ReviewEvent {
     pub reviewed_at_ms: i64,
     pub scheduler_version: String,
     pub scheduler_parameter_set_id: Option<String>,
+    pub target_retention_basis_points: u16,
     pub previous_schedule: ScheduleState,
     pub next_schedule: ScheduleState,
 }

@@ -96,6 +96,20 @@ export async function installMockApi(page: Page): Promise<void> {
       ]);
     };
     const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    let schedulerSettings = {
+      deck_id: "default-deck",
+      intensity: "balanced",
+      target_retention_basis_points: 9000,
+      new_cards_per_day: 20,
+      daily_time_budget_minutes: null as number | null,
+      maximum_interval_days: 36500,
+      day_boundary_minutes: 240,
+      engine_version: "fsrs-7",
+      active_parameter_set_id: "fsrs7-default-v1",
+      previous_parameter_set_id: null as string | null,
+      optimizer_status: "never_run",
+      optimizer_diagnostics: null as string | null,
+    };
 
     window.__MEIKI_TEST_INVOKE__ = async (command, args) => {
       const state = readState();
@@ -153,6 +167,52 @@ export async function installMockApi(page: Page): Promise<void> {
           schedule_version: nextState.scheduleVersion,
           due_at: nextState.dueAt,
           interval_seconds: 259200,
+        };
+      }
+      if (command === "get_scheduler_settings") {
+        return copy(schedulerSettings);
+      }
+      if (command === "update_scheduler_settings") {
+        const request = (
+          args as {
+            request: {
+              intensity: string;
+              target_retention_basis_points: number;
+              new_cards_per_day: number;
+              daily_time_budget_minutes: number | null;
+              maximum_interval_days: number;
+              day_boundary_minutes: number;
+            };
+          }
+        ).request;
+        schedulerSettings = { ...schedulerSettings, ...request };
+        return copy(schedulerSettings);
+      }
+      if (command === "optimize_scheduler") {
+        schedulerSettings = {
+          ...schedulerSettings,
+          optimizer_status: "insufficient_data",
+          optimizer_diagnostics:
+            '{"result":"insufficient_data","reviews":0,"minimum":64}',
+        };
+        return copy(schedulerSettings);
+      }
+      if (command === "rollback_scheduler") {
+        schedulerSettings = {
+          ...schedulerSettings,
+          optimizer_status: "rolled_back",
+        };
+        return copy(schedulerSettings);
+      }
+      if (command === "rebuild_scheduler") {
+        return {
+          backup_path: "/tmp/collection.scheduler-rebuild.bak",
+          rebuilt_cards: 1,
+        };
+      }
+      if (command === "export_scheduler_diagnostics") {
+        return {
+          path: "/tmp/collection.scheduler-diagnostics.json",
         };
       }
       if (command === "new_authoring_draft") {

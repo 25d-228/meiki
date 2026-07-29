@@ -15,14 +15,14 @@ the event nor the projection. Database triggers reject updates and deletes of
 review events.
 
 Each event records the raw and normalized response, comparison, suggested and
-chosen grades, scheduler and optional parameter-set version, timestamp, and
-complete before/after schedule values. Events replay in schedule-version order
-from the baseline. The current schedule is therefore a rebuildable projection
-rather than the source of review history.
+chosen grades, scheduler and optional parameter-set version, target retention,
+timestamp, and complete before/after schedule values. Events replay in
+schedule-version order from the baseline. The current schedule is therefore a
+rebuildable projection rather than the source of review history.
 
 ## Consequences
 
 Retries are safe when callers reload after a stale-version error. Projection
 repair and future undo work can use immutable history without rewriting past
-reviews. The `foundation-v1` interval policy is only the vertical-skeleton
-engine; issue #7 replaces it through the existing pure scheduler boundary.
+reviews. The initial production engine is the versioned `fsrs-7` implementation;
+future formula changes require a new engine identifier.

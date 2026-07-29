@@ -116,6 +116,39 @@ test("light and dark themes preserve text contrast and focus visibility", async 
   ).not.toBe("none");
 });
 
+test("scheduler controls save, personalize, and rebuild explicitly", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(
+    page.getByRole("group", { name: "Study intensity" }),
+  ).toBeVisible();
+  await page
+    .getByRole("group", { name: "Study intensity" })
+    .getByRole("button", { name: "Light", exact: true })
+    .click();
+  await page.getByLabel("New cards per day").fill("12");
+  await page.getByText("Advanced", { exact: true }).click();
+  await expect(page.getByText("fsrs-7", { exact: true })).toBeVisible();
+  await page.getByLabel("Target retention (basis points)").fill("8750");
+  await page.getByRole("button", { name: "Save preferences" }).click();
+  await expect(page.getByText("Scheduling preferences saved.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Personalize now" }).click();
+  await expect(page.getByLabel("Scheduler diagnostics")).toContainText(
+    "insufficient_data",
+  );
+  await page.getByRole("button", { name: "Export diagnostics" }).click();
+  await expect(page.getByText(/Diagnostics exported:/)).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .getByRole("button", { name: "Back up and rebuild schedules" })
+    .click();
+  await expect(page.getByText(/Rebuilt 1 cards/)).toBeVisible();
+});
+
 test("reduced motion and offline feedback are explicit", async ({
   context,
   page,

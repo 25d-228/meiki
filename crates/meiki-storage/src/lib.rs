@@ -7,7 +7,8 @@ mod review;
 
 pub use repository::{
     AnnotationRepository, CardRepository, ClozeRepository, DeckRepository, MediaRepository,
-    SchedulerParameterSetRepository, SourceNoteRepository, TagRepository,
+    SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository,
+    TagRepository,
 };
 
 use std::path::Path;
@@ -20,9 +21,11 @@ const FOUNDATION_MIGRATION: &str = include_str!("../migrations/0001_foundation.s
 const CORE_MODEL_MIGRATION: &str = include_str!("../migrations/0002_core_model.sql");
 const AUTHORING_DEFAULTS_MIGRATION: &str =
     include_str!("../migrations/0003_authoring_defaults.sql");
-const LATEST_SCHEMA_VERSION: u32 = 3;
+const FSRS7_SCHEDULER_MIGRATION: &str = include_str!("../migrations/0004_fsrs7_scheduler.sql");
+const LATEST_SCHEMA_VERSION: u32 = 4;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
+pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
 pub const SAMPLE_SOURCE_ID: &str = "sample-source";
 pub const SAMPLE_CLOZE_ID: &str = "sample-cloze";
 pub const SAMPLE_CARD_ID: &str = "sample-card";
@@ -151,6 +154,9 @@ impl Storage {
         if current < 3 {
             transaction.execute_batch(AUTHORING_DEFAULTS_MIGRATION)?;
         }
+        if current < 4 {
+            transaction.execute_batch(FSRS7_SCHEDULER_MIGRATION)?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -252,16 +258,20 @@ impl Storage {
         )?;
         transaction.execute(
             "INSERT OR IGNORE INTO schedule_states(
-                card_id, version, due_at_ms, interval_seconds, repetitions,
-                last_review_event_id
-             ) VALUES (?1, 0, ?2, 0, 0, NULL)",
+                card_id, version, due_at_ms, ideal_due_at_ms,
+                interval_milliseconds, interval_seconds, repetitions,
+                stability_milliseconds, difficulty_millipoints,
+                last_reviewed_at_ms, last_review_event_id
+             ) VALUES (?1, 0, ?2, ?2, 0, 0, 0, 0, 0, NULL, NULL)",
             params![SAMPLE_CARD_ID, now_ms],
         )?;
         transaction.execute(
             "INSERT OR IGNORE INTO schedule_baselines(
-                card_id, version, due_at_ms, interval_seconds, repetitions,
-                last_review_event_id
-             ) VALUES (?1, 0, ?2, 0, 0, NULL)",
+                card_id, version, due_at_ms, ideal_due_at_ms,
+                interval_milliseconds, interval_seconds, repetitions,
+                stability_milliseconds, difficulty_millipoints,
+                last_reviewed_at_ms, last_review_event_id
+             ) VALUES (?1, 0, ?2, ?2, 0, 0, 0, 0, 0, NULL, NULL)",
             params![SAMPLE_CARD_ID, now_ms],
         )?;
         transaction.commit()?;
