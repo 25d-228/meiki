@@ -469,15 +469,11 @@ export async function installMockApi(page: Page): Promise<void> {
         }
         writeLibraryNotes(notes);
         const undo =
-          request.action === "suspend"
-            ? "unsuspend"
-            : request.action === "unsuspend"
-              ? "suspend"
-              : request.action === "delete"
-                ? "restore"
-                : request.action === "restore"
-                  ? "delete"
-                  : null;
+          request.action === "delete"
+            ? "restore"
+            : request.action === "restore"
+              ? "delete"
+              : null;
         return {
           affected_notes: selected.size,
           action: request.action,

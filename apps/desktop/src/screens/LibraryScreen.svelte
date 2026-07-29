@@ -424,7 +424,7 @@
               disabled={busy}
               onclick={() => runBulk("restore")}>Restore</Button
             >
-          {:else}
+          {:else if trash === "active"}
             <Button
               size="small"
               variant="danger"

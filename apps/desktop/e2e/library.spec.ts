@@ -107,10 +107,7 @@ test("bulk actions report exact counts, support undo, export, trash, and restore
   await expect(page.getByRole("status")).toContainText(
     "Suspended cards in 4 notes.",
   );
-  await page.getByRole("button", { name: "Undo" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    "Undid the last action for 4 notes.",
-  );
+  await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
 
   await page.getByLabel("Select 日曜日は図書館に行きます").check();
   await page.getByLabel("Select أنا أقرأ كتابًا في المكتبة").check();
@@ -138,6 +135,20 @@ test("bulk actions report exact counts, support undo, export, trash, and restore
   page.once("dialog", async (dialog) => {
     expect(dialog.message()).toContain("Move 2 selected notes to Trash?");
     expect(dialog.message()).toContain("Review history and media stay intact");
+    await dialog.accept();
+  });
+  await page.getByRole("button", { name: "Move to Trash" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Moved 2 notes to Trash.",
+  );
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Undid the last action for 2 notes.",
+  );
+
+  await page.getByText("Select this page").click();
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Move 2 selected notes to Trash?");
     await dialog.accept();
   });
   await page.getByRole("button", { name: "Move to Trash" }).click();

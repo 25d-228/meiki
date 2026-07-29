@@ -285,11 +285,11 @@ impl ApplicationService {
         let undo_action = match request.action {
             LibraryBulkActionDto::Suspend => {
                 storage.set_library_notes_suspended(&request.source_ids, true, request.now_ms)?;
-                Some(LibraryBulkActionDto::Unsuspend)
+                None
             }
             LibraryBulkActionDto::Unsuspend => {
                 storage.set_library_notes_suspended(&request.source_ids, false, request.now_ms)?;
-                Some(LibraryBulkActionDto::Suspend)
+                None
             }
             LibraryBulkActionDto::Delete => {
                 storage.set_library_notes_deleted(
@@ -855,7 +855,7 @@ mod tests {
                 now_ms: 20_000,
             })
             .unwrap();
-        assert_eq!(suspend.undo_action, Some(LibraryBulkActionDto::Unsuspend));
+        assert_eq!(suspend.undo_action, None);
         let mut suspended = request("");
         suspended.suspended = LibrarySuspendedFilterDto::Suspended;
         assert_eq!(service.get_library(&suspended).unwrap().notes.len(), 1);
