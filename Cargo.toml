@@ -30,6 +30,8 @@ tempfile = "3"
 thiserror = "2"
 ts-rs = { version = "11", features = ["serde-compat"] }
 unicode-normalization = "0.1"
+unicode-segmentation = "1.13"
+unicode-general-category = "1.1"
 uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]

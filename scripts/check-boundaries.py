@@ -23,6 +23,11 @@ EXPECTED_INTERNAL_DEPENDENCIES = {
     },
     "meiki-desktop": {"meiki-application"},
 }
+TEXT_ENGINE_DEPENDENCIES = {
+    "unicode-general-category",
+    "unicode-normalization",
+    "unicode-segmentation",
+}
 
 
 def cargo_metadata() -> dict:
@@ -60,6 +65,20 @@ def main() -> int:
             failures.append(
                 f"{name}: expected internal dependencies {sorted(expected)}, "
                 f"found {sorted(actual)}"
+            )
+
+    for name, package in packages.items():
+        if name == "meiki-text":
+            continue
+        owned_dependencies = {
+            dependency["name"]
+            for dependency in package["dependencies"]
+            if dependency["name"] in TEXT_ENGINE_DEPENDENCIES
+        }
+        if owned_dependencies:
+            failures.append(
+                f"{name}: text-engine dependencies belong in meiki-text, "
+                f"found {sorted(owned_dependencies)}"
             )
 
     storage_root = ROOT / "crates" / "meiki-storage"

@@ -24,7 +24,7 @@ fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent
         id: id.to_owned(),
         card_id: stored.card.id,
         card_content_version: stored.card.content_version,
-        raw_response: "行きます".into(),
+        raw_response: " 行きます ".into(),
         normalized_response: "行きます".into(),
         comparison: ComparisonResult::Exact,
         suggested_grade: Grade::Good,

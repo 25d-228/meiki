@@ -1,68 +1,26 @@
-//! Centralized text comparison primitives.
+//! Language-neutral Unicode behavior for authoring, review, and search.
+//!
+//! Raw user text stays outside normalization. This crate derives comparison
+//! and search values, works in extended grapheme clusters, and exposes
+//! direction and composition contracts without depending on a UI framework.
 
-use meiki_domain::ComparisonResult;
-use unicode_normalization::UnicodeNormalization;
+mod bidi;
+mod comparison;
+mod composition;
+mod diff;
+mod grapheme;
+mod search;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Comparison {
-    pub result: ComparisonResult,
-    pub normalized_response: String,
-}
-
-pub fn normalize_for_default_comparison(value: &str) -> String {
-    value.trim().nfc().collect()
-}
-
-pub fn compare_answer(expected: &str, accepted: &[String], response: &str) -> Comparison {
-    let normalized_response = normalize_for_default_comparison(response);
-    let result = if normalized_response.is_empty() {
-        ComparisonResult::Empty
-    } else if normalized_response == normalize_for_default_comparison(expected) {
-        ComparisonResult::Exact
-    } else if accepted
-        .iter()
-        .any(|candidate| normalized_response == normalize_for_default_comparison(candidate))
-    {
-        ComparisonResult::AcceptedVariant
-    } else {
-        ComparisonResult::Incorrect
-    };
-
-    Comparison {
-        result,
-        normalized_response,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use meiki_domain::ComparisonResult;
-
-    use super::{compare_answer, normalize_for_default_comparison};
-
-    #[test]
-    fn default_comparison_uses_nfc_and_outer_trim_only() {
-        assert_eq!(normalize_for_default_comparison("  e\u{301}  "), "\u{e9}");
-        assert_eq!(
-            compare_answer("Café", &[], " cafe ").result,
-            ComparisonResult::Incorrect
-        );
-    }
-
-    #[test]
-    fn accepted_variants_are_explicit() {
-        let accepted = vec!["ゆきます".to_owned()];
-        assert_eq!(
-            compare_answer("行きます", &accepted, "ゆきます").result,
-            ComparisonResult::AcceptedVariant
-        );
-    }
-
-    #[test]
-    fn empty_response_is_distinct() {
-        assert_eq!(
-            compare_answer("行きます", &[], " \n").result,
-            ComparisonResult::Empty
-        );
-    }
-}
+pub use bidi::{BidiRenderContract, direction_attribute, isolate_for_display};
+pub use comparison::{
+    CaseSensitivity, Comparison, ComparisonOptions, DiacriticSensitivity, NearMatchOptions,
+    PunctuationSensitivity, WhitespaceSensitivity, WidthSensitivity, compare_answer,
+    compare_answer_with_options, normalize_for_comparison, normalize_for_default_comparison,
+};
+pub use composition::{CompositionEvent, CompositionPhase, CompositionState};
+pub use diff::{DiffKind, DiffSegment, grapheme_diff, grapheme_distance};
+pub use grapheme::{
+    GraphemeIndex, GraphemeRange, SemanticPosition, TextBoundaryError, TextSplit,
+    semantic_position_from_utf16,
+};
+pub use search::{normalize_for_search, search_contains};

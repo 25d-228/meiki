@@ -10,6 +10,8 @@ export const messages = {
   checking: "Checking…",
   expectedAnswer: "Expected answer",
   yourAnswer: "Your answer",
+  answerDifference: "Answer difference",
+  comparedAs: "Compared as",
   gradePrompt: "How did that feel?",
   again: "Again",
   hard: "Hard",
