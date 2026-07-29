@@ -113,6 +113,141 @@ export async function installMockApi(page: Page): Promise<void> {
       ]);
     };
     const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    const initialLibraryNotes = [
+      {
+        source_id: "sample-source",
+        deck_id: "default-deck",
+        deck_name: "Default",
+        source_text: "日曜日は図書館に行きます",
+        language_tag: "ja",
+        direction: "auto",
+        tags: [{ id: "tag-travel", name: "旅行" }],
+        cards: [
+          {
+            card_id: "sample-card",
+            cloze_id: "sample-cloze",
+            prompt: "日曜日は図書館に[…]",
+            answer: "行きます",
+            suspended: false,
+            is_new: false,
+            is_due: true,
+            due_at: "2026-07-29T09:00:00+00:00",
+            language_tag: "ja",
+            direction: "auto",
+            has_media: true,
+          },
+        ],
+        media_count: 1,
+        deleted: false,
+        deleted_at: null as string | null,
+        updated_at_ms: 1,
+        search_values: ["ゆきます", "丁寧形", "読み", "いきます"],
+      },
+      {
+        source_id: "source-ar",
+        deck_id: "travel-deck",
+        deck_name: "Travel phrases",
+        source_text: "أنا أقرأ كتابًا في المكتبة",
+        language_tag: "ar",
+        direction: "rtl",
+        tags: [{ id: "tag-arabic", name: "العربية" }],
+        cards: [
+          {
+            card_id: "card-ar",
+            cloze_id: "cloze-ar",
+            prompt: "أنا أقرأ […] في المكتبة",
+            answer: "كتابًا",
+            suspended: false,
+            is_new: false,
+            is_due: false,
+            due_at: "2026-08-04T09:00:00+00:00",
+            language_tag: "ar",
+            direction: "rtl",
+            has_media: false,
+          },
+        ],
+        media_count: 0,
+        deleted: false,
+        deleted_at: null as string | null,
+        updated_at_ms: 2,
+        search_values: ["اسم", "قراءة"],
+      },
+      {
+        source_id: "source-fr",
+        deck_id: "european-deck",
+        deck_name: "European languages",
+        source_text: "Réviser le ＣＡＦÉ sans modifier le texte stocké",
+        language_tag: "fr",
+        direction: "ltr",
+        tags: [{ id: "tag-accents", name: "Diacritics" }],
+        cards: [
+          {
+            card_id: "card-fr",
+            cloze_id: "cloze-fr",
+            prompt: "Réviser le […] sans modifier le texte stocké",
+            answer: "ＣＡＦÉ",
+            suspended: true,
+            is_new: true,
+            is_due: false,
+            due_at: "2026-07-30T09:00:00+00:00",
+            language_tag: "fr",
+            direction: "ltr",
+            has_media: false,
+          },
+        ],
+        media_count: 0,
+        deleted: false,
+        deleted_at: null as string | null,
+        updated_at_ms: 3,
+        search_values: ["coffee", "accent composé"],
+      },
+      {
+        source_id: "source-mixed",
+        deck_id: "travel-deck",
+        deck_name: "Travel phrases",
+        source_text:
+          "Meetingは الساعة 三時 に始まる — this deliberately long multilingual source keeps 日本語, العربية, and English readable without changing stored text.",
+        language_tag: null as string | null,
+        direction: "auto",
+        tags: [{ id: "tag-mixed", name: "Mixed scripts" }],
+        cards: [
+          {
+            card_id: "card-mixed",
+            cloze_id: "cloze-mixed",
+            prompt: "Meetingは الساعة […] に始まる",
+            answer: "三時",
+            suspended: false,
+            is_new: true,
+            is_due: false,
+            due_at: "2026-07-30T09:00:00+00:00",
+            language_tag: null as string | null,
+            direction: "auto",
+            has_media: false,
+          },
+        ],
+        media_count: 0,
+        deleted: false,
+        deleted_at: null as string | null,
+        updated_at_ms: 4,
+        search_values: ["meeting", "الساعة", "三時"],
+      },
+    ];
+    const libraryDecks = [
+      { id: "default-deck", name: "Default" },
+      { id: "travel-deck", name: "Travel phrases" },
+      { id: "european-deck", name: "European languages" },
+    ];
+    const normalizeSearch = (value: string) =>
+      value.normalize("NFKC").toLocaleLowerCase().trim().replace(/\s+/gu, " ");
+    const readLibraryNotes = (): typeof initialLibraryNotes => {
+      const value = localStorage.getItem("meiki-e2e-library");
+      return value
+        ? (JSON.parse(value) as typeof initialLibraryNotes)
+        : copy(initialLibraryNotes);
+    };
+    const writeLibraryNotes = (notes: typeof initialLibraryNotes) => {
+      localStorage.setItem("meiki-e2e-library", JSON.stringify(notes));
+    };
     const mediaFixture = (
       role: "prompt_audio" | "answer_audio" | "reveal_image",
       availability: "ready" | "missing" = "ready",
@@ -173,6 +308,193 @@ export async function installMockApi(page: Page): Promise<void> {
       const fixtureName = new URLSearchParams(location.search).get("fixture");
       const requestedMedia = new URLSearchParams(location.search).get("media");
       const fixture = selectedFixture();
+      if (command === "get_library") {
+        const request = (
+          args as {
+            request: {
+              query: string;
+              deck_id: string | null;
+              tag_id: string | null;
+              due: "all" | "due" | "new" | "scheduled";
+              suspended: "all" | "active" | "suspended";
+              language_tag: string | null;
+              media: "all" | "with_media" | "without_media";
+              trash: "active" | "deleted" | "all";
+              offset: number;
+              limit: number;
+            };
+          }
+        ).request;
+        const notes = readLibraryNotes();
+        const query = normalizeSearch(request.query);
+        const filtered = notes.filter((note) => {
+          const searchable = [
+            note.source_text,
+            note.deck_name,
+            ...note.tags.map((tag) => tag.name),
+            ...note.cards.flatMap((card) => [card.prompt, card.answer]),
+            ...note.search_values,
+          ];
+          const trashMatches =
+            request.trash === "all" ||
+            (request.trash === "deleted" ? note.deleted : !note.deleted);
+          const dueMatches =
+            request.due === "all" ||
+            note.cards.some((card) =>
+              request.due === "due"
+                ? card.is_due
+                : request.due === "new"
+                  ? card.is_new
+                  : !card.is_due && !card.is_new,
+            );
+          const suspendedMatches =
+            request.suspended === "all" ||
+            note.cards.some((card) =>
+              request.suspended === "suspended"
+                ? card.suspended
+                : !card.suspended,
+            );
+          return (
+            trashMatches &&
+            dueMatches &&
+            suspendedMatches &&
+            (!request.deck_id || note.deck_id === request.deck_id) &&
+            (!request.tag_id ||
+              note.tags.some((tag) => tag.id === request.tag_id)) &&
+            (!request.language_tag ||
+              note.language_tag === request.language_tag ||
+              note.cards.some(
+                (card) => card.language_tag === request.language_tag,
+              )) &&
+            (request.media === "all" ||
+              (request.media === "with_media"
+                ? note.media_count > 0
+                : note.media_count === 0)) &&
+            (!query ||
+              searchable.some((value) =>
+                normalizeSearch(value).includes(query),
+              ))
+          );
+        });
+        const allTags = Array.from(
+          new Map(
+            notes.flatMap((note) => note.tags).map((tag) => [tag.id, tag]),
+          ).values(),
+        );
+        return {
+          notes: copy(
+            filtered.slice(
+              request.offset,
+              request.offset + (request.limit || 50),
+            ),
+          ),
+          decks: copy(libraryDecks),
+          tags: copy(allTags),
+          languages: Array.from(
+            new Set(
+              notes.flatMap((note) => [
+                ...(note.language_tag ? [note.language_tag] : []),
+                ...note.cards.flatMap((card) =>
+                  card.language_tag ? [card.language_tag] : [],
+                ),
+              ]),
+            ),
+          ).sort(),
+          total_matches: filtered.length,
+          active_notes: notes.filter((note) => !note.deleted).length,
+          trashed_notes: notes.filter((note) => note.deleted).length,
+          offset: request.offset,
+          limit: request.limit || 50,
+        };
+      }
+      if (command === "apply_library_bulk_action") {
+        const request = (
+          args as {
+            request: {
+              source_ids: string[];
+              action:
+                | "suspend"
+                | "unsuspend"
+                | "delete"
+                | "restore"
+                | "move"
+                | "add_tag"
+                | "remove_tag";
+              deck_id: string | null;
+              tag_id: string | null;
+              tag_name: string | null;
+            };
+          }
+        ).request;
+        const notes = readLibraryNotes();
+        const selected = new Set(request.source_ids);
+        if (
+          !selected.size ||
+          notes.filter((note) => selected.has(note.source_id)).length !==
+            selected.size
+        ) {
+          throw new Error("One or more selected source notes no longer exist.");
+        }
+        for (const note of notes) {
+          if (!selected.has(note.source_id)) continue;
+          if (request.action === "suspend") {
+            note.cards.forEach((card) => (card.suspended = true));
+          } else if (request.action === "unsuspend") {
+            note.cards.forEach((card) => (card.suspended = false));
+          } else if (request.action === "delete") {
+            note.deleted = true;
+            note.deleted_at = new Date().toISOString();
+          } else if (request.action === "restore") {
+            note.deleted = false;
+            note.deleted_at = null;
+          } else if (request.action === "move") {
+            const deck = libraryDecks.find(
+              (candidate) => candidate.id === request.deck_id,
+            );
+            if (!deck)
+              throw new Error("The destination deck no longer exists.");
+            note.deck_id = deck.id;
+            note.deck_name = deck.name;
+          } else if (request.action === "add_tag") {
+            const name = request.tag_name?.trim();
+            if (!name) throw new Error("A tag name is required.");
+            const id = `tag-${normalizeSearch(name).replace(/\s+/gu, "-")}`;
+            if (!note.tags.some((tag) => tag.id === id)) {
+              note.tags.push({ id, name });
+            }
+          } else {
+            note.tags = note.tags.filter((tag) => tag.id !== request.tag_id);
+          }
+          note.updated_at_ms = Date.now();
+        }
+        writeLibraryNotes(notes);
+        const undo =
+          request.action === "suspend"
+            ? "unsuspend"
+            : request.action === "unsuspend"
+              ? "suspend"
+              : request.action === "delete"
+                ? "restore"
+                : request.action === "restore"
+                  ? "delete"
+                  : null;
+        return {
+          affected_notes: selected.size,
+          action: request.action,
+          undo_action: undo,
+        };
+      }
+      if (command === "export_library_selection") {
+        const request = (args as { request: { source_ids: string[] } }).request;
+        localStorage.setItem(
+          "meiki-e2e-library-export",
+          JSON.stringify(request.source_ids),
+        );
+        return {
+          path: "/tmp/exports/library-selection-e2e.json",
+          exported_notes: request.source_ids.length,
+        };
+      }
       if (command === "get_today_overview") {
         const request = (
           args as {
@@ -629,9 +951,15 @@ export async function installMockApi(page: Page): Promise<void> {
             request: {
               draft: ReturnType<typeof newDraft>;
               cloze_id: string;
+              confirm_card_deletion: boolean;
             };
           }
         ).request;
+        if (request.draft.persisted && !request.confirm_card_deletion) {
+          throw new Error(
+            "Removing a persisted cloze requires explicit card-deletion confirmation.",
+          );
+        }
         const draft = copy(request.draft);
         const segment = draft.segments.find(
           (item) => item.cloze_id === request.cloze_id,

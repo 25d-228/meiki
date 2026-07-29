@@ -347,6 +347,7 @@ impl Storage {
              JOIN clozes ON clozes.id = cards.cloze_id
              JOIN source_items ON source_items.id = clozes.source_item_id
              WHERE source_items.deck_id = ?1
+               AND source_items.deleted_at_ms IS NULL
              ORDER BY cards.id",
         )?;
         Ok(statement

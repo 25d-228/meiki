@@ -25,6 +25,7 @@
   let authoringDirty = false;
   let authoringComposing = false;
   let editingStudyCardId: string | null = null;
+  let editingReturnScreen: "study" | "library" = "study";
   let mainElement: HTMLElement;
 
   onMount(() => {
@@ -82,21 +83,34 @@
   }
 
   async function editStudyCard(cardId: string): Promise<void> {
+    editingReturnScreen = "study";
     editingStudyCardId = cardId;
     activeScreen = "editor";
     await tick();
     mainElement.focus();
   }
 
-  async function returnToStudy(): Promise<void> {
+  async function editLibraryCard(cardId: string): Promise<void> {
+    editingReturnScreen = "library";
+    editingStudyCardId = cardId;
+    activeScreen = "editor";
+    await tick();
+    mainElement.focus();
+  }
+
+  async function returnFromEditor(): Promise<void> {
     if (authoringDirty) {
       if (authoringComposing) return;
-      if (!window.confirm("Return to study and discard unsaved changes?"))
+      const destination =
+        editingReturnScreen === "library" ? "Library" : "study";
+      if (
+        !window.confirm(`Return to ${destination} and discard unsaved changes?`)
+      )
         return;
     }
     authoringDirty = false;
     authoringComposing = false;
-    activeScreen = "study";
+    activeScreen = editingReturnScreen;
     editingStudyCardId = null;
     await tick();
     mainElement.focus();
@@ -177,11 +191,14 @@
           onQueueComplete={finishStudyQueue}
         />
       {:else if activeScreen === "library"}
-        <LibraryScreen onNavigate={navigate} />
+        <LibraryScreen onNavigate={navigate} onEdit={editLibraryCard} />
       {:else if activeScreen === "editor"}
         <EditorScreen
           cardId={editingStudyCardId}
-          onReturn={editingStudyCardId ? returnToStudy : undefined}
+          onReturn={editingStudyCardId ? returnFromEditor : undefined}
+          returnLabel={editingReturnScreen === "library"
+            ? "Return to Library"
+            : "Return to study"}
         />
       {:else}
         <SettingsScreen {theme} onThemeChange={applyTheme} />

@@ -24,7 +24,8 @@ const AUTHORING_DEFAULTS_MIGRATION: &str =
 const FSRS7_SCHEDULER_MIGRATION: &str = include_str!("../migrations/0004_fsrs7_scheduler.sql");
 const STUDY_SESSION_MIGRATION: &str = include_str!("../migrations/0005_study_session.sql");
 const MEDIA_PIPELINE_MIGRATION: &str = include_str!("../migrations/0006_media_pipeline.sql");
-const LATEST_SCHEMA_VERSION: u32 = 6;
+const LIBRARY_MIGRATION: &str = include_str!("../migrations/0007_library.sql");
+const LATEST_SCHEMA_VERSION: u32 = 7;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -74,6 +75,19 @@ pub struct StoredStudyCard {
     pub cloze: Cloze,
     pub card: Card,
     pub schedule: ScheduleState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredLibraryCard {
+    pub card: Card,
+    pub schedule: ScheduleState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredLibraryNote {
+    pub note: StoredSourceNote,
+    pub cards: Vec<StoredLibraryCard>,
+    pub deleted_at_ms: Option<i64>,
 }
 
 pub struct Storage {
@@ -168,6 +182,9 @@ impl Storage {
         }
         if current < 6 {
             transaction.execute_batch(MEDIA_PIPELINE_MIGRATION)?;
+        }
+        if current < 7 {
+            transaction.execute_batch(LIBRARY_MIGRATION)?;
         }
         transaction.commit()?;
         Ok(())

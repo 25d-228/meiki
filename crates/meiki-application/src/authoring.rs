@@ -110,6 +110,7 @@ pub struct MakeClozeRequest {
 pub struct RemoveClozeRequest {
     pub draft: AuthoringDraftDto,
     pub cloze_id: String,
+    pub confirm_card_deletion: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -312,6 +313,11 @@ impl ApplicationService {
         &self,
         request: RemoveClozeRequest,
     ) -> Result<AuthoringDraftDto, ApplicationError> {
+        if request.draft.persisted && !request.confirm_card_deletion {
+            return Err(invalid(
+                "removing a persisted cloze requires explicit card-deletion confirmation",
+            ));
+        }
         let mut draft = request.draft;
         validate_draft_shape(&draft)?;
         let index = draft
@@ -1039,11 +1045,72 @@ mod tests {
             .unwrap();
         let cloze_id = draft.clozes[0].id.clone();
         let draft = service
-            .remove_cloze(RemoveClozeRequest { draft, cloze_id })
+            .remove_cloze(RemoveClozeRequest {
+                draft,
+                cloze_id,
+                confirm_card_deletion: false,
+            })
             .unwrap();
         assert_eq!(draft.segments.len(), 1);
         assert_eq!(draft.segments[0].text, "A👨‍👩‍👧‍👦B");
         assert_eq!(draft.segments[0].kind, AuthoringSegmentKindDto::Text);
+    }
+
+    #[test]
+    fn persisted_cloze_deletion_is_explicit_and_preserves_sibling_schedule_identity() {
+        let (_directory, service) = service();
+        let mut draft = service.new_authoring_draft().unwrap();
+        draft.segments[0].text = "ab".into();
+        let first_segment = draft.segments[0].id.clone();
+        let draft = service
+            .make_cloze(MakeClozeRequest {
+                draft,
+                segment_id: first_segment,
+                selection_start_utf16: 0,
+                selection_end_utf16: 1,
+            })
+            .unwrap();
+        let second_segment = draft.segments.last().unwrap().id.clone();
+        let draft = service
+            .make_cloze(MakeClozeRequest {
+                draft,
+                segment_id: second_segment,
+                selection_start_utf16: 0,
+                selection_end_utf16: 1,
+            })
+            .unwrap();
+        let saved = service.save_authoring_draft(&draft).unwrap();
+        let removed = saved.clozes[0].clone();
+        let sibling = saved.clozes[1].clone();
+        let sibling_before = service.get_study_card(&sibling.card_id).unwrap();
+
+        let error = service
+            .remove_cloze(RemoveClozeRequest {
+                draft: saved.clone(),
+                cloze_id: removed.id.clone(),
+                confirm_card_deletion: false,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("explicit card-deletion"));
+        assert!(service.get_study_card(&removed.card_id).is_ok());
+
+        let edited = service
+            .remove_cloze(RemoveClozeRequest {
+                draft: saved,
+                cloze_id: removed.id,
+                confirm_card_deletion: true,
+            })
+            .unwrap();
+        let saved = service.save_authoring_draft(&edited).unwrap();
+        assert_eq!(saved.clozes[0].id, sibling.id);
+        assert_eq!(saved.clozes[0].card_id, sibling.card_id);
+        assert!(service.get_study_card(&removed.card_id).is_err());
+        let sibling_after = service.get_study_card(&sibling.card_id).unwrap();
+        assert_eq!(
+            sibling_after.schedule_version,
+            sibling_before.schedule_version
+        );
+        assert_eq!(sibling_after.due_at, sibling_before.due_at);
     }
 
     #[test]

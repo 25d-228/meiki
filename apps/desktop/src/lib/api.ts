@@ -20,6 +20,12 @@ import type { SchedulerDiagnosticsExportDto } from "./generated/SchedulerDiagnos
 import type { UpdateSchedulerSettingsRequest } from "./generated/UpdateSchedulerSettingsRequest";
 import type { DirectionDto } from "./generated/DirectionDto";
 import type { ImportMediaRequest } from "./generated/ImportMediaRequest";
+import type { LibraryBulkRequest } from "./generated/LibraryBulkRequest";
+import type { LibraryBulkResultDto } from "./generated/LibraryBulkResultDto";
+import type { LibraryExportRequest } from "./generated/LibraryExportRequest";
+import type { LibraryExportResultDto } from "./generated/LibraryExportResultDto";
+import type { LibraryOverviewDto } from "./generated/LibraryOverviewDto";
+import type { LibraryRequest } from "./generated/LibraryRequest";
 import type { MediaRoleDto } from "./generated/MediaRoleDto";
 import type { StudyMediaDto } from "./generated/StudyMediaDto";
 import type { TodayOverviewDto } from "./generated/TodayOverviewDto";
@@ -46,6 +52,22 @@ export const api = {
 
   getTodayOverview(request: TodayRequest): Promise<TodayOverviewDto> {
     return invoke("get_today_overview", { request });
+  },
+
+  getLibrary(request: LibraryRequest): Promise<LibraryOverviewDto> {
+    return invoke("get_library", { request });
+  },
+
+  applyLibraryBulkAction(
+    request: LibraryBulkRequest,
+  ): Promise<LibraryBulkResultDto> {
+    return invoke("apply_library_bulk_action", { request });
+  },
+
+  exportLibrarySelection(
+    request: LibraryExportRequest,
+  ): Promise<LibraryExportResultDto> {
+    return invoke("export_library_selection", { request });
   },
 
   getAuthoringDraftForCard(cardId: string): Promise<AuthoringDraftDto> {

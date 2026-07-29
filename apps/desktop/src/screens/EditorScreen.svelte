@@ -22,9 +22,14 @@
   type Props = {
     cardId?: string | null;
     onReturn?: () => void;
+    returnLabel?: string;
   };
 
-  let { cardId = null, onReturn }: Props = $props();
+  let {
+    cardId = null,
+    onReturn,
+    returnLabel = "Return to study",
+  }: Props = $props();
 
   type Selection = {
     segmentId: string;
@@ -316,11 +321,18 @@
 
   async function removeActiveCloze(): Promise<void> {
     if (!draft?.active_cloze_id || composing) return;
+    const confirmed =
+      !draft.persisted ||
+      window.confirm(
+        "Convert this persisted cloze to text? Saving will remove its card. Existing review history prevents unsafe deletion and will be reported.",
+      );
+    if (!confirmed) return;
     busy = true;
     try {
       draft = await api.removeCloze({
         draft,
         cloze_id: draft.active_cloze_id,
+        confirm_card_deletion: confirmed,
       });
       changed();
     } catch (reason) {
@@ -423,7 +435,7 @@
     <div class="cluster">
       {#if cardId && onReturn}
         <Button variant="quiet" disabled={busy} onclick={onReturn}
-          >Return to study</Button
+          >{returnLabel}</Button
         >
       {/if}
       <Button

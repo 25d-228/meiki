@@ -8,9 +8,10 @@ use meiki_domain::{
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::{
-    DEFAULT_SCHEDULER_PARAMETER_SET_ID, Storage, StorageError, StoredSourceNote, StoredStudyCard,
-    direction_from_database, direction_to_database, entity_not_found,
-    matching_policy_from_database, matching_policy_to_database,
+    DEFAULT_SCHEDULER_PARAMETER_SET_ID, Storage, StorageError, StoredLibraryCard,
+    StoredLibraryNote, StoredSourceNote, StoredStudyCard, direction_from_database,
+    direction_to_database, entity_not_found, matching_policy_from_database,
+    matching_policy_to_database,
 };
 
 /// Persistence operations for mutable decks.
@@ -38,6 +39,7 @@ pub trait DeckRepository {
 pub trait TagRepository {
     fn create_tag(&mut self, tag: &Tag) -> Result<(), StorageError>;
     fn get_tag(&self, id: &str) -> Result<Tag, StorageError>;
+    fn list_tags(&self) -> Result<Vec<Tag>, StorageError>;
     fn update_tag(&mut self, tag: &Tag) -> Result<(), StorageError>;
     fn delete_tag(&mut self, id: &str) -> Result<(), StorageError>;
 }
@@ -219,6 +221,18 @@ impl TagRepository for Storage {
 
     fn get_tag(&self, id: &str) -> Result<Tag, StorageError> {
         load_tag(&self.connection, id)
+    }
+
+    fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM tags ORDER BY name, id")?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.iter()
+            .map(|id| load_tag(&self.connection, id))
+            .collect()
     }
 
     fn update_tag(&mut self, tag: &Tag) -> Result<(), StorageError> {
@@ -796,6 +810,199 @@ impl CardRepository for Storage {
 }
 
 impl Storage {
+    /// Loads every source note, its cards, current schedules, and trash state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when any stored aggregate cannot be decoded.
+    pub fn library_notes(&self) -> Result<Vec<StoredLibraryNote>, StorageError> {
+        let stored = {
+            let mut statement = self.connection.prepare(
+                "SELECT id, deleted_at_ms
+                 FROM source_items
+                 ORDER BY updated_at_ms DESC, id",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        stored
+            .into_iter()
+            .map(|(source_id, deleted_at_ms)| {
+                let note = load_source_note(&self.connection, &source_id)?;
+                let cards = note
+                    .clozes
+                    .iter()
+                    .map(|cloze| {
+                        let card = self.get_card_for_cloze(&cloze.id)?;
+                        let schedule = self.load_schedule(&card.id)?;
+                        Ok(StoredLibraryCard { card, schedule })
+                    })
+                    .collect::<Result<Vec<_>, StorageError>>()?;
+                Ok(StoredLibraryNote {
+                    note,
+                    cards,
+                    deleted_at_ms,
+                })
+            })
+            .collect()
+    }
+
+    /// Atomically moves source notes into or out of the recoverable trash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when a selected note is missing or the
+    /// transaction cannot be committed.
+    pub fn set_library_notes_deleted(
+        &mut self,
+        source_ids: &[String],
+        deleted_at_ms: Option<i64>,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_library_notes_exist(&transaction, source_ids)?;
+        for source_id in source_ids {
+            transaction.execute(
+                "UPDATE source_items
+                 SET deleted_at_ms = ?1, updated_at_ms = ?2
+                 WHERE id = ?3",
+                params![deleted_at_ms, updated_at_ms, source_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Atomically suspends or unsuspends every card owned by selected notes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when a selected note is missing or the
+    /// transaction cannot be committed.
+    pub fn set_library_notes_suspended(
+        &mut self,
+        source_ids: &[String],
+        suspended: bool,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_library_notes_exist(&transaction, source_ids)?;
+        for source_id in source_ids {
+            transaction.execute(
+                "UPDATE cards
+                 SET suspended = ?1, updated_at_ms = ?2, queue_updated_at_ms = ?2
+                 WHERE cloze_id IN (
+                    SELECT id FROM clozes WHERE source_item_id = ?3
+                 )",
+                params![suspended, updated_at_ms, source_id],
+            )?;
+            transaction.execute(
+                "UPDATE source_items SET updated_at_ms = ?1 WHERE id = ?2",
+                params![updated_at_ms, source_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Atomically moves selected source notes to an existing deck.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the deck or a selected note is missing.
+    pub fn move_library_notes(
+        &mut self,
+        source_ids: &[String],
+        deck_id: &str,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_entity_exists(&transaction, "decks", "deck", deck_id)?;
+        ensure_library_notes_exist(&transaction, source_ids)?;
+        for source_id in source_ids {
+            transaction.execute(
+                "UPDATE source_items
+                 SET deck_id = ?1, updated_at_ms = ?2
+                 WHERE id = ?3",
+                params![deck_id, updated_at_ms, source_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Atomically adds one tag to every selected source note.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when a selected note is missing or the tag
+    /// cannot be stored.
+    pub fn tag_library_notes(
+        &mut self,
+        source_ids: &[String],
+        tag: &Tag,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_library_notes_exist(&transaction, source_ids)?;
+        upsert_tag(&transaction, tag)?;
+        for source_id in source_ids {
+            let ordinal = transaction.query_row(
+                "SELECT COALESCE(MAX(ordinal) + 1, 0)
+                 FROM source_item_tags
+                 WHERE source_item_id = ?1",
+                [source_id],
+                |row| row.get::<_, u32>(0),
+            )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO source_item_tags(
+                    source_item_id, tag_id, ordinal
+                 ) VALUES (?1, ?2, ?3)",
+                params![source_id, tag.id, ordinal],
+            )?;
+            transaction.execute(
+                "UPDATE source_items SET updated_at_ms = ?1 WHERE id = ?2",
+                params![updated_at_ms, source_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Atomically removes one tag from every selected source note.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when a selected note is missing or the
+    /// transaction cannot be committed.
+    pub fn untag_library_notes(
+        &mut self,
+        source_ids: &[String],
+        tag_id: &str,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_entity_exists(&transaction, "tags", "tag", tag_id)?;
+        ensure_library_notes_exist(&transaction, source_ids)?;
+        for source_id in source_ids {
+            transaction.execute(
+                "DELETE FROM source_item_tags
+                 WHERE source_item_id = ?1 AND tag_id = ?2",
+                params![source_id, tag_id],
+            )?;
+            transaction.execute(
+                "UPDATE source_items SET updated_at_ms = ?1 WHERE id = ?2",
+                params![updated_at_ms, source_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Loads a card with its full source aggregate and projected schedule.
     ///
     /// # Errors
@@ -2169,6 +2376,50 @@ fn ordinal(index: usize) -> Result<u32, StorageError> {
 
 fn ensure_changed(changed: usize, entity: &'static str, id: &str) -> Result<(), StorageError> {
     if changed == 1 {
+        Ok(())
+    } else {
+        Err(entity_not_found(entity, id))
+    }
+}
+
+fn ensure_library_notes_exist(
+    connection: &Connection,
+    source_ids: &[String],
+) -> Result<(), StorageError> {
+    if source_ids.is_empty() {
+        return Err(StorageError::InvalidAggregate(
+            "a library action requires at least one source note".to_owned(),
+        ));
+    }
+    let unique = source_ids.iter().collect::<HashSet<_>>();
+    if unique.len() != source_ids.len() {
+        return Err(StorageError::InvalidAggregate(
+            "a library action cannot contain duplicate source notes".to_owned(),
+        ));
+    }
+    for source_id in source_ids {
+        ensure_entity_exists(
+            connection,
+            "source_items",
+            "source note",
+            source_id.as_str(),
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_entity_exists(
+    connection: &Connection,
+    table: &'static str,
+    entity: &'static str,
+    id: &str,
+) -> Result<(), StorageError> {
+    let sql = format!("SELECT 1 FROM {table} WHERE id = ?1");
+    let exists = connection
+        .query_row(&sql, [id], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if exists {
         Ok(())
     } else {
         Err(entity_not_found(entity, id))
