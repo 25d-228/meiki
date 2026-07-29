@@ -70,6 +70,23 @@ def main() -> int:
         if "rusqlite" in text:
             failures.append(f"{rust_file.relative_to(ROOT)}: imports rusqlite outside storage")
 
+    component_root = ROOT / "apps" / "desktop" / "src" / "lib" / "components"
+    forbidden_component_imports = (
+        "@tauri-apps",
+        "../api",
+        "/generated/",
+        "meiki-scheduler",
+        "meiki-storage",
+    )
+    for component_file in component_root.glob("*.svelte"):
+        text = component_file.read_text(encoding="utf-8")
+        for forbidden in forbidden_component_imports:
+            if forbidden in text:
+                failures.append(
+                    f"{component_file.relative_to(ROOT)}: visual component "
+                    f"contains forbidden dependency {forbidden!r}"
+                )
+
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1

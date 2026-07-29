@@ -1,10 +1,13 @@
 export const messages = {
   appName: "明記",
   appTagline: "Type what you remember.",
+  study: "Study",
   loading: "Opening your local collection…",
+  collectionError: "The collection could not be opened",
   answerLabel: "Your answer",
   answerPlaceholder: "Type the missing text",
   checkAnswer: "Check answer",
+  checking: "Checking…",
   expectedAnswer: "Expected answer",
   yourAnswer: "Your answer",
   gradePrompt: "How did that feel?",
