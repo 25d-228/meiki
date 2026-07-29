@@ -22,7 +22,8 @@ const CORE_MODEL_MIGRATION: &str = include_str!("../migrations/0002_core_model.s
 const AUTHORING_DEFAULTS_MIGRATION: &str =
     include_str!("../migrations/0003_authoring_defaults.sql");
 const FSRS7_SCHEDULER_MIGRATION: &str = include_str!("../migrations/0004_fsrs7_scheduler.sql");
-const LATEST_SCHEMA_VERSION: u32 = 4;
+const STUDY_SESSION_MIGRATION: &str = include_str!("../migrations/0005_study_session.sql");
+const LATEST_SCHEMA_VERSION: u32 = 5;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -42,6 +43,8 @@ pub enum StorageError {
     EntityNotFound { entity: &'static str, id: String },
     #[error("the card changed before the review could be committed")]
     StaleReview,
+    #[error("card {0} has no latest review to undo")]
+    NothingToUndo(String),
     #[error("review history cannot rebuild the schedule projection: {0}")]
     ProjectionMismatch(String),
     #[error("invalid stored value for {field}: {value}")]
@@ -156,6 +159,9 @@ impl Storage {
         }
         if current < 4 {
             transaction.execute_batch(FSRS7_SCHEDULER_MIGRATION)?;
+        }
+        if current < 5 {
+            transaction.execute_batch(STUDY_SESSION_MIGRATION)?;
         }
         transaction.commit()?;
         Ok(())

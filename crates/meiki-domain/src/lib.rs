@@ -178,6 +178,7 @@ pub struct Card {
     pub id: String,
     pub cloze_id: String,
     pub content_version: u64,
+    pub suspended: bool,
     pub settings: StudySettingsOverride,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -242,6 +243,12 @@ pub enum Grade {
     Easy,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewEventKind {
+    Review,
+    Undo,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduleState {
     pub card_id: String,
@@ -264,11 +271,15 @@ pub struct ReviewEvent {
     pub id: String,
     pub card_id: String,
     pub card_content_version: u64,
+    pub kind: ReviewEventKind,
+    pub undoes_review_event_id: Option<String>,
     pub raw_response: String,
     pub normalized_response: String,
     pub comparison: ComparisonResult,
     pub suggested_grade: Grade,
     pub chosen_grade: Grade,
+    pub grade_overridden: bool,
+    pub response_duration_ms: u64,
     pub reviewed_at_ms: i64,
     pub scheduler_version: String,
     pub scheduler_parameter_set_id: Option<String>,

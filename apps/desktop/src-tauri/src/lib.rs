@@ -4,7 +4,8 @@ use meiki_application::{
     ApplicationService, AuthoringDraftDto, AuthoringPreviewDto, CheckAnswerRequest,
     GradeReviewRequest, GradeReviewResultDto, MakeClozeRequest, RebuildSchedulerResultDto,
     RemoveClozeRequest, ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto,
-    SchedulerSettingsDto, StudyCardDto, UpdateSchedulerSettingsRequest,
+    SchedulerSettingsDto, StudyCardDto, SuspendCardRequest, UndoReviewRequest, UndoReviewResultDto,
+    UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -38,6 +39,18 @@ fn get_study_card(card_id: String, state: State<'_, AppContext>) -> Result<Study
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+fn get_authoring_draft_for_card(
+    card_id: String,
+    state: State<'_, AppContext>,
+) -> Result<AuthoringDraftDto, String> {
+    state
+        .service()
+        .get_authoring_draft_for_card(&card_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 fn check_answer(
     request: CheckAnswerRequest,
     state: State<'_, AppContext>,
@@ -57,6 +70,30 @@ fn grade_review(
     state
         .service()
         .grade_review(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn suspend_card(
+    request: SuspendCardRequest,
+    state: State<'_, AppContext>,
+) -> Result<StudyCardDto, String> {
+    state
+        .service()
+        .suspend_card(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn undo_review(
+    request: UndoReviewRequest,
+    state: State<'_, AppContext>,
+) -> Result<UndoReviewResultDto, String> {
+    state
+        .service()
+        .undo_review(&request)
         .map_err(|error| error.to_string())
 }
 
@@ -218,8 +255,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             initialize_collection,
             get_study_card,
+            get_authoring_draft_for_card,
             check_answer,
             grade_review,
+            suspend_card,
+            undo_review,
             get_scheduler_settings,
             update_scheduler_settings,
             optimize_scheduler,

@@ -7,17 +7,18 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use meiki_domain::{
-    ComparisonResult, Direction, Grade, MatchingPolicy, OptimizerStatus, ReviewEvent,
-    SchedulerParameterSet, SchedulerProfile, SegmentContent, SourceItem, StudyIntensity,
-    StudySettings, StudySettingsOverride,
+    Annotation, ComparisonResult, Direction, Grade, LocalizedText, MatchingPolicy, MediaKind,
+    MediaReference, OptimizerStatus, ReviewEvent, ReviewEventKind, SchedulerParameterSet,
+    SchedulerProfile, SegmentContent, SourceItem, StudyIntensity, StudySettings,
+    StudySettingsOverride,
 };
 use meiki_scheduler::{
     ENGINE_VERSION, Fsrs7Engine, MINIMUM_OPTIMIZATION_REVIEWS, OptimizationDiagnostics,
     OptimizationResult, ReviewHistoryEntry, SchedulerConfig, SchedulerEngine, SchedulerError,
 };
 use meiki_storage::{
-    DeckRepository, SAMPLE_CARD_ID, SchedulerParameterSetRepository, SchedulerProfileRepository,
-    Storage, StorageError, StoredStudyCard,
+    CardRepository, DeckRepository, SAMPLE_CARD_ID, SchedulerParameterSetRepository,
+    SchedulerProfileRepository, Storage, StorageError, StoredStudyCard,
 };
 use meiki_text::{
     CaseSensitivity, ComparisonOptions, DiacriticSensitivity, DiffKind, DiffSegment,
@@ -130,6 +131,40 @@ pub enum TextDiffKindDto {
     Insert,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum MediaKindDto {
+    Audio,
+    Image,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct LocalizedTextDto {
+    pub value: String,
+    pub language_tag: Option<String>,
+    pub direction: DirectionDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct StudyAnnotationDto {
+    pub label: String,
+    pub value: String,
+    pub language_tag: Option<String>,
+    pub direction: DirectionDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct StudyMediaDto {
+    pub id: String,
+    pub kind: MediaKindDto,
+    pub media_type: String,
+    pub original_file_name: Option<String>,
+    pub alt_text: Option<String>,
+    pub language_tag: Option<String>,
+    pub direction: DirectionDto,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct TextDiffSegmentDto {
     pub kind: TextDiffKindDto,
@@ -146,6 +181,9 @@ pub struct StudyCardDto {
     pub direction: DirectionDto,
     pub due_at: String,
     pub completed_reviews: u32,
+    pub suspended: bool,
+    pub hint: Option<LocalizedTextDto>,
+    pub prompt_media: Vec<StudyMediaDto>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -162,21 +200,41 @@ pub struct RevealDto {
     pub card_content_version: u32,
     pub schedule_version: u32,
     pub full_source: String,
+    pub source_segments: Vec<RevealSegmentDto>,
     pub expected_answer: String,
     pub raw_response: String,
     pub normalized_response: String,
     pub comparison: ComparisonResultDto,
     pub difference: Vec<TextDiffSegmentDto>,
     pub suggested_grade: GradeDto,
+    pub grade_previews: Vec<GradePreviewDto>,
+    pub annotations: Vec<StudyAnnotationDto>,
+    pub explanation: Option<LocalizedTextDto>,
+    pub answer_media: Vec<StudyMediaDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct RevealSegmentDto {
+    pub text: String,
+    pub highlighted: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct GradePreviewDto {
+    pub grade: GradeDto,
+    pub due_at: String,
+    pub interval_seconds: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct GradeReviewRequest {
+    pub review_event_id: String,
     pub card_id: String,
     pub card_content_version: u32,
     pub schedule_version: u32,
     pub raw_response: String,
     pub chosen_grade: GradeDto,
+    pub response_duration_ms: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -185,6 +243,31 @@ pub struct GradeReviewResultDto {
     pub schedule_version: u32,
     pub due_at: String,
     pub interval_seconds: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct SuspendCardRequest {
+    pub card_id: String,
+    pub card_content_version: u32,
+    pub schedule_version: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct UndoReviewRequest {
+    pub undo_event_id: String,
+    pub card_id: String,
+    pub card_content_version: u32,
+    pub schedule_version: u32,
+    pub review_event_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct UndoReviewResultDto {
+    pub undo_event_id: String,
+    pub schedule_version: u32,
+    pub due_at: String,
+    pub interval_seconds: u32,
+    pub completed_reviews: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -284,18 +367,52 @@ impl ApplicationService {
             &answer_options(&storage, &stored)?,
         );
         let suggested_grade = suggested_grade(comparison.result);
+        let previewed_at_ms = Utc::now().timestamp_millis();
+        let (engine, _, _) = scheduler_for_card(&storage, &stored)?;
+        let grade_previews = [
+            GradeDto::Again,
+            GradeDto::Hard,
+            GradeDto::Good,
+            GradeDto::Easy,
+        ]
+        .into_iter()
+        .map(|grade| {
+            let decision = engine.review(&stored.schedule, grade.into(), previewed_at_ms)?;
+            Ok(GradePreviewDto {
+                grade,
+                due_at: timestamp_string(decision.next_state.due_at_ms)?,
+                interval_seconds: desktop_u32(
+                    decision.next_state.interval_seconds,
+                    "preview interval seconds",
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, ApplicationError>>()?;
 
         Ok(RevealDto {
             card_id: stored.card.id,
             card_content_version: desktop_u32(stored.card.content_version, "card content version")?,
             schedule_version: desktop_u32(stored.schedule.version, "schedule version")?,
             full_source: render_source(&stored.source_item, None),
+            source_segments: reveal_segments(&stored.source_item, &stored.cloze.id),
             expected_answer: stored.cloze.answer,
             raw_response: request.raw_response.clone(),
             normalized_response: comparison.normalized_response,
             comparison: comparison.result.into(),
             difference: comparison.difference.into_iter().map(Into::into).collect(),
             suggested_grade: suggested_grade.into(),
+            grade_previews,
+            annotations: study_annotations(
+                &stored.source_item.annotations,
+                &stored.cloze.annotations,
+            ),
+            explanation: stored
+                .cloze
+                .explanation
+                .as_ref()
+                .or(stored.source_item.explanation.as_ref())
+                .map(localized_text_dto),
+            answer_media: study_media(&stored.cloze.media),
         })
     }
 
@@ -312,6 +429,24 @@ impl ApplicationService {
     ) -> Result<GradeReviewResultDto, ApplicationError> {
         let mut storage = self.open_storage()?;
         let stored = storage.load_study_card(&request.card_id)?;
+        if let Some(existing) = storage
+            .review_events(&request.card_id)?
+            .into_iter()
+            .find(|event| event.id == request.review_event_id)
+        {
+            if existing.kind != ReviewEventKind::Review
+                || existing.card_content_version != u64::from(request.card_content_version)
+                || existing.previous_schedule.version != u64::from(request.schedule_version)
+                || existing.raw_response != request.raw_response
+                || existing.chosen_grade != Grade::from(request.chosen_grade)
+                || existing.response_duration_ms != u64::from(request.response_duration_ms)
+                || stored.schedule.last_review_event_id.as_deref()
+                    != Some(request.review_event_id.as_str())
+            {
+                return Err(ApplicationError::StaleCard);
+            }
+            return grade_review_result(&existing);
+        }
         ensure_card_is_current(
             &stored,
             u64::from(request.card_content_version),
@@ -332,19 +467,22 @@ impl ApplicationService {
             request.chosen_grade.into(),
             reviewed_at_ms,
         )?;
-        let review_event_id = Uuid::new_v4().to_string();
         let mut next_schedule = decision.next_state;
-        next_schedule.last_review_event_id = Some(review_event_id.clone());
+        next_schedule.last_review_event_id = Some(request.review_event_id.clone());
 
         let event = ReviewEvent {
-            id: review_event_id.clone(),
+            id: request.review_event_id.clone(),
             card_id: stored.card.id,
             card_content_version: stored.card.content_version,
+            kind: ReviewEventKind::Review,
+            undoes_review_event_id: None,
             raw_response: request.raw_response.clone(),
             normalized_response: comparison.normalized_response,
             comparison: comparison.result,
             suggested_grade: suggested,
             chosen_grade: request.chosen_grade.into(),
+            grade_overridden: request.chosen_grade != GradeDto::from(suggested),
+            response_duration_ms: u64::from(request.response_duration_ms),
             reviewed_at_ms,
             scheduler_version: decision.scheduler_version.to_owned(),
             scheduler_parameter_set_id: Some(profile.active_parameter_set_id),
@@ -360,11 +498,90 @@ impl ApplicationService {
         );
 
         Ok(GradeReviewResultDto {
-            review_event_id,
+            review_event_id: request.review_event_id.clone(),
             schedule_version: desktop_u32(committed.version, "schedule version")?,
             due_at: timestamp_string(committed.due_at_ms)?,
             interval_seconds: desktop_u32(committed.interval_seconds, "interval seconds")?,
         })
+    }
+
+    /// Suspends a card after checking the versions observed by the study view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationError::StaleCard`] when the card changed or
+    /// another [`ApplicationError`] when persistence fails.
+    pub fn suspend_card(
+        &self,
+        request: &SuspendCardRequest,
+    ) -> Result<StudyCardDto, ApplicationError> {
+        let mut storage = self.open_storage()?;
+        let stored = storage.load_study_card(&request.card_id)?;
+        ensure_card_is_current(
+            &stored,
+            u64::from(request.card_content_version),
+            u64::from(request.schedule_version),
+        )?;
+        let mut card = stored.card;
+        card.suspended = true;
+        card.updated_at_ms = Utc::now().timestamp_millis();
+        storage.update_card(&card)?;
+        study_card_dto(&storage, &request.card_id)
+    }
+
+    /// Compensates the latest committed review and returns the restored queue
+    /// projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationError::StaleCard`] when the observed versions no
+    /// longer match or another [`ApplicationError`] when there is no matching
+    /// latest review to undo.
+    pub fn undo_review(
+        &self,
+        request: &UndoReviewRequest,
+    ) -> Result<UndoReviewResultDto, ApplicationError> {
+        let mut storage = self.open_storage()?;
+        let stored = storage.load_study_card(&request.card_id)?;
+        if let Some(existing) = storage
+            .review_events(&request.card_id)?
+            .into_iter()
+            .find(|event| event.id == request.undo_event_id)
+        {
+            if existing.kind != ReviewEventKind::Undo
+                || existing.card_content_version != u64::from(request.card_content_version)
+                || existing.previous_schedule.version != u64::from(request.schedule_version)
+                || existing.undoes_review_event_id.as_deref()
+                    != Some(request.review_event_id.as_str())
+                || stored.schedule.last_review_event_id.as_deref()
+                    != Some(request.undo_event_id.as_str())
+            {
+                return Err(ApplicationError::StaleCard);
+            }
+            return undo_review_result(
+                &storage,
+                &request.card_id,
+                request.undo_event_id.clone(),
+                &existing.next_schedule,
+            );
+        }
+        ensure_card_is_current(
+            &stored,
+            u64::from(request.card_content_version),
+            u64::from(request.schedule_version),
+        )?;
+        let restored = storage.undo_last_review(
+            &request.card_id,
+            &request.review_event_id,
+            &request.undo_event_id,
+            Utc::now().timestamp_millis(),
+        )?;
+        undo_review_result(
+            &storage,
+            &request.card_id,
+            request.undo_event_id.clone(),
+            &restored,
+        )
     }
 
     /// Loads basic and advanced scheduling controls for a deck.
@@ -474,7 +691,7 @@ impl ApplicationService {
         for card in cards {
             let (engine, _, _) = scheduler_for_card(&storage, &card)?;
             let mut state = engine.initial_schedule(&card.card.id, card.card.created_at_ms);
-            for event in storage.review_events(&card.card.id)? {
+            for event in storage.active_review_events(&card.card.id)? {
                 state = engine
                     .review(&state, event.chosen_grade, event.reviewed_at_ms)?
                     .next_state;
@@ -610,7 +827,7 @@ fn run_optimizer(
     let mut profile = storage.get_scheduler_profile(deck_id)?;
     let engine = scheduler_from_profile(storage, &profile, &settings)?;
     let history = storage
-        .review_events_for_deck(deck_id)?
+        .active_review_events_for_deck(deck_id)?
         .into_iter()
         .map(|event| ReviewHistoryEntry {
             card_id: event.card_id,
@@ -686,7 +903,7 @@ fn maybe_run_automatic_optimizer(
     deck_id: &str,
     now_ms: i64,
 ) -> Result<(), ApplicationError> {
-    let review_count = storage.review_events_for_deck(deck_id)?.len();
+    let review_count = storage.active_review_events_for_deck(deck_id)?.len();
     if review_count == MINIMUM_OPTIMIZATION_REVIEWS
         || (review_count > MINIMUM_OPTIMIZATION_REVIEWS && review_count % 32 == 0)
     {
@@ -752,6 +969,36 @@ fn study_card_dto(storage: &Storage, card_id: &str) -> Result<StudyCardDto, Appl
         .into(),
         due_at: timestamp_string(stored.schedule.due_at_ms)?,
         completed_reviews: desktop_u32(completed_reviews, "completed review count")?,
+        suspended: stored.card.suspended,
+        hint: stored.cloze.hint.as_ref().map(localized_text_dto),
+        prompt_media: study_media(&stored.source_item.media)
+            .into_iter()
+            .filter(|media| media.kind == MediaKindDto::Audio)
+            .collect(),
+    })
+}
+
+fn grade_review_result(event: &ReviewEvent) -> Result<GradeReviewResultDto, ApplicationError> {
+    Ok(GradeReviewResultDto {
+        review_event_id: event.id.clone(),
+        schedule_version: desktop_u32(event.next_schedule.version, "schedule version")?,
+        due_at: timestamp_string(event.next_schedule.due_at_ms)?,
+        interval_seconds: desktop_u32(event.next_schedule.interval_seconds, "interval seconds")?,
+    })
+}
+
+fn undo_review_result(
+    storage: &Storage,
+    card_id: &str,
+    undo_event_id: String,
+    schedule: &meiki_domain::ScheduleState,
+) -> Result<UndoReviewResultDto, ApplicationError> {
+    Ok(UndoReviewResultDto {
+        undo_event_id,
+        schedule_version: desktop_u32(schedule.version, "schedule version")?,
+        due_at: timestamp_string(schedule.due_at_ms)?,
+        interval_seconds: desktop_u32(schedule.interval_seconds, "interval seconds")?,
+        completed_reviews: desktop_u32(storage.review_count(card_id)?, "completed review count")?,
     })
 }
 
@@ -812,6 +1059,59 @@ fn render_source(source: &SourceItem, hidden_cloze_id: Option<&str>) -> String {
         .collect()
 }
 
+fn reveal_segments(source: &SourceItem, active_cloze_id: &str) -> Vec<RevealSegmentDto> {
+    source
+        .segments
+        .iter()
+        .map(|segment| match &segment.content {
+            SegmentContent::Text(text) => RevealSegmentDto {
+                text: text.clone(),
+                highlighted: false,
+            },
+            SegmentContent::Cloze { cloze_id, text } => RevealSegmentDto {
+                text: text.clone(),
+                highlighted: cloze_id == active_cloze_id,
+            },
+        })
+        .collect()
+}
+
+fn localized_text_dto(text: &LocalizedText) -> LocalizedTextDto {
+    LocalizedTextDto {
+        value: text.value.clone(),
+        language_tag: text.language_tag.clone(),
+        direction: text.direction.into(),
+    }
+}
+
+fn study_annotations(source: &[Annotation], cloze: &[Annotation]) -> Vec<StudyAnnotationDto> {
+    source
+        .iter()
+        .chain(cloze)
+        .map(|annotation| StudyAnnotationDto {
+            label: annotation.label.clone(),
+            value: annotation.value.clone(),
+            language_tag: annotation.language_tag.clone(),
+            direction: annotation.direction.into(),
+        })
+        .collect()
+}
+
+fn study_media(media: &[MediaReference]) -> Vec<StudyMediaDto> {
+    media
+        .iter()
+        .map(|media| StudyMediaDto {
+            id: media.id.clone(),
+            kind: media.kind.into(),
+            media_type: media.media_type.clone(),
+            original_file_name: media.original_file_name.clone(),
+            alt_text: media.alt_text.clone(),
+            language_tag: media.language_tag.clone(),
+            direction: media.direction.into(),
+        })
+        .collect()
+}
+
 const fn suggested_grade(comparison: ComparisonResult) -> Grade {
     match comparison {
         ComparisonResult::Exact | ComparisonResult::AcceptedVariant => Grade::Good,
@@ -848,6 +1148,15 @@ impl From<ComparisonResult> for ComparisonResultDto {
             ComparisonResult::NearMatch => Self::NearMatch,
             ComparisonResult::Incorrect => Self::Incorrect,
             ComparisonResult::Empty => Self::Empty,
+        }
+    }
+}
+
+impl From<MediaKind> for MediaKindDto {
+    fn from(value: MediaKind) -> Self {
+        match value {
+            MediaKind::Audio => Self::Audio,
+            MediaKind::Image => Self::Image,
         }
     }
 }
@@ -940,12 +1249,21 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     StudyIntensityDto::export_all_to(output)?;
     OptimizerStatusDto::export_all_to(output)?;
     TextDiffKindDto::export_all_to(output)?;
+    MediaKindDto::export_all_to(output)?;
+    LocalizedTextDto::export_all_to(output)?;
+    StudyAnnotationDto::export_all_to(output)?;
+    StudyMediaDto::export_all_to(output)?;
     TextDiffSegmentDto::export_all_to(output)?;
     StudyCardDto::export_all_to(output)?;
     CheckAnswerRequest::export_all_to(output)?;
+    RevealSegmentDto::export_all_to(output)?;
+    GradePreviewDto::export_all_to(output)?;
     RevealDto::export_all_to(output)?;
     GradeReviewRequest::export_all_to(output)?;
     GradeReviewResultDto::export_all_to(output)?;
+    SuspendCardRequest::export_all_to(output)?;
+    UndoReviewRequest::export_all_to(output)?;
+    UndoReviewResultDto::export_all_to(output)?;
     SchedulerSettingsDto::export_all_to(output)?;
     UpdateSchedulerSettingsRequest::export_all_to(output)?;
     RebuildSchedulerResultDto::export_all_to(output)?;
@@ -975,7 +1293,8 @@ mod tests {
 
     use super::{
         ApplicationService, CheckAnswerRequest, ComparisonResultDto, GradeDto, GradeReviewRequest,
-        OptimizerStatusDto, StudyIntensityDto, UpdateSchedulerSettingsRequest,
+        OptimizerStatusDto, StudyIntensityDto, SuspendCardRequest, UndoReviewRequest,
+        UpdateSchedulerSettingsRequest,
     };
 
     #[test]
@@ -999,17 +1318,23 @@ mod tests {
         assert_eq!(reveal.raw_response, " 行きます ");
         assert_eq!(reveal.normalized_response, "行きます");
         assert_eq!(reveal.difference.len(), 1);
+        assert_eq!(reveal.source_segments.len(), 2);
+        assert!(reveal.source_segments[1].highlighted);
+        assert_eq!(reveal.grade_previews.len(), 4);
+        assert_eq!(reveal.grade_previews[2].grade, GradeDto::Good);
 
-        let result = service
-            .grade_review(&GradeReviewRequest {
-                card_id: card.card_id,
-                card_content_version: card.card_content_version,
-                schedule_version: card.schedule_version,
-                raw_response: reveal.raw_response,
-                chosen_grade: reveal.suggested_grade,
-            })
-            .unwrap();
+        let grade_request = GradeReviewRequest {
+            review_event_id: "review-retry-safe".into(),
+            card_id: card.card_id.clone(),
+            card_content_version: card.card_content_version,
+            schedule_version: card.schedule_version,
+            raw_response: reveal.raw_response,
+            chosen_grade: GradeDto::Easy,
+            response_duration_ms: 1_250,
+        };
+        let result = service.grade_review(&grade_request).unwrap();
         assert_eq!(result.schedule_version, 1);
+        assert_eq!(service.grade_review(&grade_request).unwrap(), result);
         let storage = Storage::open(&path).unwrap();
         let events = storage.review_events(SAMPLE_CARD_ID).unwrap();
         assert_eq!(events.len(), 1);
@@ -1019,17 +1344,42 @@ mod tests {
             Some("fsrs7-default-v1")
         );
         assert_eq!(events[0].target_retention_basis_points, 9_000);
+        assert_eq!(events[0].response_duration_ms, 1_250);
+        assert!(events[0].grade_overridden);
         assert_eq!(
             events[0].next_schedule.due_at_ms,
             events[0].next_schedule.ideal_due_at_ms
         );
         assert!(events[0].next_schedule.interval_milliseconds > 0);
 
+        drop(storage);
+
+        let undo_request = UndoReviewRequest {
+            undo_event_id: "undo-retry-safe".into(),
+            card_id: card.card_id.clone(),
+            card_content_version: card.card_content_version,
+            schedule_version: result.schedule_version,
+            review_event_id: result.review_event_id.clone(),
+        };
+        let undo = service.undo_review(&undo_request).unwrap();
+        assert_eq!(undo.schedule_version, 2);
+        assert_eq!(undo.completed_reviews, 0);
+        assert_eq!(service.undo_review(&undo_request).unwrap(), undo);
+
+        let suspended = service
+            .suspend_card(&SuspendCardRequest {
+                card_id: card.card_id,
+                card_content_version: card.card_content_version,
+                schedule_version: undo.schedule_version,
+            })
+            .unwrap();
+        assert!(suspended.suspended);
+
         let restarted_service = ApplicationService::new(&path);
         let restored = restarted_service.get_study_card("sample-card").unwrap();
-        assert_eq!(restored.schedule_version, 1);
-        assert_eq!(restored.completed_reviews, 1);
-        assert_eq!(restored.due_at, result.due_at);
+        assert_eq!(restored.schedule_version, 2);
+        assert_eq!(restored.completed_reviews, 0);
+        assert!(restored.suspended);
     }
 
     #[test]
@@ -1079,11 +1429,13 @@ mod tests {
             .unwrap();
         service
             .grade_review(&GradeReviewRequest {
+                review_event_id: "optimizer-review".into(),
                 card_id: card.card_id,
                 card_content_version: card.card_content_version,
                 schedule_version: card.schedule_version,
                 raw_response: reveal.raw_response,
                 chosen_grade: GradeDto::Good,
+                response_duration_ms: 900,
             })
             .unwrap();
 

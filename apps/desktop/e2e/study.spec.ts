@@ -82,3 +82,84 @@ test("renders grapheme difference semantics without altering raw input", async (
   ).toHaveJSProperty("textContent", " 図書館 ");
   await expect(page.getByText("Compared as:")).toBeVisible();
 });
+
+test("completes and undoes a review with keyboard-only controls", async ({
+  page,
+}) => {
+  await page.goto("/?fixture=cjk");
+  await page.keyboard.type("行きます");
+  await page.waitForTimeout(20);
+  await page.keyboard.press("Enter");
+
+  await expect(page.locator("#study-prompt mark")).toHaveText("行きます");
+  await expect(page.getByRole("button", { name: /Good.*3d/i })).toBeVisible();
+  await page.keyboard.press("4");
+  await expect(
+    page.getByRole("heading", { name: "Review saved" }),
+  ).toBeVisible();
+
+  const request = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("meiki-e2e-last-grade-request") ?? "{}"),
+  );
+  expect(request.chosen_grade).toBe("easy");
+  expect(request.response_duration_ms).toBeGreaterThan(0);
+
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(page.getByText("Last review undone.")).toBeVisible();
+  await expect(page.getByText("0 reviews saved")).toBeVisible();
+  await expect(page.getByLabel("Your answer")).toBeFocused();
+});
+
+test("retries interrupted checks and commits without losing review state", async ({
+  page,
+}) => {
+  await page.goto("/?fixture=ltr&failure=check");
+  const input = page.getByLabel("Your answer");
+  await input.fill(" la bibliothe\u{300}que ");
+  await input.press("Enter");
+  await expect(
+    page.getByText("The answer check was interrupted."),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText("Expected answer")).toBeVisible();
+  await expect(
+    page.locator(".answer-comparison strong").nth(1),
+  ).toHaveJSProperty("textContent", " la bibliothe\u{300}que ");
+
+  await page.goto("/?fixture=cjk&failure=grade");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByText("The review commit was interrupted."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Review saved" }),
+  ).toBeVisible();
+});
+
+test("edits and suspends the active card without losing the reveal", async ({
+  page,
+}) => {
+  await page.goto("/?fixture=cjk");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.keyboard.press("e");
+
+  await expect(page.getByRole("heading", { name: "Add / Edit" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Cloze 1 行きます" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Return to study" }).click();
+  await expect(page.getByText("Expected answer")).toBeVisible();
+  await expect(page.locator(".answer-comparison strong").nth(1)).toHaveText(
+    "行きます",
+  );
+
+  await page.keyboard.press("s");
+  await expect(
+    page.getByRole("heading", { name: "Card suspended" }),
+  ).toBeVisible();
+});

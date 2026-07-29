@@ -24,6 +24,7 @@
   let online = true;
   let authoringDirty = false;
   let authoringComposing = false;
+  let editingStudyCardId: string | null = null;
   let mainElement: HTMLElement;
 
   onMount(() => {
@@ -75,6 +76,28 @@
     authoringDirty = false;
     authoringComposing = false;
     activeScreen = value;
+    if (value !== "editor") editingStudyCardId = null;
+    await tick();
+    mainElement.focus();
+  }
+
+  async function editStudyCard(cardId: string): Promise<void> {
+    editingStudyCardId = cardId;
+    activeScreen = "editor";
+    await tick();
+    mainElement.focus();
+  }
+
+  async function returnToStudy(): Promise<void> {
+    if (authoringDirty) {
+      if (authoringComposing) return;
+      if (!window.confirm("Return to study and discard unsaved changes?"))
+        return;
+    }
+    authoringDirty = false;
+    authoringComposing = false;
+    activeScreen = "study";
+    editingStudyCardId = null;
     await tick();
     mainElement.focus();
   }
@@ -139,11 +162,14 @@
       {#if activeScreen === "today"}
         <TodayScreen onNavigate={navigate} />
       {:else if activeScreen === "study"}
-        <StudyScreen />
+        <StudyScreen onEdit={editStudyCard} />
       {:else if activeScreen === "library"}
         <LibraryScreen onNavigate={navigate} />
       {:else if activeScreen === "editor"}
-        <EditorScreen />
+        <EditorScreen
+          cardId={editingStudyCardId}
+          onReturn={editingStudyCardId ? returnToStudy : undefined}
+        />
       {:else}
         <SettingsScreen {theme} onThemeChange={applyTheme} />
       {/if}

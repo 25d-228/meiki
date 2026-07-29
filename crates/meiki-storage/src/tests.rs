@@ -1,7 +1,7 @@
 use meiki_domain::{
     Annotation, Card, Cloze, ComparisonResult, Deck, Direction, Grade, LocalizedText,
-    MatchingPolicy, MediaKind, MediaReference, ReviewEvent, ScheduleState, SchedulerParameterSet,
-    SegmentContent, SemanticSegment, SourceItem, StudySettingsOverride, Tag,
+    MatchingPolicy, MediaKind, MediaReference, ReviewEvent, ReviewEventKind, ScheduleState,
+    SchedulerParameterSet, SegmentContent, SemanticSegment, SourceItem, StudySettingsOverride, Tag,
 };
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -30,11 +30,15 @@ fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent
         id: id.to_owned(),
         card_id: stored.card.id,
         card_content_version: stored.card.content_version,
+        kind: ReviewEventKind::Review,
+        undoes_review_event_id: None,
         raw_response: " 行きます ".into(),
         normalized_response: "行きます".into(),
         comparison: ComparisonResult::Exact,
         suggested_grade: Grade::Good,
         chosen_grade: Grade::Good,
+        grade_overridden: false,
+        response_duration_ms: 850,
         reviewed_at_ms,
         scheduler_version: "test-scheduler".into(),
         scheduler_parameter_set_id: None,
@@ -324,6 +328,9 @@ fn review_append_projection_and_queue_update_are_atomic() {
         .unwrap();
     let mut event = sample_event(&storage, "review-1", 10_000);
     event.scheduler_parameter_set_id = Some(parameter_set.id);
+    event.chosen_grade = Grade::Easy;
+    event.grade_overridden = true;
+    event.response_duration_ms = 1_234;
 
     let committed = storage.commit_review(&event).unwrap();
     assert_eq!(committed.version, 1);
@@ -346,6 +353,59 @@ fn review_append_projection_and_queue_update_are_atomic() {
         Err(StorageError::StaleReview)
     ));
     assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
+}
+
+#[test]
+fn undo_appends_a_compensating_event_and_restores_the_projection() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let initial = storage.load_schedule(SAMPLE_CARD_ID).unwrap();
+    let review = sample_event(&storage, "review-1", 10_000);
+    let reviewed = storage.commit_review(&review).unwrap();
+
+    let undone = storage
+        .undo_last_review(SAMPLE_CARD_ID, "review-1", "undo-1", 11_000)
+        .unwrap();
+    assert_eq!(undone.version, reviewed.version + 1);
+    assert_eq!(undone.due_at_ms, initial.due_at_ms);
+    assert_eq!(undone.interval_milliseconds, initial.interval_milliseconds);
+    assert_eq!(undone.repetitions, initial.repetitions);
+    assert_eq!(undone.last_reviewed_at_ms, initial.last_reviewed_at_ms);
+    assert_eq!(undone.last_review_event_id.as_deref(), Some("undo-1"));
+    assert_eq!(storage.load_schedule(SAMPLE_CARD_ID).unwrap(), undone);
+    assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 0);
+    assert!(
+        storage
+            .active_review_events(SAMPLE_CARD_ID)
+            .unwrap()
+            .is_empty()
+    );
+
+    let history = storage.review_events(SAMPLE_CARD_ID).unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[1].kind, ReviewEventKind::Undo);
+    assert_eq!(
+        history[1].undoes_review_event_id.as_deref(),
+        Some("review-1")
+    );
+
+    storage
+        .connection
+        .execute(
+            "UPDATE schedule_states
+             SET version = 99, due_at_ms = -1, last_review_event_id = NULL
+             WHERE card_id = ?1",
+            [SAMPLE_CARD_ID],
+        )
+        .unwrap();
+    assert_eq!(
+        storage.rebuild_schedule_projection(SAMPLE_CARD_ID).unwrap(),
+        undone
+    );
+    assert!(matches!(
+        storage.undo_last_review(SAMPLE_CARD_ID, "review-1", "undo-2", 12_000),
+        Err(StorageError::NothingToUndo(card_id)) if card_id == SAMPLE_CARD_ID
+    ));
 }
 
 #[test]
@@ -468,11 +528,16 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 4);
+    assert_eq!(storage.schema_version().unwrap(), 5);
     let restored = storage.load_study_card("legacy-card").unwrap();
+    assert!(!restored.card.suspended);
     assert_eq!(restored.source_item.deck_id, DEFAULT_DECK_ID);
     assert_eq!(restored.source_item.direction, Direction::RightToLeft);
     assert_eq!(restored.cloze.answer, "کتاب");
+    let legacy_events = storage.review_events("legacy-card").unwrap();
+    assert_eq!(legacy_events[0].kind, ReviewEventKind::Review);
+    assert_eq!(legacy_events[0].response_duration_ms, 0);
+    assert!(!legacy_events[0].grade_overridden);
     let baseline = storage
         .rebuildable_baseline_for_test("legacy-card")
         .unwrap();
@@ -589,6 +654,7 @@ fn multilingual_aggregate_round_trips_and_cloze_ids_survive_surrounding_edits() 
             id: format!("card-{index}"),
             cloze_id: cloze.id.clone(),
             content_version: 0,
+            suspended: false,
             settings: StudySettingsOverride::default(),
             created_at_ms: 1_000,
             updated_at_ms: 1_000,
