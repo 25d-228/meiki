@@ -348,6 +348,18 @@ fn sample_data_survives_reopening_the_database() {
 }
 
 #[test]
+fn released_v0_1_schema_fixture_opens_and_migrates() {
+    const RELEASED_V0_1_SCHEMA: &[u8] = include_bytes!("../fixtures/released/v0.1-schema-7.db");
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("released-v0.1.db");
+    std::fs::write(&path, RELEASED_V0_1_SCHEMA).unwrap();
+
+    let storage = Storage::open(&path).unwrap();
+    assert_eq!(storage.schema_version().unwrap(), 7);
+    assert_eq!(storage.get_deck(DEFAULT_DECK_ID).unwrap().name, "Default");
+}
+
+#[test]
 fn review_append_projection_and_queue_update_are_atomic() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();
@@ -1031,6 +1043,37 @@ fn library_bulk_actions_are_recoverable_atomic_and_preserve_history_and_media() 
     assert_eq!(
         storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
         reviewed_schedule
+    );
+}
+
+#[test]
+#[ignore = "release performance budget; run with scripts/performance"]
+fn release_budget_startup_and_current_schema_migration() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("startup.db");
+
+    let migration_started = std::time::Instant::now();
+    drop(Storage::open(&path).unwrap());
+    let migration_elapsed = migration_started.elapsed();
+
+    let startup_started = std::time::Instant::now();
+    for _ in 0..50 {
+        drop(Storage::open(&path).unwrap());
+    }
+    let startup_elapsed = startup_started.elapsed();
+
+    assert!(
+        migration_elapsed <= std::time::Duration::from_secs(2),
+        "new collection migration exceeded 2 s: {migration_elapsed:?}"
+    );
+    assert!(
+        startup_elapsed <= std::time::Duration::from_secs(5),
+        "50 current-schema opens exceeded 5 s: {startup_elapsed:?}"
+    );
+    eprintln!(
+        "release-budget migration_new_ms={} startup_50_ms={}",
+        migration_elapsed.as_millis(),
+        startup_elapsed.as_millis()
     );
 }
 

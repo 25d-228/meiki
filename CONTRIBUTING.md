@@ -12,6 +12,16 @@ run:
 ./scripts/dev-env npm run verify
 ```
 
+For a release-affecting change, also run:
+
+```sh
+./scripts/performance
+./scripts/dev-env npm run release:check
+```
+
+The platform matrix, performance budgets, severity gate, signing posture, and
+tag procedure are defined in [docs/release-quality.md](docs/release-quality.md).
+
 Do not place SQL outside `meiki-storage`, scheduling rules outside
 `meiki-scheduler`, text comparison outside `meiki-text`, or business rules in
 Tauri commands and Svelte components. Generated files under

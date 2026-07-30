@@ -94,7 +94,7 @@
 
   .detail {
     margin-top: var(--space-1);
-    color: var(--color-text-muted);
+    color: var(--color-text);
     font-size: var(--text-sm);
     line-height: 1.5;
   }

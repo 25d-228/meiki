@@ -129,7 +129,6 @@
     border-radius: var(--radius-xs);
     font: inherit;
     font-size: 0.68rem;
-    opacity: 0.68;
     place-items: center;
   }
 </style>

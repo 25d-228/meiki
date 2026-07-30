@@ -1,14 +1,14 @@
 # 明記 · Meiki
 
-Meiki is a local-first desktop application for typed-cloze recall. The current
-foundation implements one complete offline path: open the bundled Japanese
-sample, type the hidden text, reveal and grade the answer, then restore the
-persisted review and next due time after restart.
+Meiki is a local-first desktop application for language-neutral typed-cloze
+recall. Create structured clozes in any Unicode script, study entirely from the
+keyboard, and keep immutable review history, adaptive schedules, and
+checksum-addressed media on your device.
 
 This repository is implementing [the v0.1 epic](https://github.com/25d-228/meiki/issues/1).
-The foundation and core persistence milestones are tracked in
-[issue #2](https://github.com/25d-228/meiki/issues/2) and
-[issue #3](https://github.com/25d-228/meiki/issues/3).
+See the [user guide](docs/user-guide.md) for the learning and recovery
+workflows, and [release quality](docs/release-quality.md) for the supported
+test, accessibility, performance, and packaging matrix.
 
 ## Verify a clean checkout
 
@@ -20,9 +20,10 @@ Install Python 3, Node.js 24, and Rust 1.85 or newer, then run one command:
 
 The script creates an ignored project-local `.venv`, installs locked npm
 dependencies and Chromium there, then checks formatting, module boundaries,
-linting, generated Rust-to-TypeScript contracts, types, builds, unit tests, and
-browser tests. Cargo build output, npm cache, and browser binaries stay inside
-the virtual environment.
+release metadata, linting, generated Rust-to-TypeScript contracts, types,
+builds, unit tests, accessibility, and browser-level release scenarios. Cargo
+build output, npm cache, and browser binaries stay inside the virtual
+environment.
 
 ## Develop
 
@@ -43,6 +44,12 @@ Run an individual command inside the same isolated environment:
 ```sh
 ./scripts/dev-env cargo test -p meiki-storage
 ./scripts/dev-env npm run typecheck
+```
+
+Run the release performance budgets:
+
+```sh
+./scripts/performance
 ```
 
 Generate TypeScript contracts after changing a desktop DTO:

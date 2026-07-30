@@ -558,7 +558,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{DetectedMediaKind, MediaError, MediaStore};
+    use super::{DetectedMediaKind, MediaError, MediaStore, content_hash};
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut bytes = vec![
@@ -707,5 +707,33 @@ mod tests {
         assert_eq!(imported.media_type, "audio/wav");
         assert_eq!(imported.duration_ms, Some(1_000));
         assert_eq!(imported.byte_size, 16_044);
+    }
+
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    fn release_budget_large_media_collection_verification() {
+        let directory = tempdir().unwrap();
+        let store = MediaStore::new(directory.path().join("media"));
+        for index in 0..10_000_u32 {
+            let bytes = index.to_le_bytes();
+            let hash = content_hash(&bytes);
+            let path = store.object_path(&hash).unwrap();
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+
+        let started = std::time::Instant::now();
+        let verified = store.verify_all().unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(verified.len(), 10_000);
+        assert!(
+            elapsed <= std::time::Duration::from_secs(30),
+            "10,000-object media verification exceeded 30 s: {elapsed:?}"
+        );
+        eprintln!(
+            "release-budget media_verify_10000 elapsed_ms={}",
+            elapsed.as_millis()
+        );
     }
 }
