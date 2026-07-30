@@ -9,5 +9,9 @@ rust-version.workspace = true
 [dependencies]
 meiki-domain = { path = "../meiki-domain" }
 
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
 [lints]
 workspace = true

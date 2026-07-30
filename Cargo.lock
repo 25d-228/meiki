@@ -1829,6 +1829,8 @@ name = "meiki-scheduler"
 version = "0.1.0"
 dependencies = [
  "meiki-domain",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
