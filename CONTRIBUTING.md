@@ -1,8 +1,10 @@
 # Contributing
 
-Read the [v0.1 epic](https://github.com/25d-228/meiki/issues/1) and the target
-issue before changing a boundary. Work should follow the dependency order in the
-epic.
+Current release: **0.2.0**. Read the
+[v0.2.0 release notes](docs/releases/v0.2.0.md), the accepted
+[architecture decisions](docs/adr/), and the target issue before changing a
+boundary. Keep the product scope, module direction, and test ownership defined
+by those tracked documents.
 
 Run all development commands through `./scripts/dev-env` so generated state
 stays in the project-local virtual environment. Before handing off a change,

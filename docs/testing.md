@@ -83,10 +83,12 @@ All filesystem faults are confined to temporary directories. The only explicit
 fault API is compiled for storage tests and fixture builds; it cannot be
 enabled through production runtime state.
 
-## Native input checklist
+## Optional native input smoke
 
-Before a release, record this small native pass in the release pull request
-(issue #43 owns the v0.2 execution):
+Automated composition-event, grapheme, bidirectional-text, keyboard, and focus
+tests are the release gate. When a maintainer has the relevant operating-system
+input methods installed, they may additionally record this small native smoke
+in a release pull request:
 
 - [ ] Record the operating system, input method, language, and date.
 - [ ] With a Japanese, Chinese, or Korean IME, exercise composition
@@ -101,8 +103,9 @@ Before a release, record this small native pass in the release pull request
 - [ ] Link every defect found to a regression test at the lowest meaningful
       boundary.
 
-Do not mark this checklist complete from synthetic composition events or
-browser automation.
+This smoke is useful exploratory evidence, but it is not required for release
+and does not certify assistive-technology support. Defects found during the
+smoke still receive a regression test at the lowest meaningful boundary.
 
 ## Continuous integration
 
