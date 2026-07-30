@@ -76,6 +76,7 @@ def main() -> None:
         data_roots = app_data_roots(smoke_root, environment)
         log_path = smoke_root / "launch.log"
         with log_path.open("w", encoding="utf-8") as log:
+            launch_started = time.monotonic()
             process = subprocess.Popen(
                 [str(executable)],
                 cwd=executable.parent,
@@ -116,6 +117,7 @@ def main() -> None:
                     log_path,
                 )
 
+            launch_elapsed_ms = round((time.monotonic() - launch_started) * 1_000)
             process.terminate()
             try:
                 process.wait(timeout=3)
@@ -125,7 +127,8 @@ def main() -> None:
 
         print(
             "package launch smoke passed: "
-            f"executable={executable} collection={collection}"
+            f"executable={executable} collection={collection} "
+            f"elapsed_ms={launch_elapsed_ms}"
         )
 
 

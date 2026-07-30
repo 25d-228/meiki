@@ -11,9 +11,9 @@ use super::{
     AUTHORING_DEFAULTS_MIGRATION, AnnotationRepository, CARD_LIFECYCLE_MIGRATION,
     CORE_MODEL_MIGRATION, CardRepository, ClozeRepository, DEFAULT_DECK_ID, DeckRepository,
     FOUNDATION_MIGRATION, FSRS7_SCHEDULER_MIGRATION, LIBRARY_MIGRATION, MEDIA_PIPELINE_MIGRATION,
-    MediaRepository, PROJECTION_INTEGRITY_MIGRATION, SAMPLE_CARD_ID, STUDY_SESSION_MIGRATION,
-    SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository, Storage,
-    StorageError, StoredSourceNote, TagRepository,
+    MediaRepository, PROJECTION_INTEGRITY_MIGRATION, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID,
+    STUDY_SESSION_MIGRATION, SchedulerParameterSetRepository, SchedulerProfileRepository,
+    SourceNoteRepository, Storage, StorageError, StoredSourceNote, TagRepository,
 };
 
 fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent {
@@ -50,6 +50,110 @@ fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent
         previous_schedule: stored.schedule,
         next_schedule: next,
     }
+}
+
+#[derive(Debug)]
+struct LifecycleModel {
+    active_reviews: usize,
+    event_count: usize,
+    suspended: bool,
+    trashed: bool,
+    content_version: u64,
+}
+
+fn assert_lifecycle_model(storage: &Storage, model: &LifecycleModel) {
+    let projection_count = storage
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM schedule_states WHERE card_id = ?1",
+            [SAMPLE_CARD_ID],
+            |row| row.get::<_, u64>(0),
+        )
+        .unwrap();
+    let baseline_count = storage
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM schedule_baselines WHERE card_id = ?1",
+            [SAMPLE_CARD_ID],
+            |row| row.get::<_, u64>(0),
+        )
+        .unwrap();
+    assert_eq!(projection_count, 1);
+    assert_eq!(baseline_count, 1);
+
+    let events = storage.review_events(SAMPLE_CARD_ID).unwrap();
+    assert_eq!(events.len(), model.event_count);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        events.len()
+    );
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(
+            event.previous_schedule.version,
+            u64::try_from(index).unwrap()
+        );
+        assert_eq!(
+            event.next_schedule.version,
+            u64::try_from(index + 1).unwrap()
+        );
+    }
+
+    let active = storage.active_review_events(SAMPLE_CARD_ID).unwrap();
+    assert_eq!(active.len(), model.active_reviews);
+    let current = storage.load_schedule(SAMPLE_CARD_ID).unwrap();
+    let expected = events.last().map_or_else(
+        || storage.load_schedule_baseline(SAMPLE_CARD_ID).unwrap(),
+        |event| event.next_schedule.clone(),
+    );
+    assert_eq!(current, expected);
+    assert_eq!(
+        current.lifecycle,
+        if model.active_reviews == 0 {
+            CardLifecycle::Unseen
+        } else {
+            CardLifecycle::Introduced
+        }
+    );
+    assert_eq!(
+        storage.get_card(SAMPLE_CARD_ID).unwrap().content_version,
+        model.content_version
+    );
+    assert_eq!(
+        storage.get_card(SAMPLE_CARD_ID).unwrap().suspended,
+        model.suspended
+    );
+    let stored_note = storage
+        .library_notes()
+        .unwrap()
+        .into_iter()
+        .find(|stored| stored.note.source_item.id == SAMPLE_SOURCE_ID)
+        .unwrap();
+    assert_eq!(stored_note.deleted_at_ms.is_some(), model.trashed);
+
+    let workload = storage
+        .scheduling_workload(DEFAULT_DECK_ID, 1_000_000_000, 3_419_200_000)
+        .unwrap();
+    if model.suspended || model.trashed {
+        assert_eq!(workload.unseen_cards, 0);
+        assert_eq!(workload.due_cards_now, 0);
+        assert_eq!(workload.forecast_review_occurrences, 0);
+    } else {
+        assert!(
+            workload.unseen_cards > 0
+                || workload.due_cards_now > 0
+                || workload.forecast_review_occurrences > 0
+        );
+    }
+    assert!(
+        storage
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
 }
 
 fn migration_backup_schema_version(directory: &std::path::Path, prefix: &str) -> u32 {
@@ -124,6 +228,34 @@ fn opening_a_clean_collection_is_idempotent_and_creates_no_learning_data() {
     assert_eq!(count("clozes"), 0);
     assert_eq!(count("cards"), 0);
     assert_eq!(count("review_events"), 0);
+}
+
+#[test]
+fn large_performance_fixture_preserves_production_history_invariants() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage
+        .seed_large_performance_fixture(30, 1_000_000)
+        .unwrap();
+
+    assert_eq!(storage.library_notes().unwrap().len(), 30);
+    assert_eq!(
+        storage
+            .connection
+            .query_row("SELECT COUNT(*) FROM review_events", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap(),
+        20
+    );
+    let integrity = storage.check_collection_schedule_integrity().unwrap();
+    assert_eq!(integrity.checked_cards, 30);
+    assert!(integrity.is_valid());
+    let workload = storage
+        .scheduling_workload(DEFAULT_DECK_ID, 1_000_000, 31 * 86_400_000)
+        .unwrap();
+    assert!(workload.due_cards_now > 0);
+    assert!(workload.unseen_cards > 0);
+    assert!(workload.review_count > 0);
 }
 
 #[test]
@@ -363,6 +495,62 @@ fn sample_data_survives_reopening_the_database() {
 }
 
 #[test]
+fn wal_writer_process() {
+    let Some(path) = std::env::var_os("MEIKI_TEST_WAL_WRITER_PATH") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    let mut storage = Storage::open(&path).unwrap();
+    storage
+        .connection
+        .execute_batch("PRAGMA wal_autocheckpoint = 0;")
+        .unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let event = sample_event(&storage, "wal-review", 10_000);
+    storage.commit_review(&event).unwrap();
+    std::process::exit(0);
+}
+
+#[test]
+fn committed_wal_recovers_after_the_writer_process_terminates() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("terminated-writer.db");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("tests::wal_writer_process")
+        .arg("--nocapture")
+        .env("MEIKI_TEST_WAL_WRITER_PATH", &path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let wal_path = path.with_file_name(format!(
+        "{}-wal",
+        path.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(
+        wal_path.is_file(),
+        "the terminated writer left a WAL to recover"
+    );
+
+    let recovered = Storage::open(&path).unwrap();
+    assert_eq!(
+        recovered
+            .review_events(SAMPLE_CARD_ID)
+            .unwrap()
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        ["wal-review"]
+    );
+    assert!(
+        recovered
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+}
+
+#[test]
 fn released_v0_1_schema_fixture_opens_and_migrates() {
     const RELEASED_V0_1_SCHEMA: &[u8] = include_bytes!("../fixtures/released/v0.1-schema-7.db");
     let directory = tempdir().unwrap();
@@ -372,6 +560,215 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     let storage = Storage::open(&path).unwrap();
     assert_eq!(storage.schema_version().unwrap(), 10);
     assert_eq!(storage.get_deck(DEFAULT_DECK_ID).unwrap().name, "Default");
+    assert_eq!(
+        storage
+            .connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert!(
+        storage
+            .connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    for (table, expected) in [
+        ("decks", 1_u64),
+        ("source_items", 0),
+        ("clozes", 0),
+        ("cards", 0),
+        ("review_events", 0),
+        ("media_references", 0),
+    ] {
+        assert_eq!(
+            storage
+                .connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap(),
+            expected,
+            "{table}"
+        );
+    }
+    assert!(
+        storage
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+    let migration_count = storage
+        .connection
+        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+            row.get::<_, u64>(0)
+        })
+        .unwrap();
+    let backup = directory.path().join("released-v0.1.backup.db");
+    storage.backup_to(&backup).unwrap();
+    drop(storage);
+
+    let reopened = Storage::open(&path).unwrap();
+    assert_eq!(reopened.schema_version().unwrap(), 10);
+    assert_eq!(
+        reopened
+            .connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap(),
+        migration_count
+    );
+    drop(reopened);
+
+    let restored_path = directory.path().join("released-v0.1-restored.db");
+    let restored = Storage::restore_from_backup(&backup, &restored_path).unwrap();
+    assert_eq!(restored.schema_version().unwrap(), 10);
+    assert!(!restored.has_learning_material().unwrap());
+    assert!(
+        restored
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+    assert_eq!(
+        migration_backup_schema_version(directory.path(), "released-v0.1.db.migration-v7-"),
+        7
+    );
+}
+
+#[test]
+fn newer_schema_fails_without_migration_or_backup_writes() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("future.db");
+    drop(Storage::open(&path).unwrap());
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_migrations(version, applied_at_ms) VALUES (999, 42)",
+            [],
+        )
+        .unwrap();
+    let migrations_before = connection
+        .query_row(
+            "SELECT COUNT(*), MAX(version) FROM schema_migrations",
+            [],
+            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u32>(1)?)),
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        Storage::open(&path),
+        Err(StorageError::UnsupportedSchema {
+            found: 999,
+            supported: 10
+        })
+    ));
+    let connection = Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*), MAX(version) FROM schema_migrations",
+                [],
+                |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u32>(1)?)),
+            )
+            .unwrap(),
+        migrations_before
+    );
+    assert!(!directory.path().join("backups").exists());
+}
+
+#[test]
+fn unique_check_and_foreign_key_failures_leave_the_collection_valid() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    assert!(
+        storage
+            .connection
+            .execute(
+                "INSERT INTO semantic_segments(
+                    id, source_item_id, ordinal, kind, text, cloze_id
+                 ) VALUES ('duplicate-ordinal', ?1, 0, 'text', 'duplicate', NULL)",
+                [SAMPLE_SOURCE_ID],
+            )
+            .is_err()
+    );
+    assert!(
+        storage
+            .connection
+            .execute(
+                "UPDATE cards SET suspended = 2 WHERE id = ?1",
+                [SAMPLE_CARD_ID],
+            )
+            .is_err()
+    );
+    assert!(
+        storage
+            .connection
+            .execute(
+                "INSERT INTO cards(
+                    id, cloze_id, content_version, created_at_ms, updated_at_ms,
+                    suspended, queue_updated_at_ms
+                 ) VALUES ('orphan-card', 'missing-cloze', 0, 1, 1, 0, 1)",
+                [],
+            )
+            .is_err()
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert!(
+        storage
+            .connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(!storage.get_card(SAMPLE_CARD_ID).unwrap().suspended);
+}
+
+#[test]
+fn two_connections_reject_a_stale_concurrent_review_without_partial_state() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("concurrent.db");
+    let mut first = Storage::open(&path).unwrap();
+    first.seed_walking_skeleton(1_000).unwrap();
+    let mut second = Storage::open(&path).unwrap();
+    let winner = sample_event(&first, "concurrent-winner", 10_000);
+    let mut stale = sample_event(&second, "concurrent-stale", 10_001);
+    stale.previous_schedule = winner.previous_schedule.clone();
+    stale.next_schedule.version = winner.next_schedule.version;
+
+    first.commit_review(&winner).unwrap();
+    assert!(matches!(
+        second.commit_review(&stale),
+        Err(StorageError::StaleReview)
+    ));
+    assert_eq!(
+        first
+            .review_events(SAMPLE_CARD_ID)
+            .unwrap()
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        ["concurrent-winner"]
+    );
+    assert_eq!(
+        first.load_schedule(SAMPLE_CARD_ID).unwrap(),
+        winner.next_schedule
+    );
 }
 
 #[test]
@@ -469,6 +866,132 @@ fn review_append_projection_and_queue_update_are_atomic() {
         Err(StorageError::StaleReview)
     ));
     assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn fixed_lifecycle_command_model_preserves_durable_invariants_after_every_step() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("lifecycle-model.db");
+    let source_ids = vec![SAMPLE_SOURCE_ID.to_owned()];
+    let mut storage = Storage::open(&path).unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let mut model = LifecycleModel {
+        active_reviews: 0,
+        event_count: 0,
+        suspended: false,
+        trashed: false,
+        content_version: 0,
+    };
+    assert_lifecycle_model(&storage, &model);
+
+    let first = sample_event(&storage, "model-review-1", 10_000);
+    storage.commit_review(&first).unwrap();
+    model.active_reviews = 1;
+    model.event_count = 1;
+    assert_lifecycle_model(&storage, &model);
+
+    assert!(matches!(
+        storage.commit_review(&first),
+        Err(StorageError::StaleReview)
+    ));
+    assert_lifecycle_model(&storage, &model);
+    assert!(matches!(
+        storage.undo_last_review(
+            SAMPLE_CARD_ID,
+            "not-the-latest-review",
+            "model-invalid-undo",
+            11_000
+        ),
+        Err(StorageError::StaleReview)
+    ));
+    assert_lifecycle_model(&storage, &model);
+
+    storage
+        .undo_last_review(SAMPLE_CARD_ID, "model-review-1", "model-undo-1", 12_000)
+        .unwrap();
+    model.active_reviews = 0;
+    model.event_count = 2;
+    assert_lifecycle_model(&storage, &model);
+
+    storage
+        .set_library_notes_suspended(&source_ids, true, 13_000)
+        .unwrap();
+    model.suspended = true;
+    assert_lifecycle_model(&storage, &model);
+    storage
+        .set_library_notes_suspended(&source_ids, false, 14_000)
+        .unwrap();
+    model.suspended = false;
+    assert_lifecycle_model(&storage, &model);
+
+    let mut card = storage.get_card(SAMPLE_CARD_ID).unwrap();
+    card.content_version += 1;
+    card.updated_at_ms = 15_000;
+    storage.update_card(&card).unwrap();
+    model.content_version = 1;
+    assert_lifecycle_model(&storage, &model);
+
+    storage
+        .set_library_notes_deleted(&source_ids, Some(16_000), 16_000)
+        .unwrap();
+    model.trashed = true;
+    assert_lifecycle_model(&storage, &model);
+    storage
+        .set_library_notes_deleted(&source_ids, None, 17_000)
+        .unwrap();
+    model.trashed = false;
+    assert_lifecycle_model(&storage, &model);
+
+    let second = sample_event(&storage, "model-review-2", 20_000);
+    storage.commit_review(&second).unwrap();
+    model.active_reviews = 1;
+    model.event_count = 3;
+    assert_lifecycle_model(&storage, &model);
+    drop(storage);
+
+    let mut storage = Storage::open(&path).unwrap();
+    assert!(matches!(
+        storage.commit_review(&second),
+        Err(StorageError::StaleReview)
+    ));
+    assert_lifecycle_model(&storage, &model);
+
+    storage
+        .connection
+        .execute(
+            "UPDATE schedule_states SET due_at_ms = -1 WHERE card_id = ?1",
+            [SAMPLE_CARD_ID],
+        )
+        .unwrap();
+    assert_eq!(
+        storage
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .mismatched_card_ids,
+        [SAMPLE_CARD_ID]
+    );
+    storage.rebuild_schedule_projection(SAMPLE_CARD_ID).unwrap();
+    assert_lifecycle_model(&storage, &model);
+
+    assert!(
+        storage
+            .connection
+            .execute(
+                "UPDATE review_events
+                 SET raw_response = 'mutated'
+                 WHERE id = 'model-review-2'",
+                [],
+            )
+            .is_err()
+    );
+    assert!(
+        storage
+            .connection
+            .execute("DELETE FROM review_events WHERE id = 'model-review-2'", [],)
+            .is_err()
+    );
+    assert_lifecycle_model(&storage, &model);
 }
 
 #[test]
@@ -1453,6 +1976,47 @@ fn release_budget_startup_and_current_schema_migration() {
         "release-budget migration_new_ms={} startup_50_ms={}",
         migration_elapsed.as_millis(),
         startup_elapsed.as_millis()
+    );
+}
+
+#[test]
+#[ignore = "release performance budget; run with scripts/performance"]
+fn release_budget_large_version_eight_migration() {
+    const CARD_COUNT: u32 = 10_000;
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("large-v8.db");
+    let mut legacy = open_version_eight_fixture(&path);
+    legacy
+        .seed_large_performance_fixture(CARD_COUNT, 1_000_000_000)
+        .unwrap();
+    assert_eq!(legacy.schema_version().unwrap(), 8);
+    drop(legacy);
+    let before_bytes = std::fs::metadata(&path).unwrap().len();
+
+    let started = std::time::Instant::now();
+    let migrated = Storage::open(&path).unwrap();
+    let migration_elapsed = started.elapsed();
+    let integrity = migrated.check_collection_schedule_integrity().unwrap();
+    let after_bytes = std::fs::metadata(&path).unwrap().len();
+
+    assert_eq!(migrated.schema_version().unwrap(), 10);
+    assert_eq!(
+        integrity.checked_cards,
+        usize::try_from(CARD_COUNT).unwrap()
+    );
+    assert!(integrity.is_valid());
+    assert_eq!(
+        migration_backup_schema_version(directory.path(), "large-v8.db.migration-v8-"),
+        8
+    );
+    assert!(
+        migration_elapsed <= std::time::Duration::from_secs(60),
+        "10,000-card schema-8 migration exceeded 60 s: {migration_elapsed:?}"
+    );
+    eprintln!(
+        "release-budget migration_v8_10000 before_bytes={before_bytes} \
+         after_bytes={after_bytes} elapsed_ms={}",
+        migration_elapsed.as_millis()
     );
 }
 

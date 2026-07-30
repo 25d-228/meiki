@@ -26,10 +26,30 @@ Any formula or default-vector change requires a new engine identifier and new
 reference fixtures. Existing immutable review events keep their recorded
 engine and parameter-set identifiers.
 
-## Reference fixture
+## Reference fixtures
 
-The `pinned_reference_vector_matches_fsrs7_model` test fixes the following
-double-precision transitions from the pinned equations:
+`fixtures/fsrs7-reference.json` contains more than one hundred deterministic
+vectors generated from the scalar equations in the pinned reference file. The
+matrix covers every first and subsequent grade, same-minute, same-hour,
+same-day, normal, overdue, and very long elapsed times, six target retentions,
+the default parameters, a valid non-default vector, repeated lapses, and mixed
+long histories.
+
+Regenerate it only when making an explicit engine-version decision:
+
+```sh
+./scripts/dev-env python crates/meiki-scheduler/fixtures/generate_fsrs7_reference.py
+```
+
+The generator records reference commit
+`70cc4387f573ff20b13ac9c106333a335c8a4cb8` in the fixture. It evaluates the
+reference equations with IEEE-754 binary64 scalar arithmetic, rounds persisted
+integer fields to the nearest unit, and records recall probabilities with an
+accepted absolute tolerance of `1e-12`. Normal builds and CI consume the
+committed JSON and require neither Python nor network access.
+
+The smaller `pinned_reference_vector_matches_fsrs7_model` test also fixes the
+following transitions for readable review:
 
 | Transition                   |   Stability (days) |        Difficulty |
 | ---------------------------- | -----------------: | ----------------: |

@@ -82,6 +82,12 @@ export async function installMockApi(page: Page): Promise<void> {
         );
       }
       if (command === "get_study_card") {
+        if (fixtureName === "stale") {
+          return {
+            ...clone(study.first),
+            schedule_version: study.first.schedule_version + 1,
+          };
+        }
         if (params.get("media") === "ready") return clone(dtos.readyMediaCard);
         if (params.get("media") === "missing")
           return clone(dtos.missingMediaCard);
@@ -112,8 +118,13 @@ export async function installMockApi(page: Page): Promise<void> {
         };
       }
       if (command === "suspend_card") return clone(dtos.suspendedCard);
-      if (command === "get_scheduler_settings")
-        return clone(dtos.schedulerSettings);
+      if (command === "get_scheduler_settings") {
+        return clone(
+          params.get("boundary") === "midnight"
+            ? dtos.midnightSchedulerSettings
+            : dtos.schedulerSettings,
+        );
+      }
       if (command === "preview_scheduler_policy") {
         return clone(
           (

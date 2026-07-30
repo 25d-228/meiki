@@ -474,6 +474,49 @@ mod tests {
     }
 
     #[test]
+    fn fixed_adversarial_workload_matrix_preserves_controller_invariants() {
+        let budgets = [0, 1, 5, 30, 240, 1_440, u32::MAX];
+        let counts = [0, 1, 10, 10_000, 1_000_000, u64::MAX];
+        let response_seconds = [0, 1, 20, 600, u64::MAX];
+        let targets = [0, 8_000, 9_000, 9_500, u16::MAX];
+
+        for budget in budgets {
+            for count in counts {
+                for response in response_seconds {
+                    for target in targets {
+                        let input = AutomaticPolicyInput {
+                            daily_budget_minutes: budget,
+                            due_cards_now: count,
+                            forecast_review_occurrences: count,
+                            response_seconds: response,
+                            unseen_cards: count,
+                            current_target_retention_basis_points: target,
+                            previous_target_retention_basis_points: target,
+                        };
+                        let decision = automatic_policy(input);
+                        assert_eq!(decision, automatic_policy(input));
+                        assert!(
+                            (MINIMUM_TARGET_RETENTION_BASIS_POINTS
+                                ..=MAXIMUM_TARGET_RETENTION_BASIS_POINTS)
+                                .contains(&decision.target_retention_basis_points)
+                        );
+                        assert!(u64::from(decision.new_cards_per_day) <= count);
+                        assert!(decision.new_cards_per_day <= 10_000);
+                        assert_eq!(
+                            decision.backlog_exceeds_budget,
+                            decision.due_work_seconds > u64::from(budget).saturating_mul(60)
+                        );
+                        if decision.backlog_exceeds_budget {
+                            assert_eq!(decision.new_cards_per_day, 0);
+                        }
+                        assert!(!decision.explanation.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "release performance budget; run with scripts/performance"]
     fn release_budget_one_million_card_aggregate_policy() {
         let started = std::time::Instant::now();

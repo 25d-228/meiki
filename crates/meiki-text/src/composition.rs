@@ -82,4 +82,25 @@ mod tests {
         assert!(state.allows_submission(false));
         assert!(!state.allows_submission(true));
     }
+
+    #[test]
+    fn enter_ordering_never_submits_before_composition_end_is_observed() {
+        for updates in [
+            ["に", "にほ", "にほん"],
+            ["ㅎ", "하", "한"],
+            ["n", "ni", "你"],
+        ] {
+            let mut state = CompositionState::default();
+            state.apply(CompositionEvent::Start);
+            assert!(!state.allows_submission(false));
+            for update in updates {
+                state.apply(CompositionEvent::Update(update));
+                assert!(!state.allows_submission(false));
+                assert!(!state.allows_submission(true));
+            }
+            assert!(state.apply(CompositionEvent::End(updates[2])).is_some());
+            assert!(!state.allows_submission(true));
+            assert!(state.allows_submission(false));
+        }
+    }
 }

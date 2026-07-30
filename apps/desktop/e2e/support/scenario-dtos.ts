@@ -615,6 +615,10 @@ export const scenarioDtos = {
     decks,
   ],
   schedulerSettings,
+  midnightSchedulerSettings: {
+    ...schedulerSettings,
+    day_boundary_minutes: 0,
+  },
   schedulerPreview: {
     effective_daily_time_budget_minutes: 60,
     budget_source: "collection_budget",
