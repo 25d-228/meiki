@@ -42,7 +42,14 @@ jobs:
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
+          sudo apt-get install --yes \
+            at-spi2-core \
+            dbus-x11 \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf \
+            xvfb
       - name: Install locked dependencies
         run: npm ci
       - name: Validate release inputs
@@ -55,7 +62,7 @@ jobs:
         run: npm run tauri --workspace @meiki/desktop -- build --bundles ${{ matrix.bundles }}
       - name: Smoke launch Linux package
         if: matrix.name == 'linux'
-        run: xvfb-run --auto-servernum python scripts/package-launch-smoke.py
+        run: dbus-run-session -- xvfb-run --auto-servernum python scripts/package-launch-smoke.py
       - name: Smoke launch desktop package
         if: matrix.name != 'linux'
         run: python scripts/package-launch-smoke.py
