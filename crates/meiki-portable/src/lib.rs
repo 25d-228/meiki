@@ -21,8 +21,8 @@ use thiserror::Error;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const ARCHIVE_FORMAT: &str = "meiki";
-pub const ARCHIVE_VERSION: u32 = 3;
-const PREVIOUS_ARCHIVE_VERSION: u32 = 2;
+pub const ARCHIVE_VERSION: u32 = 4;
+const POLICY_ARCHIVE_VERSION: u32 = 3;
 const LEGACY_ARCHIVE_VERSION: u32 = 1;
 const MANIFEST_ENTRY: &str = "manifest.json";
 const COLLECTION_ENTRY: &str = "collection.json";
@@ -158,7 +158,6 @@ pub fn write_archive(
     destination: &Path,
     collection: &PortableCollection,
     media_sources: &[ArchiveMediaSource],
-    scope: ArchiveScope,
     created_at_ms: i64,
 ) -> Result<ArchiveManifest, PortableError> {
     if destination.exists() {
@@ -217,7 +216,7 @@ pub fn write_archive(
         format: ARCHIVE_FORMAT.into(),
         version: ARCHIVE_VERSION,
         created_at_ms,
-        scope,
+        scope: ArchiveScope::FullCollection,
         collection_path: COLLECTION_ENTRY.into(),
         collection_sha256: content_hash(&collection_json),
         counts,
@@ -311,7 +310,7 @@ pub fn read_archive(path: &Path) -> Result<ValidatedArchive, PortableError> {
         ));
     }
     let mut collection: PortableCollection = serde_json::from_slice(&collection_bytes)?;
-    if manifest.version < ARCHIVE_VERSION {
+    if manifest.version < POLICY_ARCHIVE_VERSION {
         upgrade_legacy_policy(&mut collection);
     }
     if manifest.version == LEGACY_ARCHIVE_VERSION {
@@ -361,10 +360,10 @@ fn upgrade_legacy_policy(collection: &mut PortableCollection) {
             collection
                 .scheduler_profiles
                 .first()
-                .map(|profile| match profile.intensity {
-                    meiki_domain::StudyIntensity::Light => 15,
-                    meiki_domain::StudyIntensity::Balanced => 30,
-                    meiki_domain::StudyIntensity::Intensive => 60,
+                .map(|profile| match profile.legacy_intensity {
+                    meiki_domain::LegacyStudyIntensity::Light => 15,
+                    meiki_domain::LegacyStudyIntensity::Balanced => 30,
+                    meiki_domain::LegacyStudyIntensity::Intensive => 60,
                 })
         })
         .unwrap_or(30);
@@ -391,10 +390,10 @@ fn upgrade_legacy_policy(collection: &mut PortableCollection) {
         };
         profile.controller_target_retention_basis_points = settings
             .and_then(|settings| settings.target_retention_basis_points)
-            .unwrap_or(match profile.intensity {
-                meiki_domain::StudyIntensity::Light => 8_500,
-                meiki_domain::StudyIntensity::Balanced => 9_000,
-                meiki_domain::StudyIntensity::Intensive => 9_300,
+            .unwrap_or(match profile.legacy_intensity {
+                meiki_domain::LegacyStudyIntensity::Light => 8_500,
+                meiki_domain::LegacyStudyIntensity::Balanced => 9_000,
+                meiki_domain::LegacyStudyIntensity::Intensive => 9_300,
             })
             .clamp(8_000, 9_500);
         profile.controller_new_cards_per_day = settings
@@ -466,10 +465,6 @@ pub fn validate_collection(collection: &PortableCollection) -> Result<(), Portab
         }
         if !deck_ids.contains(profile.deck_id.as_str())
             || !parameter_ids.contains(profile.active_parameter_set_id.as_str())
-            || profile
-                .previous_parameter_set_id
-                .as_ref()
-                .is_some_and(|id| !parameter_ids.contains(id.as_str()))
         {
             return invalid_collection("scheduler profile references missing data");
         }
@@ -751,93 +746,6 @@ const fn lifecycle_from_memory(schedule: &ScheduleState) -> CardLifecycle {
     }
 }
 
-/// Deterministically namespaces every database identity in a collection.
-///
-/// Media content hashes are intentionally unchanged so an import can
-/// deduplicate identical objects by checksum.
-///
-/// # Errors
-///
-/// Returns an error when `fingerprint` is not a canonical SHA-256 value or
-/// the remapped collection is invalid.
-pub fn namespace_collection(
-    collection: &PortableCollection,
-    fingerprint: &str,
-) -> Result<PortableCollection, PortableError> {
-    let digest = canonical_digest(fingerprint)?;
-    let prefix = format!("import-{}-", &digest[..16]);
-    let map_id = |id: &str| format!("{prefix}{id}");
-    let mut mapped = collection.clone();
-
-    for deck in &mut mapped.decks {
-        deck.id = map_id(&deck.id);
-    }
-    for parameter_set in &mut mapped.scheduler_parameter_sets {
-        parameter_set.id = map_id(&parameter_set.id);
-    }
-    for profile in &mut mapped.scheduler_profiles {
-        profile.deck_id = map_id(&profile.deck_id);
-        profile.active_parameter_set_id = map_id(&profile.active_parameter_set_id);
-        if let Some(previous) = &mut profile.previous_parameter_set_id {
-            *previous = map_id(previous);
-        }
-    }
-    for note in &mut mapped.notes {
-        note.source_item.id = map_id(&note.source_item.id);
-        note.source_item.deck_id = map_id(&note.source_item.deck_id);
-        for segment in &mut note.source_item.segments {
-            segment.id = map_id(&segment.id);
-            if let meiki_domain::SegmentContent::Cloze { cloze_id, .. } = &mut segment.content {
-                *cloze_id = map_id(cloze_id);
-            }
-        }
-        for tag in &mut note.source_item.tags {
-            tag.id = map_id(&tag.id);
-        }
-        for annotation in &mut note.source_item.annotations {
-            annotation.id = map_id(&annotation.id);
-        }
-        for media in &mut note.source_item.media {
-            media.id = map_id(&media.id);
-        }
-        for cloze in &mut note.clozes {
-            cloze.id = map_id(&cloze.id);
-            cloze.source_item_id = map_id(&cloze.source_item_id);
-            for annotation in &mut cloze.annotations {
-                annotation.id = map_id(&annotation.id);
-            }
-            for media in &mut cloze.media {
-                media.id = map_id(&media.id);
-            }
-        }
-        for portable in &mut note.cards {
-            portable.card.id = map_id(&portable.card.id);
-            portable.card.cloze_id = map_id(&portable.card.cloze_id);
-            map_schedule(&mut portable.baseline, &map_id);
-            map_schedule(&mut portable.schedule, &map_id);
-            for event in &mut portable.review_events {
-                event.id = map_id(&event.id);
-                event.card_id = map_id(&event.card_id);
-                if let Some(undone) = &mut event.undoes_review_event_id {
-                    *undone = map_id(undone);
-                }
-                if let Some(parameter_set) = &mut event.scheduler_parameter_set_id {
-                    *parameter_set = map_id(parameter_set);
-                }
-                map_schedule(&mut event.previous_schedule, &map_id);
-                map_schedule(&mut event.next_schedule, &map_id);
-            }
-        }
-    }
-    validate_collection(&mapped)?;
-    Ok(mapped)
-}
-
-fn map_schedule(schedule: &mut ScheduleState, map_id: &impl Fn(&str) -> String) {
-    schedule.card_id = map_id(&schedule.card_id);
-    schedule.last_review_event_id = schedule.last_review_event_id.as_deref().map(map_id);
-}
-
 fn referenced_media_hashes(collection: &PortableCollection) -> Result<Vec<String>, PortableError> {
     let mut hashes = HashSet::new();
     for media in collection.notes.iter().flat_map(|note| {
@@ -919,10 +827,7 @@ fn collection_counts(collection: &PortableCollection) -> Result<ArchiveCounts, P
 
 fn validate_manifest(manifest: &ArchiveManifest) -> Result<(), PortableError> {
     if manifest.format != ARCHIVE_FORMAT
-        || !matches!(
-            manifest.version,
-            LEGACY_ARCHIVE_VERSION | PREVIOUS_ARCHIVE_VERSION | ARCHIVE_VERSION
-        )
+        || !(LEGACY_ARCHIVE_VERSION..=ARCHIVE_VERSION).contains(&manifest.version)
         || manifest.collection_path != COLLECTION_ENTRY
         || manifest.created_at_ms < 0
     {
@@ -1125,9 +1030,9 @@ mod tests {
 
     use meiki_domain::{
         Card, CardLifecycle, Cloze, CollectionSchedulingSettings, ComparisonResult, Deck,
-        Direction, Grade, MatchingPolicy, MediaKind, MediaReference, MediaRole, OptimizerStatus,
-        ReviewEvent, ReviewEventKind, ScheduleState, SchedulerParameterSet, SchedulerProfile,
-        SchedulingMode, SegmentContent, SemanticSegment, SourceItem, StudyIntensity,
+        Direction, Grade, LegacyStudyIntensity, MatchingPolicy, MediaKind, MediaReference,
+        MediaRole, ReviewEvent, ReviewEventKind, ScheduleState, SchedulerParameterSet,
+        SchedulerProfile, SchedulingMode, SegmentContent, SemanticSegment, SourceItem,
         StudySettingsOverride,
     };
     use tempfile::tempdir;
@@ -1135,8 +1040,8 @@ mod tests {
 
     use super::{
         ArchiveManifest, ArchiveMediaSource, ArchiveScope, COLLECTION_ENTRY, MANIFEST_ENTRY,
-        PortableCard, PortableCollection, PortableError, PortableNote, content_hash,
-        namespace_collection, read_archive, validate_collection, write_archive,
+        PortableCard, PortableCollection, PortableError, PortableNote, content_hash, read_archive,
+        validate_collection, write_archive,
     };
 
     #[test]
@@ -1156,14 +1061,13 @@ mod tests {
                 content_hash: media_hash.clone(),
                 path: media_path,
             }],
-            ArchiveScope::FullCollection,
             42,
         )
         .unwrap();
         let restored = read_archive(&archive_path).unwrap();
 
         assert_eq!(written, restored.manifest);
-        assert_eq!(written.version, 3);
+        assert_eq!(written.version, 4);
         assert_eq!(restored.collection, collection);
         assert_eq!(
             restored.collection.notes[0]
@@ -1200,7 +1104,6 @@ mod tests {
                 content_hash: media_hash,
                 path: media_path,
             }],
-            ArchiveScope::FullCollection,
             42,
         )
         .unwrap();
@@ -1240,7 +1143,6 @@ mod tests {
                 content_hash: media_hash,
                 path: media_path,
             }],
-            ArchiveScope::FullCollection,
             42,
         )
         .unwrap();
@@ -1268,6 +1170,34 @@ mod tests {
     }
 
     #[test]
+    fn version_three_archive_with_removed_override_fields_remains_readable() {
+        let directory = tempdir().unwrap();
+        let media_path = directory.path().join("image.bin");
+        let media_bytes = b"\x89PNG\r\n\x1a\nportable-media";
+        std::fs::write(&media_path, media_bytes).unwrap();
+        let media_hash = content_hash(media_bytes);
+        let collection = collection(&media_hash);
+        let current = directory.path().join("current.meiki");
+        write_archive(
+            &current,
+            &collection,
+            &[ArchiveMediaSource {
+                content_hash: media_hash,
+                path: media_path,
+            }],
+            42,
+        )
+        .unwrap();
+        let legacy = directory.path().join("version-3.meiki");
+        rewrite_as_version_three(&current, &legacy);
+
+        let restored = read_archive(&legacy).unwrap();
+
+        assert_eq!(restored.manifest.version, 3);
+        assert_eq!(restored.collection, collection);
+    }
+
+    #[test]
     fn corrupt_media_and_unexpected_paths_fail_without_extraction() {
         let directory = tempdir().unwrap();
         let source = directory.path().join("source.bin");
@@ -1283,7 +1213,6 @@ mod tests {
                 content_hash: hash,
                 path: source,
             }],
-            ArchiveScope::FullCollection,
             42,
         )
         .unwrap();
@@ -1305,7 +1234,7 @@ mod tests {
     }
 
     #[test]
-    fn export_refuses_overwrite_and_merge_namespace_is_stable() {
+    fn export_refuses_overwrite_and_writes_full_collection_scope() {
         let directory = tempdir().unwrap();
         let source = directory.path().join("source.bin");
         let bytes = b"\x89PNG\r\n\x1a\nportable-media";
@@ -1317,33 +1246,12 @@ mod tests {
             content_hash: hash,
             path: source,
         }];
-        let manifest = write_archive(
-            &destination,
-            &collection,
-            &media,
-            ArchiveScope::FullCollection,
-            42,
-        )
-        .unwrap();
+        let manifest = write_archive(&destination, &collection, &media, 42).unwrap();
+        assert_eq!(manifest.scope, ArchiveScope::FullCollection);
         assert!(matches!(
-            write_archive(
-                &destination,
-                &collection,
-                &media,
-                ArchiveScope::FullCollection,
-                42
-            ),
+            write_archive(&destination, &collection, &media, 42),
             Err(PortableError::DestinationExists(_))
         ));
-
-        let first = namespace_collection(&collection, &manifest.collection_sha256).unwrap();
-        let second = namespace_collection(&collection, &manifest.collection_sha256).unwrap();
-        assert_eq!(first, second);
-        assert_ne!(first.decks[0].id, collection.decks[0].id);
-        assert_eq!(
-            first.notes[0].source_item.media[0].content_hash,
-            collection.notes[0].source_item.media[0].content_hash
-        );
     }
 
     #[test]
@@ -1513,7 +1421,6 @@ mod tests {
                         cloze_id: "cloze-1".into(),
                         content_version: 1,
                         suspended: false,
-                        settings: StudySettingsOverride::default(),
                         created_at_ms: 1,
                         updated_at_ms: 2,
                     },
@@ -1533,7 +1440,6 @@ mod tests {
                 deck_id: "deck-1".into(),
                 engine_version: "fsrs-7".into(),
                 active_parameter_set_id: "parameters-1".into(),
-                previous_parameter_set_id: None,
                 scheduling_mode: SchedulingMode::Automatic,
                 deck_daily_time_budget_minutes: None,
                 controller_version: "time-budget-v1".into(),
@@ -1545,10 +1451,8 @@ mod tests {
                 controller_forecast_review_seconds_per_day: 0,
                 controller_backlog_exceeds_budget: false,
                 controller_explanation: String::new(),
-                intensity: StudyIntensity::Balanced,
+                legacy_intensity: LegacyStudyIntensity::Balanced,
                 day_boundary_minutes: 240,
-                optimizer_status: OptimizerStatus::NeverRun,
-                optimizer_diagnostics: None,
                 updated_at_ms: 2,
             }],
         }
@@ -1677,6 +1581,75 @@ mod tests {
             .unwrap();
         let mut manifest: ArchiveManifest = serde_json::from_slice(&manifest_entry.1).unwrap();
         manifest.version = 2;
+        manifest.collection_sha256 = collection_sha256;
+        manifest_entry.1 = serde_json::to_vec(&manifest).unwrap();
+
+        let output = std::fs::File::create(destination).unwrap();
+        let mut writer = ZipWriter::new(output);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (name, bytes) in entries {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn rewrite_as_version_three(source: &std::path::Path, destination: &std::path::Path) {
+        let mut input = ZipArchive::new(std::fs::File::open(source).unwrap()).unwrap();
+        let mut entries = Vec::new();
+        for index in 0..input.len() {
+            let mut entry = input.by_index(index).unwrap();
+            let name = entry.name().to_owned();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            entries.push((name, bytes));
+        }
+
+        let collection_entry = entries
+            .iter_mut()
+            .find(|(name, _)| name == COLLECTION_ENTRY)
+            .unwrap();
+        let mut collection_json: serde_json::Value =
+            serde_json::from_slice(&collection_entry.1).unwrap();
+        let root = collection_json.as_object_mut().unwrap();
+        for note in root.get_mut("notes").unwrap().as_array_mut().unwrap() {
+            for portable_card in note.get_mut("cards").unwrap().as_array_mut().unwrap() {
+                portable_card
+                    .get_mut("card")
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(
+                        "settings".into(),
+                        serde_json::json!({
+                            "target_retention_basis_points": null,
+                            "new_cards_per_day": null,
+                            "maximum_interval_days": null
+                        }),
+                    );
+            }
+        }
+        for profile in root
+            .get_mut("scheduler_profiles")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+        {
+            let profile = profile.as_object_mut().unwrap();
+            profile.insert("previous_parameter_set_id".into(), serde_json::Value::Null);
+            profile.insert("intensity".into(), serde_json::json!("balanced"));
+            profile.insert("optimizer_status".into(), serde_json::json!("never_run"));
+            profile.insert("optimizer_diagnostics".into(), serde_json::Value::Null);
+        }
+        collection_entry.1 = serde_json::to_vec(&collection_json).unwrap();
+        let collection_sha256 = content_hash(&collection_entry.1);
+
+        let manifest_entry = entries
+            .iter_mut()
+            .find(|(name, _)| name == MANIFEST_ENTRY)
+            .unwrap();
+        let mut manifest: ArchiveManifest = serde_json::from_slice(&manifest_entry.1).unwrap();
+        manifest.version = 3;
         manifest.collection_sha256 = collection_sha256;
         manifest_entry.1 = serde_json::to_vec(&manifest).unwrap();
 

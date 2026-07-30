@@ -95,7 +95,7 @@ test("previews generated cards, returns from editing, and confirms cloze deletio
   await expect(page.getByRole("button", { name: /Cloze 1/ })).toHaveCount(0);
 });
 
-test("bulk actions report exact counts, support undo, export, trash, and restore", async ({
+test("bulk actions report exact counts, support undo, trash, and restore", async ({
   page,
 }) => {
   const reviewStateBefore = await page.evaluate(() =>
@@ -118,16 +118,10 @@ test("bulk actions report exact counts, support undo, export, trash, and restore
   await expect(page.getByText("أنا أقرأ كتابًا في المكتبة")).toBeVisible();
 
   await page.getByText("Select this page").click();
-  await page.getByRole("button", { name: "Export" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    "Exported 2 notes to /tmp/exports/library-selection-e2e.json",
-  );
-  expect(
-    await page.evaluate(() =>
-      JSON.parse(localStorage.getItem("meiki-e2e-library-export") ?? "[]"),
-    ),
-  ).toHaveLength(2);
-
+  await expect(page.getByRole("button", { name: "Export" })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Create .meiki archive" }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "Move", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Moved 2 notes.");
   await search(page, "priority", "日曜日は図書館に行きます", 2);

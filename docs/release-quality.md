@@ -6,12 +6,12 @@ workflow pass for the tagged commit.
 
 ## Supported matrix
 
-| Boundary                                                       | Required coverage                                                                                                           |
-| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Rust domain, text, scheduler, storage, media, and archive code | Unit, property, fixture, transaction, and integration tests on Linux, macOS, and Windows                                    |
-| Desktop frontend                                               | Strict TypeScript check and production build on Linux, macOS, and Windows                                                   |
-| Browser behavior                                               | Chromium end-to-end suite on Linux, including keyboard, IME, bidi, accessibility, recovery, and the offline release journey |
-| Packages                                                       | Tauri bundle smoke build for Linux, macOS, and Windows from a version tag or manual release run                             |
+| Boundary                                                       | Required coverage                                                                                                            |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Rust domain, text, scheduler, storage, media, and archive code | Unit, property, fixture, transaction, and integration tests on Linux, macOS, and Windows                                     |
+| Desktop frontend                                               | Strict TypeScript check and production build on Linux, macOS, and Windows                                                    |
+| Browser behavior                                               | Chromium end-to-end suite on Linux, including keyboard, IME, bidi, accessibility, recovery, and the personal release journey |
+| Packages                                                       | Tauri bundle smoke build for Linux, macOS, and Windows from a version tag or manual release run                              |
 
 Rust 1.85, Node.js 24, `Cargo.lock`, and `package-lock.json` are pinned inputs.
 The package workflow produces SHA-256 sums and GitHub build provenance. Native
@@ -85,7 +85,7 @@ budget without documenting the regression and its user impact here.
 contiguous database migrations, the published archive version, bundle
 metadata, icons, and release documentation. v0.1 publishes database schema 7
 and `.meiki` archive version 1. Current development uses database schema 10 and
-archive version 3 while retaining the released schema-7 migration fixture and
+archive version 4 while retaining the released schema-7 migration fixture and
 version-1 and version-2 archive import coverage. Future releases must keep
 migration fixtures from every released database schema and import fixtures
 from every published archive version.
@@ -104,4 +104,4 @@ validation before replacement. Never repair immutable review events in place.
    unsigned release candidate.
 6. Confirm all three package jobs and provenance attestations pass.
 7. Verify each artifact against `SHA256SUMS`, install it on a clean host, and
-   complete the offline release journey.
+   complete the personal release journey.

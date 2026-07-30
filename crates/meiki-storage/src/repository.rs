@@ -2,9 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use meiki_domain::{
     Annotation, Card, CardLifecycle, Cloze, CollectionSchedulingSettings, Deck, LocalizedText,
-    MediaKind, MediaReference, MediaRole, OptimizerStatus, ScheduleState, SchedulerParameterSet,
-    SchedulerProfile, SchedulingMode, SegmentContent, SemanticSegment, SourceItem, StudyIntensity,
-    Tag,
+    MediaKind, MediaReference, MediaRole, ScheduleState, SchedulerParameterSet, SchedulerProfile,
+    SchedulingMode, SegmentContent, SemanticSegment, SourceItem, Tag,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -448,28 +447,23 @@ impl SchedulerProfileRepository for Storage {
             "UPDATE scheduler_profiles
              SET engine_version = ?1,
                  active_parameter_set_id = ?2,
-                 previous_parameter_set_id = ?3,
-                 scheduling_mode = ?4,
-                 daily_time_budget_minutes = ?5,
-                 controller_version = ?6,
-                 controller_target_retention_basis_points = ?7,
-                 controller_new_cards_per_day = ?8,
-                 controller_last_evaluated_day_start_ms = ?9,
-                 controller_review_count = ?10,
-                 controller_unseen_count = ?11,
-                 controller_forecast_review_seconds_per_day = ?12,
-                 controller_backlog_exceeds_budget = ?13,
-                 controller_explanation = ?14,
-                 intensity = ?15,
-                 day_boundary_minutes = ?16,
-                 optimizer_status = ?17,
-                 optimizer_diagnostics = ?18,
-                 updated_at_ms = ?19
-             WHERE deck_id = ?20",
+                 scheduling_mode = ?3,
+                 daily_time_budget_minutes = ?4,
+                 controller_version = ?5,
+                 controller_target_retention_basis_points = ?6,
+                 controller_new_cards_per_day = ?7,
+                 controller_last_evaluated_day_start_ms = ?8,
+                 controller_review_count = ?9,
+                 controller_unseen_count = ?10,
+                 controller_forecast_review_seconds_per_day = ?11,
+                 controller_backlog_exceeds_budget = ?12,
+                 controller_explanation = ?13,
+                 day_boundary_minutes = ?14,
+                 updated_at_ms = ?15
+             WHERE deck_id = ?16",
             params![
                 profile.engine_version,
                 profile.active_parameter_set_id,
-                profile.previous_parameter_set_id,
                 scheduling_mode_to_database(profile.scheduling_mode),
                 profile.deck_daily_time_budget_minutes,
                 profile.controller_version,
@@ -481,10 +475,7 @@ impl SchedulerProfileRepository for Storage {
                 profile.controller_forecast_review_seconds_per_day,
                 profile.controller_backlog_exceeds_budget,
                 profile.controller_explanation,
-                intensity_to_database(profile.intensity),
                 profile.day_boundary_minutes,
-                optimizer_status_to_database(profile.optimizer_status),
-                profile.optimizer_diagnostics,
                 profile.updated_at_ms,
                 profile.deck_id,
             ],
@@ -494,6 +485,71 @@ impl SchedulerProfileRepository for Storage {
 }
 
 impl Storage {
+    /// Counts active and trashed source notes owned by a deck.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the query fails.
+    pub fn deck_note_count(&self, deck_id: &str) -> Result<u64, StorageError> {
+        Ok(self.connection.query_row(
+            "SELECT COUNT(*) FROM source_items WHERE deck_id = ?1",
+            [deck_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Deletes a deck atomically, moving all of its notes when a destination is
+    /// required.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when a non-empty deck has no valid destination,
+    /// either deck is missing, or the transaction cannot be committed.
+    pub fn delete_deck_and_move_notes(
+        &mut self,
+        deck_id: &str,
+        destination_deck_id: Option<&str>,
+        updated_at_ms: i64,
+    ) -> Result<u64, StorageError> {
+        let transaction = self.connection.transaction()?;
+        let note_count = transaction.query_row(
+            "SELECT COUNT(*) FROM source_items WHERE deck_id = ?1",
+            [deck_id],
+            |row| row.get::<_, u64>(0),
+        )?;
+        if note_count > 0 {
+            let destination = destination_deck_id.ok_or_else(|| {
+                StorageError::InvalidAggregate(
+                    "a non-empty deck requires a destination for its notes".into(),
+                )
+            })?;
+            if destination == deck_id {
+                return Err(StorageError::InvalidAggregate(
+                    "a deck cannot move notes into itself before deletion".into(),
+                ));
+            }
+            let destination_exists = transaction
+                .query_row("SELECT 1 FROM decks WHERE id = ?1", [destination], |_| {
+                    Ok(())
+                })
+                .optional()?
+                .is_some();
+            if !destination_exists {
+                return Err(entity_not_found("destination deck", destination));
+            }
+            transaction.execute(
+                "UPDATE source_items
+                 SET deck_id = ?1, updated_at_ms = ?2
+                 WHERE deck_id = ?3",
+                params![destination, updated_at_ms, deck_id],
+            )?;
+        }
+        let changed = transaction.execute("DELETE FROM decks WHERE id = ?1", [deck_id])?;
+        ensure_changed(changed, "deck", deck_id)?;
+        transaction.commit()?;
+        Ok(note_count)
+    }
+
     /// Loads the collection-wide default daily study budget.
     ///
     /// # Errors
@@ -658,7 +714,6 @@ impl Storage {
         &mut self,
         deck_id: &str,
         parameter_set: &SchedulerParameterSet,
-        diagnostics: &str,
         updated_at_ms: i64,
     ) -> Result<SchedulerProfile, StorageError> {
         let transaction = self.connection.transaction()?;
@@ -682,50 +737,10 @@ impl Storage {
         )?;
         transaction.execute(
             "UPDATE scheduler_profiles
-             SET previous_parameter_set_id = active_parameter_set_id,
-                 active_parameter_set_id = ?1,
-                 optimizer_status = 'adopted',
-                 optimizer_diagnostics = ?2,
-                 updated_at_ms = ?3
-             WHERE deck_id = ?4",
-            params![parameter_set.id, diagnostics, updated_at_ms, deck_id],
-        )?;
-        transaction.commit()?;
-        load_scheduler_profile(&self.connection, deck_id)
-    }
-
-    /// Restores the last known-good parameter set without rescheduling cards.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when the profile has no rollback target or the
-    /// transaction cannot be committed.
-    pub fn rollback_scheduler_parameter_set(
-        &mut self,
-        deck_id: &str,
-        updated_at_ms: i64,
-    ) -> Result<SchedulerProfile, StorageError> {
-        let transaction = self.connection.transaction()?;
-        let current = load_scheduler_profile(&transaction, deck_id)?;
-        let previous = current.previous_parameter_set_id.ok_or_else(|| {
-            StorageError::InvalidAggregate(
-                "the scheduler profile has no previous parameter set to restore".into(),
-            )
-        })?;
-        transaction.execute(
-            "UPDATE scheduler_profiles
              SET active_parameter_set_id = ?1,
-                 previous_parameter_set_id = ?2,
-                 optimizer_status = 'rolled_back',
-                 optimizer_diagnostics = '{\"result\":\"rolled_back\"}',
-                 updated_at_ms = ?3
-             WHERE deck_id = ?4",
-            params![
-                previous,
-                current.active_parameter_set_id,
-                updated_at_ms,
-                deck_id
-            ],
+                 updated_at_ms = ?2
+             WHERE deck_id = ?3",
+            params![parameter_set.id, updated_at_ms, deck_id],
         )?;
         transaction.commit()?;
         load_scheduler_profile(&self.connection, deck_id)
@@ -903,21 +918,15 @@ impl CardRepository for Storage {
                 cloze_id,
                 content_version,
                 suspended,
-                target_retention_basis_points,
-                new_cards_per_day,
-                maximum_interval_days,
                 created_at_ms,
                 updated_at_ms,
                 queue_updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
             params![
                 card.id,
                 card.cloze_id,
                 card.content_version,
                 card.suspended,
-                card.settings.target_retention_basis_points,
-                card.settings.new_cards_per_day,
-                card.settings.maximum_interval_days,
                 card.created_at_ms,
                 card.updated_at_ms,
             ],
@@ -957,17 +966,11 @@ impl CardRepository for Storage {
             "UPDATE cards
              SET content_version = ?1,
                  suspended = ?2,
-                 target_retention_basis_points = ?3,
-                 new_cards_per_day = ?4,
-                 maximum_interval_days = ?5,
-                 updated_at_ms = ?6
-             WHERE id = ?7",
+                 updated_at_ms = ?3
+             WHERE id = ?4",
             params![
                 card.content_version,
                 card.suspended,
-                card.settings.target_retention_basis_points,
-                card.settings.new_cards_per_day,
-                card.settings.maximum_interval_days,
                 card.updated_at_ms,
                 card.id,
             ],
@@ -1723,11 +1726,9 @@ fn insert_default_scheduler_profile(
             deck_id,
             engine_version,
             active_parameter_set_id,
-            intensity,
             day_boundary_minutes,
-            optimizer_status,
             updated_at_ms
-         ) VALUES (?1, 'fsrs-7', ?2, 'balanced', 240, 'never_run', ?3)",
+         ) VALUES (?1, 'fsrs-7', ?2, 240, ?3)",
         params![deck_id, DEFAULT_SCHEDULER_PARAMETER_SET_ID, created_at_ms],
     )?;
     Ok(())
@@ -1743,7 +1744,6 @@ fn load_scheduler_profile(
                 deck_id,
                 engine_version,
                 active_parameter_set_id,
-                previous_parameter_set_id,
                 scheduling_mode,
                 daily_time_budget_minutes,
                 controller_version,
@@ -1755,10 +1755,7 @@ fn load_scheduler_profile(
                 controller_forecast_review_seconds_per_day,
                 controller_backlog_exceeds_budget,
                 controller_explanation,
-                intensity,
                 day_boundary_minutes,
-                optimizer_status,
-                optimizer_diagnostics,
                 updated_at_ms
              FROM scheduler_profiles
              WHERE deck_id = ?1",
@@ -1768,26 +1765,21 @@ fn load_scheduler_profile(
                     deck_id: row.get(0)?,
                     engine_version: row.get(1)?,
                     active_parameter_set_id: row.get(2)?,
-                    previous_parameter_set_id: row.get(3)?,
-                    scheduling_mode: scheduling_mode_from_database(&row.get::<_, String>(4)?)
+                    scheduling_mode: scheduling_mode_from_database(&row.get::<_, String>(3)?)
                         .map_err(to_sql_conversion_error)?,
-                    deck_daily_time_budget_minutes: row.get(5)?,
-                    controller_version: row.get(6)?,
-                    controller_target_retention_basis_points: row.get(7)?,
-                    controller_new_cards_per_day: row.get(8)?,
-                    controller_last_evaluated_day_start_ms: row.get(9)?,
-                    controller_review_count: row.get(10)?,
-                    controller_unseen_count: row.get(11)?,
-                    controller_forecast_review_seconds_per_day: row.get(12)?,
-                    controller_backlog_exceeds_budget: row.get(13)?,
-                    controller_explanation: row.get(14)?,
-                    intensity: intensity_from_database(&row.get::<_, String>(15)?)
-                        .map_err(to_sql_conversion_error)?,
-                    day_boundary_minutes: row.get(16)?,
-                    optimizer_status: optimizer_status_from_database(&row.get::<_, String>(17)?)
-                        .map_err(to_sql_conversion_error)?,
-                    optimizer_diagnostics: row.get(18)?,
-                    updated_at_ms: row.get(19)?,
+                    deck_daily_time_budget_minutes: row.get(4)?,
+                    controller_version: row.get(5)?,
+                    controller_target_retention_basis_points: row.get(6)?,
+                    controller_new_cards_per_day: row.get(7)?,
+                    controller_last_evaluated_day_start_ms: row.get(8)?,
+                    controller_review_count: row.get(9)?,
+                    controller_unseen_count: row.get(10)?,
+                    controller_forecast_review_seconds_per_day: row.get(11)?,
+                    controller_backlog_exceeds_budget: row.get(12)?,
+                    controller_explanation: row.get(13)?,
+                    legacy_intensity: meiki_domain::LegacyStudyIntensity::default(),
+                    day_boundary_minutes: row.get(14)?,
+                    updated_at_ms: row.get(15)?,
                 })
             },
         )
@@ -1812,9 +1804,7 @@ fn validate_scheduler_profile(
             "scheduler profile controls are outside safe bounds".into(),
         ));
     }
-    for parameter_set_id in std::iter::once(profile.active_parameter_set_id.as_str())
-        .chain(profile.previous_parameter_set_id.as_deref())
-    {
+    for parameter_set_id in std::iter::once(profile.active_parameter_set_id.as_str()) {
         let version = connection
             .query_row(
                 "SELECT engine_version
@@ -1847,52 +1837,6 @@ fn scheduling_mode_from_database(value: &str) -> Result<SchedulingMode, StorageE
         "expert" => Ok(SchedulingMode::Expert),
         _ => Err(StorageError::InvalidStoredValue {
             field: "scheduling mode",
-            value: value.to_owned(),
-        }),
-    }
-}
-
-const fn intensity_to_database(value: StudyIntensity) -> &'static str {
-    match value {
-        StudyIntensity::Light => "light",
-        StudyIntensity::Balanced => "balanced",
-        StudyIntensity::Intensive => "intensive",
-    }
-}
-
-fn intensity_from_database(value: &str) -> Result<StudyIntensity, StorageError> {
-    match value {
-        "light" => Ok(StudyIntensity::Light),
-        "balanced" => Ok(StudyIntensity::Balanced),
-        "intensive" => Ok(StudyIntensity::Intensive),
-        _ => Err(StorageError::InvalidStoredValue {
-            field: "study intensity",
-            value: value.to_owned(),
-        }),
-    }
-}
-
-const fn optimizer_status_to_database(value: OptimizerStatus) -> &'static str {
-    match value {
-        OptimizerStatus::NeverRun => "never_run",
-        OptimizerStatus::InsufficientData => "insufficient_data",
-        OptimizerStatus::Adopted => "adopted",
-        OptimizerStatus::Rejected => "rejected",
-        OptimizerStatus::Failed => "failed",
-        OptimizerStatus::RolledBack => "rolled_back",
-    }
-}
-
-fn optimizer_status_from_database(value: &str) -> Result<OptimizerStatus, StorageError> {
-    match value {
-        "never_run" => Ok(OptimizerStatus::NeverRun),
-        "insufficient_data" => Ok(OptimizerStatus::InsufficientData),
-        "adopted" => Ok(OptimizerStatus::Adopted),
-        "rejected" => Ok(OptimizerStatus::Rejected),
-        "failed" => Ok(OptimizerStatus::Failed),
-        "rolled_back" => Ok(OptimizerStatus::RolledBack),
-        _ => Err(StorageError::InvalidStoredValue {
-            field: "optimizer status",
             value: value.to_owned(),
         }),
     }
@@ -2422,9 +2366,6 @@ fn load_card(connection: &Connection, id: &str) -> Result<Card, StorageError> {
                 cloze_id,
                 content_version,
                 suspended,
-                target_retention_basis_points,
-                new_cards_per_day,
-                maximum_interval_days,
                 created_at_ms,
                 updated_at_ms
              FROM cards
@@ -2436,13 +2377,8 @@ fn load_card(connection: &Connection, id: &str) -> Result<Card, StorageError> {
                     cloze_id: row.get(1)?,
                     content_version: row.get(2)?,
                     suspended: row.get(3)?,
-                    settings: meiki_domain::StudySettingsOverride {
-                        target_retention_basis_points: row.get(4)?,
-                        new_cards_per_day: row.get(5)?,
-                        maximum_interval_days: row.get(6)?,
-                    },
-                    created_at_ms: row.get(7)?,
-                    updated_at_ms: row.get(8)?,
+                    created_at_ms: row.get(4)?,
+                    updated_at_ms: row.get(5)?,
                 })
             },
         )

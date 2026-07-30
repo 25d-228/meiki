@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 
 use meiki_application::{
-    ApplicationService, ArchiveExportRequest, ArchiveImportModeDto, ArchiveImportRequest,
-    ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto, BackupDto, CheckAnswerRequest,
-    GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest,
-    LibraryBulkRequest, LibraryBulkResultDto, LibraryExportRequest, LibraryExportResultDto,
+    ApplicationService, ArchiveExportRequest, ArchiveImportRequest, ArchiveImportResultDto,
+    AuthoringDraftDto, AuthoringPreviewDto, BackupDto, CheckAnswerRequest, CreateDeckRequest,
+    DeckDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
+    ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
     LibraryOverviewDto, LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto,
-    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest,
-    ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto, SchedulerParametersExportDto,
-    SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto,
-    StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest,
-    UndoReviewResultDto, UpdateSchedulerSettingsRequest,
+    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
+    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
+    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
+    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -95,18 +95,6 @@ fn apply_library_bulk_action(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn export_library_selection(
-    request: LibraryExportRequest,
-    state: State<'_, AppContext>,
-) -> Result<LibraryExportResultDto, String> {
-    state
-        .service()
-        .export_library_selection(&request)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 fn export_archive(
     request: ArchiveExportRequest,
     state: State<'_, AppContext>,
@@ -121,12 +109,11 @@ fn export_archive(
 #[allow(clippy::needless_pass_by_value)]
 fn preview_archive(
     path: String,
-    mode: ArchiveImportModeDto,
     state: State<'_, AppContext>,
 ) -> Result<PortableArchivePreviewDto, String> {
     state
         .service()
-        .preview_archive(&path, mode)
+        .preview_archive(&path)
         .map_err(|error| error.to_string())
 }
 
@@ -262,18 +249,6 @@ fn preview_scheduler_policy(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn rollback_scheduler(
-    deck_id: String,
-    state: State<'_, AppContext>,
-) -> Result<SchedulerSettingsDto, String> {
-    state
-        .service()
-        .rollback_scheduler(&deck_id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 fn import_scheduler_parameters(
     request: ImportSchedulerParametersRequest,
     state: State<'_, AppContext>,
@@ -298,13 +273,46 @@ fn export_scheduler_parameters(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn export_scheduler_diagnostics(
-    deck_id: String,
-    state: State<'_, AppContext>,
-) -> Result<SchedulerDiagnosticsExportDto, String> {
+fn list_decks(state: State<'_, AppContext>) -> Result<Vec<DeckDto>, String> {
     state
         .service()
-        .export_scheduler_diagnostics(&deck_id)
+        .list_decks()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn create_deck(
+    request: CreateDeckRequest,
+    state: State<'_, AppContext>,
+) -> Result<DeckDto, String> {
+    state
+        .service()
+        .create_deck(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn rename_deck(
+    request: RenameDeckRequest,
+    state: State<'_, AppContext>,
+) -> Result<DeckDto, String> {
+    state
+        .service()
+        .rename_deck(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn delete_deck(
+    request: DeleteDeckRequest,
+    state: State<'_, AppContext>,
+) -> Result<DeleteDeckResultDto, String> {
+    state
+        .service()
+        .delete_deck(&request)
         .map_err(|error| error.to_string())
 }
 
@@ -411,7 +419,6 @@ pub fn run() {
             reconcile_study_queue,
             get_library,
             apply_library_bulk_action,
-            export_library_selection,
             export_archive,
             preview_archive,
             import_archive,
@@ -425,10 +432,12 @@ pub fn run() {
             get_scheduler_settings,
             update_scheduler_settings,
             preview_scheduler_policy,
-            rollback_scheduler,
             import_scheduler_parameters,
             export_scheduler_parameters,
-            export_scheduler_diagnostics,
+            list_decks,
+            create_deck,
+            rename_deck,
+            delete_deck,
             new_authoring_draft,
             import_media,
             make_cloze,

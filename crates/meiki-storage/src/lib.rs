@@ -299,7 +299,7 @@ impl Storage {
         )?)
     }
 
-    /// Creates a consistent online backup of the open collection.
+    /// Creates a consistent backup of the open collection.
     ///
     /// The destination must not exist so callers cannot silently overwrite a
     /// previous recovery point.

@@ -30,6 +30,47 @@ TEXT_ENGINE_DEPENDENCIES = {
     "unicode-normalization",
     "unicode-segmentation",
 }
+FORBIDDEN_NETWORK_DEPENDENCIES = {
+    "axios",
+    "hyper",
+    "oauth2",
+    "reqwest",
+    "surf",
+    "tokio-tungstenite",
+    "tungstenite",
+    "ureq",
+    "ws",
+}
+FORBIDDEN_PRODUCT_MODULES = {
+    "account",
+    "accounts",
+    "auth",
+    "cloud",
+    "marketplace",
+    "marketplaces",
+    "plugin",
+    "plugins",
+    "sync",
+}
+FORBIDDEN_FRONTEND_NETWORK_APIS = {
+    "EventSource(",
+    "WebSocket(",
+    "XMLHttpRequest(",
+    "fetch(",
+    "navigator.onLine",
+}
+REMOVED_DESKTOP_COMMANDS = {
+    "export_library_selection",
+    "export_scheduler_diagnostics",
+    "rollback_scheduler",
+}
+REMOVED_GENERATED_BINDINGS = {
+    "ArchiveImportModeDto.ts",
+    "ArchiveScopeDto.ts",
+    "LibraryExportRequest.ts",
+    "LibraryExportResultDto.ts",
+    "SchedulerDiagnosticsExportDto.ts",
+}
 
 
 def cargo_metadata() -> dict:
@@ -70,6 +111,16 @@ def main() -> int:
             )
 
     for name, package in packages.items():
+        network_dependencies = {
+            dependency["name"]
+            for dependency in package["dependencies"]
+            if dependency["name"] in FORBIDDEN_NETWORK_DEPENDENCIES
+        }
+        if network_dependencies:
+            failures.append(
+                f"{name}: network dependencies are outside Meiki's product scope, "
+                f"found {sorted(network_dependencies)}"
+            )
         if name == "meiki-text":
             continue
         owned_dependencies = {
@@ -107,6 +158,87 @@ def main() -> int:
                     f"{component_file.relative_to(ROOT)}: visual component "
                     f"contains forbidden dependency {forbidden!r}"
                 )
+
+    package_json = json.loads(
+        (ROOT / "apps" / "desktop" / "package.json").read_text(encoding="utf-8")
+    )
+    frontend_dependencies = set(package_json.get("dependencies", {}))
+    forbidden_frontend_dependencies = (
+        frontend_dependencies & FORBIDDEN_NETWORK_DEPENDENCIES
+    )
+    if forbidden_frontend_dependencies:
+        failures.append(
+            "apps/desktop/package.json: network dependencies are outside Meiki's "
+            f"product scope, found {sorted(forbidden_frontend_dependencies)}"
+        )
+
+    capability_path = (
+        ROOT / "apps" / "desktop" / "src-tauri" / "capabilities" / "default.json"
+    )
+    capability = json.loads(capability_path.read_text(encoding="utf-8"))
+    network_permissions = [
+        permission
+        for permission in capability.get("permissions", [])
+        if any(
+            marker in json.dumps(permission).lower()
+            for marker in ("http", "network", "websocket")
+        )
+    ]
+    if network_permissions:
+        failures.append(
+            f"{capability_path.relative_to(ROOT)}: network permissions are "
+            f"outside Meiki's product scope, found {network_permissions}"
+        )
+
+    production_roots = [ROOT / "apps" / "desktop" / "src", ROOT / "crates"]
+    for production_root in production_roots:
+        for source_file in production_root.rglob("*"):
+            if not source_file.is_file() or source_file.suffix not in {
+                ".rs",
+                ".svelte",
+                ".ts",
+            }:
+                continue
+            relative_path = source_file.relative_to(ROOT)
+            module_parts = {
+                part.removesuffix(source_file.suffix).lower()
+                for part in relative_path.parts
+            }
+            forbidden_modules = module_parts & FORBIDDEN_PRODUCT_MODULES
+            if forbidden_modules:
+                failures.append(
+                    f"{relative_path}: product module is outside Meiki's scope, "
+                    f"found {sorted(forbidden_modules)}"
+                )
+            if source_file.suffix in {".svelte", ".ts"}:
+                text = source_file.read_text(encoding="utf-8")
+                for network_api in FORBIDDEN_FRONTEND_NETWORK_APIS:
+                    if network_api in text:
+                        failures.append(
+                            f"{relative_path}: production network API "
+                            f"{network_api!r} is outside Meiki's scope"
+                        )
+
+    command_surfaces = [
+        ROOT / "apps" / "desktop" / "src-tauri" / "src" / "lib.rs",
+        ROOT / "apps" / "desktop" / "src" / "lib" / "api.ts",
+    ]
+    for command_surface in command_surfaces:
+        text = command_surface.read_text(encoding="utf-8")
+        for command in REMOVED_DESKTOP_COMMANDS:
+            if command in text:
+                failures.append(
+                    f"{command_surface.relative_to(ROOT)}: removed desktop "
+                    f"command {command!r} is public again"
+                )
+
+    generated_root = ROOT / "apps" / "desktop" / "src" / "lib" / "generated"
+    for binding in REMOVED_GENERATED_BINDINGS:
+        if (generated_root / binding).exists():
+            failures.append(
+                f"{(generated_root / binding).relative_to(ROOT)}: removed "
+                "frontend binding exists"
+            )
 
     if failures:
         print("\n".join(failures), file=sys.stderr)

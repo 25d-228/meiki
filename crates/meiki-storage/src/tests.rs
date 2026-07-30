@@ -127,7 +127,7 @@ fn opening_a_clean_collection_is_idempotent_and_creates_no_learning_data() {
 }
 
 #[test]
-fn parameter_adoption_and_rollback_are_atomic_and_prospective() {
+fn parameter_adoption_is_atomic_and_prospective() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();
     let schedule_before = storage.load_schedule(SAMPLE_CARD_ID).unwrap();
@@ -146,46 +146,9 @@ fn parameter_adoption_and_rollback_are_atomic_and_prospective() {
         created_at_ms: 2_000,
     };
     let adopted = storage
-        .adopt_scheduler_parameter_set(
-            DEFAULT_DECK_ID,
-            &personalized,
-            "{\"result\":\"adopted\",\"reviews\":64}",
-            2_000,
-        )
+        .adopt_scheduler_parameter_set(DEFAULT_DECK_ID, &personalized, 2_000)
         .unwrap();
     assert_eq!(adopted.active_parameter_set_id, personalized.id);
-    assert_eq!(
-        adopted.previous_parameter_set_id.as_deref(),
-        Some(default_profile.active_parameter_set_id.as_str())
-    );
-    assert_eq!(
-        adopted.optimizer_status,
-        meiki_domain::OptimizerStatus::Adopted
-    );
-    assert_eq!(
-        storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
-        schedule_before
-    );
-    assert_eq!(
-        storage.review_count(SAMPLE_CARD_ID).unwrap(),
-        history_before
-    );
-
-    let rolled_back = storage
-        .rollback_scheduler_parameter_set(DEFAULT_DECK_ID, 3_000)
-        .unwrap();
-    assert_eq!(
-        rolled_back.active_parameter_set_id,
-        default_profile.active_parameter_set_id
-    );
-    assert_eq!(
-        rolled_back.previous_parameter_set_id.as_deref(),
-        Some(personalized.id.as_str())
-    );
-    assert_eq!(
-        rolled_back.optimizer_status,
-        meiki_domain::OptimizerStatus::RolledBack
-    );
     assert_eq!(
         storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
         schedule_before
@@ -1244,7 +1207,6 @@ fn multilingual_aggregate_round_trips_and_cloze_ids_survive_surrounding_edits() 
             cloze_id: cloze.id.clone(),
             content_version: 0,
             suspended: false,
-            settings: StudySettingsOverride::default(),
             created_at_ms: 1_000,
             updated_at_ms: 1_000,
         };
@@ -1265,7 +1227,6 @@ fn multilingual_aggregate_round_trips_and_cloze_ids_survive_surrounding_edits() 
         storage.create_card(&card, &schedule).unwrap();
         assert_eq!(storage.get_card(&card.id).unwrap(), card);
         card.content_version = 1;
-        card.settings.maximum_interval_days = Some(2_000);
         card.updated_at_ms = 2_000;
         storage.update_card(&card).unwrap();
         assert_eq!(storage.get_card(&card.id).unwrap(), card);

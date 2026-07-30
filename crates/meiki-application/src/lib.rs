@@ -31,6 +31,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod authoring;
+mod decks;
 mod library;
 mod portable;
 mod today;
@@ -40,19 +41,21 @@ pub use authoring::{
     AuthoringSegmentDto, AuthoringSegmentKindDto, MakeClozeRequest, MatchingPolicyDto,
     RemoveClozeRequest, ReorderSegmentsRequest,
 };
+pub use decks::{
+    CreateDeckRequest, DeckDto, DeleteDeckRequest, DeleteDeckResultDto, RenameDeckRequest,
+};
 pub use library::{
     LibraryBulkActionDto, LibraryBulkRequest, LibraryBulkResultDto, LibraryCardDto, LibraryDeckDto,
-    LibraryDueFilterDto, LibraryExportRequest, LibraryExportResultDto, LibraryMediaFilterDto,
-    LibraryNoteDto, LibraryOverviewDto, LibraryRequest, LibrarySuspendedFilterDto, LibraryTagDto,
-    LibraryTrashFilterDto,
+    LibraryDueFilterDto, LibraryMediaFilterDto, LibraryNoteDto, LibraryOverviewDto, LibraryRequest,
+    LibrarySuspendedFilterDto, LibraryTagDto, LibraryTrashFilterDto,
 };
 pub use portable::{
-    ArchiveExportRequest, ArchiveImportModeDto, ArchiveImportRequest, ArchiveImportResultDto,
-    ArchiveScopeDto, BackupDto, PortableArchivePreviewDto, PortableExportResultDto,
+    ArchiveExportRequest, ArchiveImportRequest, ArchiveImportResultDto, BackupDto,
+    PortableArchivePreviewDto, PortableExportResultDto,
 };
 pub use today::{
-    StudyAvailabilityDto, StudyPlanDto, TodayDeckDto, TodayOverviewDto, TodayQueueCardDto,
-    TodayRequest,
+    ALL_DECKS_ID, StudyAvailabilityDto, StudyPlanDto, TodayDeckDto, TodayOverviewDto,
+    TodayQueueCardDto, TodayRequest,
 };
 
 #[derive(Debug, Error)]
@@ -75,20 +78,14 @@ pub enum ApplicationError {
     InvalidToday(String),
     #[error("invalid Library request: {0}")]
     InvalidLibrary(String),
-    #[error("failed to export the Library selection: {0}")]
-    LibraryExport(#[source] std::io::Error),
-    #[error("failed to serialize the Library selection: {0}")]
-    LibrarySerialization(#[source] serde_json::Error),
+    #[error("invalid deck request: {0}")]
+    InvalidDeck(String),
     #[error("invalid text selection: {0}")]
     TextBoundary(#[from] meiki_text::TextBoundaryError),
     #[error("scheduler operation failed: {0}")]
     Scheduler(#[from] SchedulerError),
     #[error("unsupported scheduler engine version: {0}")]
     UnsupportedScheduler(String),
-    #[error("failed to export scheduler diagnostics: {0}")]
-    DiagnosticExport(#[source] std::io::Error),
-    #[error("failed to serialize scheduler diagnostics: {0}")]
-    DiagnosticSerialization(#[source] serde_json::Error),
     #[error("invalid scheduler parameter file: {0}")]
     InvalidSchedulerParameterFile(String),
     #[error("scheduler parameter file operation failed: {0}")]
@@ -375,14 +372,8 @@ pub struct SchedulerSettingsDto {
     pub new_cards_per_day: u32,
     pub maximum_interval_days: u32,
     pub day_boundary_minutes: u16,
-    pub controller_version: String,
-    pub controller_last_evaluated_at: Option<String>,
-    pub controller_forecast_review_seconds_per_day: u32,
     pub controller_backlog_exceeds_budget: bool,
     pub controller_explanation: String,
-    pub engine_version: String,
-    pub active_parameter_set_id: String,
-    pub previous_parameter_set_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -434,11 +425,6 @@ struct SchedulerParameterFile {
     parameter_set_id: String,
     engine_version: String,
     parameters: Vec<f64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
-pub struct SchedulerDiagnosticsExportDto {
-    pub path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -930,12 +916,7 @@ impl ApplicationService {
             parameters: imported.parameters,
             created_at_ms: now_ms,
         };
-        storage.adopt_scheduler_parameter_set(
-            &request.deck_id,
-            &parameter_set,
-            "{\"result\":\"imported_versioned_parameter_set\"}",
-            now_ms,
-        )?;
+        storage.adopt_scheduler_parameter_set(&request.deck_id, &parameter_set, now_ms)?;
         scheduler_settings_dto(&storage, &request.deck_id)
     }
 
@@ -969,60 +950,6 @@ impl ApplicationService {
             serde_json::to_vec_pretty(&file).map_err(ApplicationError::SchedulerParameterJson)?;
         fs::write(&path, json).map_err(ApplicationError::SchedulerParameterIo)?;
         Ok(SchedulerParametersExportDto {
-            path: path.to_string_lossy().into_owned(),
-        })
-    }
-
-    /// Restores the previous known-good parameter set prospectively.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApplicationError`] when no rollback target exists or
-    /// persistence fails.
-    pub fn rollback_scheduler(
-        &self,
-        deck_id: &str,
-    ) -> Result<SchedulerSettingsDto, ApplicationError> {
-        let mut storage = self.open_storage()?;
-        if storage.get_scheduler_profile(deck_id)?.scheduling_mode != SchedulingMode::Expert {
-            return Err(ApplicationError::InvalidSchedulerParameterFile(
-                "parameter rollback is available only in Expert mode".into(),
-            ));
-        }
-        storage.rollback_scheduler_parameter_set(deck_id, Utc::now().timestamp_millis())?;
-        scheduler_settings_dto(&storage, deck_id)
-    }
-
-    /// Exports a content-free scheduler diagnostic report beside the
-    /// collection.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApplicationError`] when scheduler metadata cannot be loaded
-    /// or the report cannot be written.
-    pub fn export_scheduler_diagnostics(
-        &self,
-        deck_id: &str,
-    ) -> Result<SchedulerDiagnosticsExportDto, ApplicationError> {
-        let storage = self.open_storage()?;
-        let settings = scheduler_settings_dto(&storage, deck_id)?;
-        let path = scheduler_diagnostics_path(&self.collection_path);
-        let report = serde_json::json!({
-            "engine_version": settings.engine_version,
-            "active_parameter_set_id": settings.active_parameter_set_id,
-            "has_rollback_parameter_set": settings.previous_parameter_set_id.is_some(),
-            "scheduling_mode": scheduling_mode_name(settings.scheduling_mode),
-            "controller_version": settings.controller_version,
-            "controller_target_retention_basis_points": settings.target_retention_basis_points,
-            "controller_new_cards_per_day": settings.new_cards_per_day,
-            "controller_backlog_exceeds_budget": settings.controller_backlog_exceeds_budget,
-            "projection_migration_repaired_cards":
-                storage.projection_migration_repaired_cards()?,
-        });
-        let report = serde_json::to_string_pretty(&report)
-            .map_err(ApplicationError::DiagnosticSerialization)?;
-        fs::write(&path, report).map_err(ApplicationError::DiagnosticExport)?;
-        Ok(SchedulerDiagnosticsExportDto {
             path: path.to_string_lossy().into_owned(),
         })
     }
@@ -1189,20 +1116,8 @@ fn scheduler_settings_dto(
         new_cards_per_day: resolved.new_cards_per_day,
         maximum_interval_days: resolved.maximum_interval_days,
         day_boundary_minutes: profile.day_boundary_minutes,
-        controller_version: profile.controller_version,
-        controller_last_evaluated_at: profile
-            .controller_last_evaluated_day_start_ms
-            .map(timestamp_string)
-            .transpose()?,
-        controller_forecast_review_seconds_per_day: desktop_u32(
-            profile.controller_forecast_review_seconds_per_day,
-            "controller forecast seconds",
-        )?,
         controller_backlog_exceeds_budget: profile.controller_backlog_exceeds_budget,
         controller_explanation,
-        engine_version: profile.engine_version,
-        active_parameter_set_id: profile.active_parameter_set_id,
-        previous_parameter_set_id: profile.previous_parameter_set_id,
     })
 }
 
@@ -1221,11 +1136,7 @@ pub(crate) fn effective_study_settings(
 }
 
 fn expert_study_settings(deck: &meiki_domain::Deck) -> StudySettings {
-    StudySettings::resolve(
-        &StudySettings::default(),
-        &deck.settings,
-        &StudySettingsOverride::default(),
-    )
+    StudySettings::resolve(&StudySettings::default(), &deck.settings)
 }
 
 pub(crate) fn effective_budget(
@@ -1394,18 +1305,6 @@ fn sanitize_parameter_id(value: &str) -> String {
     }
 }
 
-fn scheduler_diagnostics_path(collection_path: &Path) -> PathBuf {
-    let name = collection_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("collection.db");
-    collection_path.with_file_name(format!(
-        "{name}.scheduler-diagnostics-{}-{}.json",
-        Utc::now().timestamp_millis(),
-        Uuid::new_v4()
-    ))
-}
-
 fn scheduler_parameters_path(collection_path: &Path) -> PathBuf {
     let name = collection_path
         .file_name()
@@ -1416,13 +1315,6 @@ fn scheduler_parameters_path(collection_path: &Path) -> PathBuf {
         Utc::now().timestamp_millis(),
         Uuid::new_v4()
     ))
-}
-
-const fn scheduling_mode_name(mode: SchedulingModeDto) -> &'static str {
-    match mode {
-        SchedulingModeDto::Automatic => "automatic",
-        SchedulingModeDto::Expert => "expert",
-    }
 }
 
 fn format_retention(target: u16) -> String {
@@ -1757,7 +1649,11 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     SchedulerPolicyPreviewDto::export_all_to(output)?;
     ImportSchedulerParametersRequest::export_all_to(output)?;
     SchedulerParametersExportDto::export_all_to(output)?;
-    SchedulerDiagnosticsExportDto::export_all_to(output)?;
+    DeckDto::export_all_to(output)?;
+    CreateDeckRequest::export_all_to(output)?;
+    RenameDeckRequest::export_all_to(output)?;
+    DeleteDeckRequest::export_all_to(output)?;
+    DeleteDeckResultDto::export_all_to(output)?;
     AnnotationDraftDto::export_all_to(output)?;
     AuthoringSegmentKindDto::export_all_to(output)?;
     MatchingPolicyDto::export_all_to(output)?;
@@ -1787,12 +1683,8 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     LibraryBulkActionDto::export_all_to(output)?;
     LibraryBulkRequest::export_all_to(output)?;
     LibraryBulkResultDto::export_all_to(output)?;
-    LibraryExportRequest::export_all_to(output)?;
-    LibraryExportResultDto::export_all_to(output)?;
-    ArchiveScopeDto::export_all_to(output)?;
     ArchiveExportRequest::export_all_to(output)?;
     PortableExportResultDto::export_all_to(output)?;
-    ArchiveImportModeDto::export_all_to(output)?;
     ArchiveImportRequest::export_all_to(output)?;
     PortableArchivePreviewDto::export_all_to(output)?;
     ArchiveImportResultDto::export_all_to(output)?;
@@ -1806,7 +1698,7 @@ mod tests {
     use meiki_scheduler::DEFAULT_PARAMETERS;
     use meiki_storage::{
         DEFAULT_DECK_ID, DeckRepository, SAMPLE_CARD_ID, SchedulerParameterSetRepository,
-        SchedulingWorkload, Storage,
+        SchedulerProfileRepository, SchedulingWorkload, Storage,
     };
     use tempfile::tempdir;
 
@@ -2002,15 +1894,18 @@ mod tests {
         assert_eq!(defaults.scheduling_mode, SchedulingModeDto::Automatic);
         assert_eq!(defaults.collection_daily_time_budget_minutes, 30);
         assert_eq!(defaults.budget_source, BudgetSourceDto::CollectionBudget);
-        assert_eq!(defaults.engine_version, "fsrs-7");
         assert_eq!(defaults.target_retention_basis_points, 9_000);
         assert!(matches!(
             service.export_scheduler_parameters(DEFAULT_DECK_ID),
             Err(ApplicationError::InvalidSchedulerParameterFile(_))
         ));
+        let default_profile = Storage::open(&path)
+            .unwrap()
+            .get_scheduler_profile(DEFAULT_DECK_ID)
+            .unwrap();
         let stored_parameters = Storage::open(&path)
             .unwrap()
-            .get_scheduler_parameter_set(&defaults.active_parameter_set_id)
+            .get_scheduler_parameter_set(&default_profile.active_parameter_set_id)
             .unwrap()
             .parameters;
         assert!(
@@ -2061,19 +1956,19 @@ mod tests {
         let exported_parameters = service
             .export_scheduler_parameters(DEFAULT_DECK_ID)
             .unwrap();
-        let imported = service
+        service
             .import_scheduler_parameters(&ImportSchedulerParametersRequest {
                 deck_id: DEFAULT_DECK_ID.into(),
                 path: exported_parameters.path,
             })
             .unwrap();
+        let imported_profile = Storage::open(&path)
+            .unwrap()
+            .get_scheduler_profile(DEFAULT_DECK_ID)
+            .unwrap();
         assert_ne!(
-            imported.active_parameter_set_id,
-            defaults.active_parameter_set_id
-        );
-        assert_eq!(
-            imported.previous_parameter_set_id.as_deref(),
-            Some(defaults.active_parameter_set_id.as_str())
+            imported_profile.active_parameter_set_id,
+            default_profile.active_parameter_set_id
         );
 
         let invalid_path = directory.path().join("invalid-parameters.json");
@@ -2137,17 +2032,6 @@ mod tests {
                 day_start_ms: 0,
             })
             .unwrap();
-        let diagnostic_export = service
-            .export_scheduler_diagnostics(DEFAULT_DECK_ID)
-            .unwrap();
-        let diagnostic_json = std::fs::read_to_string(&diagnostic_export.path).unwrap();
-        assert!(diagnostic_json.contains("\"engine_version\": \"fsrs-7\""));
-        assert!(diagnostic_json.contains("\"scheduling_mode\": \"automatic\""));
-        assert!(diagnostic_json.contains("\"controller_version\": \"time-budget-v1\""));
-        assert!(diagnostic_json.contains("\"projection_migration_repaired_cards\": 0"));
-        assert!(!diagnostic_json.contains("行きます"));
-        assert!(!diagnostic_json.contains(SAMPLE_CARD_ID));
-
         let storage = Storage::open(&path).unwrap();
         assert_eq!(
             storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
@@ -2233,5 +2117,27 @@ mod tests {
                 .effective_daily_time_budget_minutes,
             75
         );
+
+        let cleared = service
+            .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
+                deck_daily_time_budget_minutes: None,
+                now_ms: 4_000,
+                ..UpdateSchedulerSettingsRequest {
+                    deck_id: "second-deck".into(),
+                    scheduling_mode: SchedulingModeDto::Automatic,
+                    collection_daily_time_budget_minutes: 75,
+                    deck_daily_time_budget_minutes: Some(25),
+                    target_retention_basis_points: 9_000,
+                    new_cards_per_day: 20,
+                    maximum_interval_days: 36_500,
+                    day_boundary_minutes: 240,
+                    now_ms: 3_000,
+                    day_start_ms: 0,
+                }
+            })
+            .unwrap();
+        assert_eq!(cleared.deck_daily_time_budget_minutes, None);
+        assert_eq!(cleared.effective_daily_time_budget_minutes, 75);
+        assert_eq!(cleared.budget_source, BudgetSourceDto::CollectionBudget);
     }
 }

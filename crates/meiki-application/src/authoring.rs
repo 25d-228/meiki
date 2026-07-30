@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use meiki_domain::{
     Annotation, Card, Cloze, Direction, LocalizedText, MatchingPolicy, MediaReference,
-    SegmentContent, SemanticSegment, SourceItem, StudySettingsOverride,
+    SegmentContent, SemanticSegment, SourceItem,
 };
 use meiki_scheduler::{Fsrs7Engine, SchedulerConfig, SchedulerEngine};
 use meiki_storage::{
@@ -427,6 +427,7 @@ impl ApplicationService {
         validate_for_save(draft)?;
         let now_ms = Utc::now().timestamp_millis();
         let mut storage = self.open_storage()?;
+        storage.get_deck(&draft.deck_id)?;
         self.validate_media_for_save(&storage, draft)?;
         let mut note = stored_note(draft, now_ms)?;
         let mut removed_media = Vec::new();
@@ -491,7 +492,6 @@ impl ApplicationService {
                         cloze_id: cloze.id.clone(),
                         content_version: 0,
                         suspended: false,
-                        settings: StudySettingsOverride::default(),
                         created_at_ms: now_ms,
                         updated_at_ms: now_ms,
                     };

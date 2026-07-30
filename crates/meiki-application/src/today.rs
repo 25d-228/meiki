@@ -1,5 +1,8 @@
+use std::collections::{BTreeMap, HashMap};
+
 use meiki_domain::{CardLifecycle, ReviewEvent};
-use meiki_storage::{DeckRepository, SchedulerProfileRepository};
+use meiki_scheduler::{DeckIntakeCandidate, allocate_unseen_round_robin};
+use meiki_storage::{DeckRepository, SchedulerProfileRepository, Storage};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -14,6 +17,7 @@ const MIN_RESPONSE_MILLISECONDS: u64 = 1_000;
 const MAX_RESPONSE_MILLISECONDS: u64 = 10 * 60 * 1_000;
 const MIN_ESTIMATE_SECONDS: u64 = 5;
 const MAX_ESTIMATE_SECONDS: u64 = 120;
+pub const ALL_DECKS_ID: &str = "__all_decks__";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct TodayRequest {
@@ -104,6 +108,21 @@ struct QueuePlan {
     cards: Vec<QueueCandidate>,
 }
 
+struct TodayInputs {
+    all_decks: bool,
+    deck_id: String,
+    deck_name: String,
+    decks: Vec<TodayDeckDto>,
+    candidates: Vec<QueueCandidate>,
+    reviews: Vec<ReviewEvent>,
+    daily_budget: u32,
+    budget_source: BudgetSourceDto,
+    target_retention_basis_points: u16,
+    new_cards_per_day: u32,
+    policy_explanation: String,
+    backlog_exceeds_budget: bool,
+}
+
 impl ApplicationService {
     /// Builds a deterministic queue projection for one local day.
     ///
@@ -120,54 +139,38 @@ impl ApplicationService {
     ) -> Result<TodayOverviewDto, ApplicationError> {
         validate_day(request)?;
         let mut storage = self.open_storage()?;
-        let deck = storage.get_deck(&request.deck_id)?;
-        evaluate_and_store_policy(
-            &mut storage,
-            &request.deck_id,
-            request.now_ms,
-            request.day_start_ms,
-            false,
-        )?;
-        let profile = storage.get_scheduler_profile(&request.deck_id)?;
-        let collection = storage.collection_scheduling_settings()?;
-        let settings = effective_study_settings(&deck, &profile);
-        let (daily_budget, budget_source) = effective_budget(&collection, &profile);
-        let candidates = storage
-            .study_cards_for_deck(&request.deck_id)?
-            .into_iter()
-            .filter(|stored| !stored.card.suspended)
-            .map(|stored| QueueCandidate {
-                card_id: stored.card.id,
-                deck_id: stored.source_item.deck_id,
-                card_content_version: stored.card.content_version,
-                schedule_version: stored.schedule.version,
-                due_at_ms: stored.schedule.due_at_ms,
-                ideal_due_at_ms: stored.schedule.ideal_due_at_ms,
-                lifecycle: stored.schedule.lifecycle,
-                created_at_ms: stored.card.created_at_ms,
-            })
-            .collect::<Vec<_>>();
-        let reviews = storage.active_review_events_for_deck(&request.deck_id)?;
+        let inputs = load_today_inputs(&mut storage, request)?;
         let plan = plan_today(
-            &candidates,
-            &reviews,
+            &inputs.candidates,
+            &inputs.reviews,
             request,
-            settings.new_cards_per_day,
-            Some(daily_budget),
+            inputs.new_cards_per_day,
+            Some(inputs.daily_budget),
+            inputs.all_decks,
         );
-        let decks = storage
-            .list_decks()?
-            .into_iter()
-            .map(|deck| TodayDeckDto {
-                id: deck.id,
-                name: deck.name,
-            })
-            .collect();
+        let backlog_exceeds_budget = if inputs.all_decks {
+            plan.estimated_seconds > u64::from(inputs.daily_budget).saturating_mul(60)
+        } else {
+            inputs.backlog_exceeds_budget
+        };
+        let policy_explanation = if inputs.all_decks {
+            format!(
+                "{} min/day across all decks\nTarget retention: {}%\nNew cards today: {}\nReason: the collection budget is shared while due cards remain globally ordered.",
+                inputs.daily_budget,
+                super::format_retention(inputs.target_retention_basis_points),
+                plan.cards
+                    .iter()
+                    .filter(|card| card.lifecycle == CardLifecycle::Unseen)
+                    .count()
+            )
+        } else {
+            inputs.policy_explanation
+        };
 
         Ok(TodayOverviewDto {
-            deck_id: deck.id,
-            deck_name: deck.name,
-            decks,
+            deck_id: inputs.deck_id,
+            deck_name: inputs.deck_name,
+            decks: inputs.decks,
             due_reviews: desktop_count(plan.due_reviews, "due review count")?,
             overdue_reviews: desktop_count(plan.overdue_reviews, "overdue review count")?,
             new_cards: desktop_count(
@@ -185,11 +188,11 @@ impl ApplicationService {
                 plan.response_time_samples,
                 "response time sample count",
             )?,
-            daily_time_budget_minutes: Some(daily_budget),
-            budget_source,
-            target_retention_basis_points: settings.target_retention_basis_points,
-            policy_explanation: profile.controller_explanation,
-            backlog_exceeds_budget: profile.controller_backlog_exceeds_budget,
+            daily_time_budget_minutes: Some(inputs.daily_budget),
+            budget_source: inputs.budget_source,
+            target_retention_basis_points: inputs.target_retention_basis_points,
+            policy_explanation,
+            backlog_exceeds_budget,
             next_due_at: plan.next_due_at_ms.map(timestamp_string).transpose()?,
             queue: plan
                 .cards
@@ -283,6 +286,111 @@ impl ApplicationService {
     }
 }
 
+fn load_today_inputs(
+    storage: &mut Storage,
+    request: &TodayRequest,
+) -> Result<TodayInputs, ApplicationError> {
+    let decks = storage.list_decks()?;
+    let all_decks = request.deck_id == ALL_DECKS_ID;
+    let selected_ids = if all_decks {
+        decks.iter().map(|deck| deck.id.clone()).collect::<Vec<_>>()
+    } else {
+        vec![
+            decks
+                .iter()
+                .find(|deck| deck.id == request.deck_id)
+                .ok_or_else(|| {
+                    ApplicationError::InvalidToday("the selected deck no longer exists".into())
+                })?
+                .id
+                .clone(),
+        ]
+    };
+    for deck_id in &selected_ids {
+        evaluate_and_store_policy(
+            storage,
+            deck_id,
+            request.now_ms,
+            request.day_start_ms,
+            false,
+        )?;
+    }
+    let collection = storage.collection_scheduling_settings()?;
+    let policy_deck = if all_decks {
+        decks
+            .iter()
+            .find(|deck| deck.id == meiki_storage::DEFAULT_DECK_ID)
+            .or_else(|| decks.first())
+    } else {
+        decks.iter().find(|deck| deck.id == request.deck_id)
+    }
+    .cloned()
+    .ok_or_else(|| ApplicationError::InvalidToday("the collection has no deck".into()))?;
+    let profile = storage.get_scheduler_profile(&policy_deck.id)?;
+    let settings = effective_study_settings(&policy_deck, &profile);
+    let (daily_budget, budget_source) = if all_decks {
+        (
+            collection.daily_time_budget_minutes,
+            BudgetSourceDto::CollectionBudget,
+        )
+    } else {
+        effective_budget(&collection, &profile)
+    };
+    let mut candidates = Vec::new();
+    let mut reviews = Vec::new();
+    for deck_id in selected_ids {
+        candidates.extend(
+            storage
+                .study_cards_for_deck(&deck_id)?
+                .into_iter()
+                .filter(|stored| !stored.card.suspended)
+                .map(queue_candidate),
+        );
+        reviews.extend(storage.active_review_events_for_deck(&deck_id)?);
+    }
+    Ok(TodayInputs {
+        all_decks,
+        deck_id: if all_decks {
+            ALL_DECKS_ID.into()
+        } else {
+            policy_deck.id.clone()
+        },
+        deck_name: if all_decks {
+            "All decks".into()
+        } else {
+            policy_deck.name.clone()
+        },
+        decks: decks
+            .into_iter()
+            .map(|deck| TodayDeckDto {
+                id: deck.id,
+                name: deck.name,
+            })
+            .collect(),
+        candidates,
+        reviews,
+        daily_budget,
+        budget_source,
+        target_retention_basis_points: settings.target_retention_basis_points,
+        new_cards_per_day: settings.new_cards_per_day,
+        policy_explanation: profile.controller_explanation,
+        backlog_exceeds_budget: profile.controller_backlog_exceeds_budget,
+    })
+}
+
+fn queue_candidate(stored: meiki_storage::StoredStudyCard) -> QueueCandidate {
+    QueueCandidate {
+        card_id: stored.card.id,
+        deck_id: stored.source_item.deck_id,
+        card_content_version: stored.card.content_version,
+        schedule_version: stored.schedule.version,
+        due_at_ms: stored.schedule.due_at_ms,
+        ideal_due_at_ms: stored.schedule.ideal_due_at_ms,
+        lifecycle: stored.schedule.lifecycle,
+        created_at_ms: stored.card.created_at_ms,
+    }
+}
+
 fn validate_day(request: &TodayRequest) -> Result<(), ApplicationError> {
     let duration = request.day_end_ms.saturating_sub(request.day_start_ms);
     if request.deck_id.trim().is_empty()
@@ -303,6 +411,7 @@ fn plan_today(
     request: &TodayRequest,
     new_cards_per_day: u32,
     daily_time_budget_minutes: Option<u32>,
+    fair_across_decks: bool,
 ) -> QueuePlan {
     let (review_seconds, uses_history, response_time_samples) = response_time_estimate(reviews);
     let new_seconds = review_seconds.saturating_mul(3).div_ceil(2);
@@ -357,7 +466,11 @@ fn plan_today(
     let budget_new = usize::try_from(budget_remaining / new_seconds).unwrap_or(usize::MAX);
     let selected_new = new.len().min(daily_remaining).min(budget_new);
     let deferred_new_cards = new.len().saturating_sub(selected_new);
-    new.truncate(selected_new);
+    if fair_across_decks {
+        new = fair_new_cards(new, selected_new);
+    } else {
+        new.truncate(selected_new);
+    }
 
     let due_reviews = due.len();
     let estimated_seconds = due_estimate.saturating_add(
@@ -389,6 +502,47 @@ fn plan_today(
         next_due_at_ms,
         cards: due,
     }
+}
+
+fn fair_new_cards(candidates: Vec<QueueCandidate>, allowance: usize) -> Vec<QueueCandidate> {
+    let mut by_deck = BTreeMap::<String, Vec<QueueCandidate>>::new();
+    for candidate in candidates {
+        by_deck
+            .entry(candidate.deck_id.clone())
+            .or_default()
+            .push(candidate);
+    }
+    let allocation_candidates = by_deck
+        .iter()
+        .map(|(deck_id, cards)| DeckIntakeCandidate {
+            deck_id: deck_id.clone(),
+            unseen_cards: u64::try_from(cards.len()).unwrap_or(u64::MAX),
+        })
+        .collect::<Vec<_>>();
+    let allocations = allocate_unseen_round_robin(
+        &allocation_candidates,
+        u32::try_from(allowance).unwrap_or(u32::MAX),
+    )
+    .into_iter()
+    .map(|allocation| (allocation.deck_id, allocation.new_cards))
+    .collect::<HashMap<_, _>>();
+    let mut selected = by_deck
+        .into_iter()
+        .flat_map(|(deck_id, mut cards)| {
+            cards.truncate(
+                usize::try_from(allocations.get(&deck_id).copied().unwrap_or(0))
+                    .unwrap_or(usize::MAX),
+            );
+            cards
+        })
+        .collect::<Vec<_>>();
+    selected.sort_by(|left, right| {
+        left.created_at_ms
+            .cmp(&right.created_at_ms)
+            .then_with(|| left.deck_id.cmp(&right.deck_id))
+            .then_with(|| left.card_id.cmp(&right.card_id))
+    });
+    selected
 }
 
 fn response_time_estimate(reviews: &[ReviewEvent]) -> (u64, bool, usize) {
@@ -433,8 +587,9 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::{
-        ApplicationError, ApplicationService, QueueCandidate, ReconcileStudyQueueRequest,
-        StudyAvailabilityDto, StudyQueueEntryDto, TodayRequest, plan_today,
+        ALL_DECKS_ID, ApplicationError, ApplicationService, QueueCandidate,
+        ReconcileStudyQueueRequest, StudyAvailabilityDto, StudyQueueEntryDto, TodayRequest,
+        plan_today,
     };
     use crate::{
         GradeDto, GradeReviewRequest, LibraryDueFilterDto, LibraryMediaFilterDto, LibraryRequest,
@@ -578,6 +733,7 @@ mod tests {
             &request(),
             20,
             Some(1),
+            false,
         );
         assert_eq!(plan.due_reviews, 2);
         assert_eq!(plan.overdue_reviews, 1);
@@ -590,6 +746,52 @@ mod tests {
         );
         assert_eq!(plan.deferred_new_cards, 2);
         assert_eq!(plan.estimated_seconds, 40);
+    }
+
+    #[test]
+    fn all_decks_orders_due_timestamps_globally_and_shares_new_intake() {
+        let mut due_later = candidate("due-later", 90_000, CardLifecycle::Introduced);
+        due_later.deck_id = "deck-b".into();
+        let mut due_first = candidate("due-first", 80_000, CardLifecycle::Introduced);
+        due_first.deck_id = "deck-a".into();
+        let mut new_a = candidate("new-a", 1, CardLifecycle::Unseen);
+        new_a.deck_id = "deck-a".into();
+        let mut new_b = candidate("new-b", 2, CardLifecycle::Unseen);
+        new_b.deck_id = "deck-b".into();
+        let mut new_a_second = candidate("new-a-second", 3, CardLifecycle::Unseen);
+        new_a_second.deck_id = "deck-a".into();
+
+        let plan = plan_today(
+            &[new_a_second, due_later, new_b, due_first, new_a],
+            &[],
+            &request(),
+            2,
+            Some(10),
+            true,
+        );
+        assert_eq!(
+            plan.cards
+                .iter()
+                .map(|card| card.card_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["due-first", "due-later", "new-a", "new-b"]
+        );
+        assert_eq!(plan.deferred_new_cards, 1);
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&path);
+        service.seed_test_collection(1_000).unwrap();
+        let mut all_request = request();
+        all_request.deck_id = ALL_DECKS_ID.into();
+        let overview = service.get_today_overview(&all_request).unwrap();
+        assert_eq!(overview.deck_id, ALL_DECKS_ID);
+        assert_eq!(overview.deck_name, "All decks");
+        assert_eq!(
+            overview.budget_source,
+            crate::BudgetSourceDto::CollectionBudget
+        );
+        assert_eq!(overview.queue.len(), 1);
     }
 
     #[test]
@@ -614,6 +816,7 @@ mod tests {
             &request,
             3,
             Some(2),
+            false,
         );
         assert!(plan.estimate_uses_history);
         assert_eq!(plan.response_time_samples, 2);
@@ -637,6 +840,7 @@ mod tests {
             &request(),
             20,
             None,
+            false,
         );
         assert!(plan.cards.is_empty());
         assert_eq!(plan.next_due_at_ms, Some(90_000_000));
@@ -654,6 +858,7 @@ mod tests {
             &request(),
             20,
             None,
+            false,
         );
         assert_eq!(plan.due_reviews, 0);
         assert!(plan.cards.is_empty());
@@ -671,6 +876,7 @@ mod tests {
             &request(),
             20,
             None,
+            false,
         );
         assert_eq!(plan.due_reviews, 1);
         assert_eq!(plan.cards[0].card_id, "due-now");
@@ -790,6 +996,7 @@ mod tests {
             &request(),
             0,
             None,
+            false,
         );
 
         assert_eq!(plan.due_reviews, 1);
@@ -1120,7 +1327,7 @@ mod tests {
         let started = std::time::Instant::now();
         let mut request = request();
         request.now_ms = request.day_end_ms - 1;
-        let plan = plan_today(&candidates, &[], &request, 20, Some(60));
+        let plan = plan_today(&candidates, &[], &request, 20, Some(60), false);
         let elapsed = started.elapsed();
 
         assert_eq!(plan.due_reviews, 750_000);

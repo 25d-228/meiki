@@ -16,7 +16,6 @@ import type { RemoveClozeRequest } from "./generated/RemoveClozeRequest";
 import type { ReorderSegmentsRequest } from "./generated/ReorderSegmentsRequest";
 import type { SchedulerSettingsDto } from "./generated/SchedulerSettingsDto";
 import type { SchedulerPolicyPreviewDto } from "./generated/SchedulerPolicyPreviewDto";
-import type { SchedulerDiagnosticsExportDto } from "./generated/SchedulerDiagnosticsExportDto";
 import type { SchedulerParametersExportDto } from "./generated/SchedulerParametersExportDto";
 import type { ImportSchedulerParametersRequest } from "./generated/ImportSchedulerParametersRequest";
 import type { UpdateSchedulerSettingsRequest } from "./generated/UpdateSchedulerSettingsRequest";
@@ -24,8 +23,6 @@ import type { DirectionDto } from "./generated/DirectionDto";
 import type { ImportMediaRequest } from "./generated/ImportMediaRequest";
 import type { LibraryBulkRequest } from "./generated/LibraryBulkRequest";
 import type { LibraryBulkResultDto } from "./generated/LibraryBulkResultDto";
-import type { LibraryExportRequest } from "./generated/LibraryExportRequest";
-import type { LibraryExportResultDto } from "./generated/LibraryExportResultDto";
 import type { LibraryOverviewDto } from "./generated/LibraryOverviewDto";
 import type { LibraryRequest } from "./generated/LibraryRequest";
 import type { MediaRoleDto } from "./generated/MediaRoleDto";
@@ -33,7 +30,6 @@ import type { StudyMediaDto } from "./generated/StudyMediaDto";
 import type { TodayOverviewDto } from "./generated/TodayOverviewDto";
 import type { TodayRequest } from "./generated/TodayRequest";
 import type { ArchiveExportRequest } from "./generated/ArchiveExportRequest";
-import type { ArchiveImportModeDto } from "./generated/ArchiveImportModeDto";
 import type { ArchiveImportRequest } from "./generated/ArchiveImportRequest";
 import type { ArchiveImportResultDto } from "./generated/ArchiveImportResultDto";
 import type { BackupDto } from "./generated/BackupDto";
@@ -42,6 +38,11 @@ import type { PortableExportResultDto } from "./generated/PortableExportResultDt
 import type { ReconcileStudyQueueRequest } from "./generated/ReconcileStudyQueueRequest";
 import type { StudyQueueEntryDto } from "./generated/StudyQueueEntryDto";
 import type { StudyPlanDto } from "./generated/StudyPlanDto";
+import type { CreateDeckRequest } from "./generated/CreateDeckRequest";
+import type { DeckDto } from "./generated/DeckDto";
+import type { DeleteDeckRequest } from "./generated/DeleteDeckRequest";
+import type { DeleteDeckResultDto } from "./generated/DeleteDeckResultDto";
+import type { RenameDeckRequest } from "./generated/RenameDeckRequest";
 
 function invoke<T>(
   command: string,
@@ -82,12 +83,6 @@ export const api = {
     return invoke("apply_library_bulk_action", { request });
   },
 
-  exportLibrarySelection(
-    request: LibraryExportRequest,
-  ): Promise<LibraryExportResultDto> {
-    return invoke("export_library_selection", { request });
-  },
-
   exportArchive(
     request: ArchiveExportRequest,
   ): Promise<PortableExportResultDto> {
@@ -105,11 +100,8 @@ export const api = {
     return typeof selected === "string" ? selected : null;
   },
 
-  previewArchive(
-    path: string,
-    mode: ArchiveImportModeDto,
-  ): Promise<PortableArchivePreviewDto> {
-    return invoke("preview_archive", { path, mode });
+  previewArchive(path: string): Promise<PortableArchivePreviewDto> {
+    return invoke("preview_archive", { path });
   },
 
   importArchive(
@@ -162,10 +154,6 @@ export const api = {
     return invoke("preview_scheduler_policy", { request });
   },
 
-  rollbackScheduler(deckId: string): Promise<SchedulerSettingsDto> {
-    return invoke("rollback_scheduler", { deckId });
-  },
-
   async pickSchedulerParametersFile(): Promise<string | null> {
     const testPick = window.__MEIKI_TEST_PICK_SCHEDULER_PARAMETERS__;
     if (testPick) return testPick();
@@ -189,10 +177,20 @@ export const api = {
     return invoke("export_scheduler_parameters", { deckId });
   },
 
-  exportSchedulerDiagnostics(
-    deckId: string,
-  ): Promise<SchedulerDiagnosticsExportDto> {
-    return invoke("export_scheduler_diagnostics", { deckId });
+  listDecks(): Promise<DeckDto[]> {
+    return invoke("list_decks");
+  },
+
+  createDeck(request: CreateDeckRequest): Promise<DeckDto> {
+    return invoke("create_deck", { request });
+  },
+
+  renameDeck(request: RenameDeckRequest): Promise<DeckDto> {
+    return invoke("rename_deck", { request });
+  },
+
+  deleteDeck(request: DeleteDeckRequest): Promise<DeleteDeckResultDto> {
+    return invoke("delete_deck", { request });
   },
 
   newAuthoringDraft(): Promise<AuthoringDraftDto> {

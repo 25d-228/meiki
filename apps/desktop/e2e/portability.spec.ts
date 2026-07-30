@@ -26,8 +26,7 @@ test("exports and previews a confirmed versioned archive import", async ({
   await expect(dialog).toContainText(
     "Validated 2 note(s), 2 card(s), and 1 media object(s).",
   );
-  await expect(dialog.getByText("Version 1")).toBeVisible();
-  await dialog.getByLabel("Import mode").selectOption("replace");
+  await expect(dialog.getByText("Version 4")).toBeVisible();
   await dialog.getByLabel("Type REPLACE to confirm").fill("REPLACE");
   await dialog.getByRole("button", { name: "Import archive" }).click();
   await expect(page.getByText(/Imported 2 notes/)).toBeVisible();

@@ -1,6 +1,6 @@
 # 明記 · Meiki
 
-Meiki is a local-first desktop application for language-neutral typed-cloze
+Meiki is a personal, network-free desktop application for language-neutral typed-cloze
 recall. Create structured clozes in any Unicode script, study entirely from the
 keyboard, and keep immutable review history, adaptive schedules, and
 checksum-addressed media on your device.
@@ -75,25 +75,32 @@ docs/adr/                 Architecture decisions
 SQLite is created in the operating system's application-data directory. The
 application needs no account or network connection.
 
+## Product scope
+
+Meiki is deliberately one personal collection on one desktop. The collection
+may contain flat decks, tags, typed clozes, and local media. Daily study,
+authoring, search, complete collection archives, rolling backups, and manual
+expert scheduling are the supported product.
+
+Accounts, identity, cloud sync, mobile clients, marketplaces, plugins,
+executable card templates, collaborative editing, shared ownership, automatic
+content generation, social or competitive features, and network-dependent
+study behavior are permanent non-goals. Production code and desktop
+permissions must not require a network.
+
 ## Data portability and recovery
 
-Settings can export a full collection or one deck as a `.meiki` archive, and
-Library can export selected notes. The versioned archive contains canonical
-UTF-8 structured data, immutable review history and current projections,
-scheduler metadata, a manifest, and checksum-addressed media. It does not
-contain SQLite, and imports validate the complete archive before staging any
-database change.
-
-Merge import deterministically namespaces incoming identities and reuses media
-with identical SHA-256 checksums. Replace import is available only for a full
-collection. Both modes show a preview and require explicit typed confirmation.
-The existing Library JSON export is a lightweight interoperability format and
-does not promise to preserve scheduling state.
+Settings exports the complete collection as a `.meiki` archive. The versioned
+archive contains canonical UTF-8 structured data, immutable review history and
+current projections, scheduler metadata, a manifest, and checksum-addressed
+media. It does not contain SQLite. Import validates a complete collection,
+creates a recovery backup, and then replaces the local collection after
+explicit typed confirmation.
 
 Meiki keeps the newest five backups for each automatic backup category.
-Migrations, full schedule rebuilds, imports, and restores create a backup
-before changing durable collection state. Settings lists these backups and
-requires the exact filename before restore. Pruning is lexical by the
+Migrations, replacement imports, and restores create a backup before changing
+durable collection state. Settings lists these backups and requires the exact
+filename before restore. Pruning is lexical by the
 timestamp-and-sequence filename, so it remains deterministic even when
 multiple backups are created within one millisecond. Application recovery
 points include a checksum-verified media-store companion.

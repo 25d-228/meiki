@@ -174,45 +174,6 @@
     }
   }
 
-  async function exportSelection(): Promise<void> {
-    if (!selectedIds.length || busy) return;
-    busy = true;
-    error = "";
-    try {
-      const result = await api.exportLibrarySelection({
-        source_ids: selectedIds,
-        now_ms: Date.now(),
-      });
-      notice = `Exported ${result.exported_notes} ${
-        result.exported_notes === 1 ? "note" : "notes"
-      } to ${result.path}`;
-    } catch (reason) {
-      error = message(reason);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function exportPortableSelection(): Promise<void> {
-    if (!selectedIds.length || busy) return;
-    busy = true;
-    error = "";
-    try {
-      const result = await api.exportArchive({
-        scope: "selected_notes",
-        selected_ids: selectedIds,
-        now_ms: Date.now(),
-      });
-      notice = `Exported ${result.notes} ${
-        result.notes === 1 ? "note" : "notes"
-      } with complete history to ${result.path}`;
-    } catch (reason) {
-      error = message(reason);
-    } finally {
-      busy = false;
-    }
-  }
-
   function actionNotice(action: LibraryBulkActionDto, count: number): string {
     const noun = count === 1 ? "note" : "notes";
     if (action === "delete") return `Moved ${count} ${noun} to Trash.`;
@@ -431,18 +392,6 @@
               >Remove tag</Button
             >
           {/if}
-          <Button
-            size="small"
-            variant="secondary"
-            disabled={busy}
-            onclick={exportSelection}>Export</Button
-          >
-          <Button
-            size="small"
-            variant="secondary"
-            disabled={busy}
-            onclick={exportPortableSelection}>Create .meiki archive</Button
-          >
           {#if trash === "deleted"}
             <Button
               size="small"
