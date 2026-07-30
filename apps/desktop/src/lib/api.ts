@@ -37,6 +37,8 @@ import type { ArchiveImportResultDto } from "./generated/ArchiveImportResultDto"
 import type { BackupDto } from "./generated/BackupDto";
 import type { PortableArchivePreviewDto } from "./generated/PortableArchivePreviewDto";
 import type { PortableExportResultDto } from "./generated/PortableExportResultDto";
+import type { ReconcileStudyQueueRequest } from "./generated/ReconcileStudyQueueRequest";
+import type { StudyQueueEntryDto } from "./generated/StudyQueueEntryDto";
 
 function invoke<T>(
   command: string,
@@ -59,6 +61,12 @@ export const api = {
 
   getTodayOverview(request: TodayRequest): Promise<TodayOverviewDto> {
     return invoke("get_today_overview", { request });
+  },
+
+  reconcileStudyQueue(
+    request: ReconcileStudyQueueRequest,
+  ): Promise<StudyQueueEntryDto[]> {
+    return invoke("reconcile_study_queue", { request });
   },
 
   getLibrary(request: LibraryRequest): Promise<LibraryOverviewDto> {

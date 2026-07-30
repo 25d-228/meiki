@@ -77,7 +77,14 @@ test("offline first-release journey creates, studies, undoes, restarts, exports,
   await expect(page.getByText("You are offline")).toBeVisible();
   await page.getByRole("button", { name: "Study", exact: true }).click();
   await expect(page.getByLabel("Your answer")).toBeFocused();
-  await expect(page.getByText("0 reviews saved")).toBeVisible();
+  await expect(page.getByText("2 cards remaining")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        JSON.parse(localStorage.getItem("meiki-e2e-state") ?? "{}")
+          .completedReviews,
+    ),
+  ).toBe(0);
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Export full collection" }).click();

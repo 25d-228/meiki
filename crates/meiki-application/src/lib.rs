@@ -60,6 +60,8 @@ pub enum ApplicationError {
     CollectionDirectory(#[source] std::io::Error),
     #[error("the card changed; reload it before continuing")]
     StaleCard,
+    #[error("the card is not due yet")]
+    CardNotDue,
     #[error("stored timestamp is invalid: {0}")]
     InvalidTimestamp(i64),
     #[error("stored numeric value is too large for the desktop contract: {0}")]
@@ -314,6 +316,25 @@ pub struct GradeReviewResultDto {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct StudyQueueEntryDto {
+    pub card_id: String,
+    pub card_content_version: u32,
+    pub schedule_version: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct ReconcileStudyQueueRequest {
+    pub deck_id: String,
+    #[ts(type = "number")]
+    pub now_ms: i64,
+    #[ts(type = "number")]
+    pub day_start_ms: i64,
+    #[ts(type = "number")]
+    pub day_end_ms: i64,
+    pub entries: Vec<StudyQueueEntryDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct SuspendCardRequest {
     pub card_id: String,
     pub card_content_version: u32,
@@ -546,6 +567,14 @@ impl ApplicationService {
         &self,
         request: &GradeReviewRequest,
     ) -> Result<GradeReviewResultDto, ApplicationError> {
+        self.grade_review_at(request, Utc::now().timestamp_millis())
+    }
+
+    fn grade_review_at(
+        &self,
+        request: &GradeReviewRequest,
+        reviewed_at_ms: i64,
+    ) -> Result<GradeReviewResultDto, ApplicationError> {
         let mut storage = self.open_storage()?;
         let stored = storage.load_study_card(&request.card_id)?;
         if let Some(existing) = storage
@@ -559,8 +588,6 @@ impl ApplicationService {
                 || existing.raw_response != request.raw_response
                 || existing.chosen_grade != Grade::from(request.chosen_grade)
                 || existing.response_duration_ms != u64::from(request.response_duration_ms)
-                || stored.schedule.last_review_event_id.as_deref()
-                    != Some(request.review_event_id.as_str())
             {
                 return Err(ApplicationError::StaleCard);
             }
@@ -571,6 +598,11 @@ impl ApplicationService {
             u64::from(request.card_content_version),
             u64::from(request.schedule_version),
         )?;
+        if stored.schedule.lifecycle == meiki_domain::CardLifecycle::Introduced
+            && stored.schedule.due_at_ms > reviewed_at_ms
+        {
+            return Err(ApplicationError::CardNotDue);
+        }
 
         let comparison = compare_answer_with_options(
             &stored.cloze.answer,
@@ -579,7 +611,6 @@ impl ApplicationService {
             &answer_options(&storage, &stored)?,
         );
         let suggested = suggested_grade(comparison.result);
-        let reviewed_at_ms = Utc::now().timestamp_millis();
         let (engine, profile, _) = scheduler_for_card(&storage, &stored)?;
         let decision = engine.review(
             &stored.schedule,
@@ -1471,6 +1502,8 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     RevealDto::export_all_to(output)?;
     GradeReviewRequest::export_all_to(output)?;
     GradeReviewResultDto::export_all_to(output)?;
+    StudyQueueEntryDto::export_all_to(output)?;
+    ReconcileStudyQueueRequest::export_all_to(output)?;
     SuspendCardRequest::export_all_to(output)?;
     UndoReviewRequest::export_all_to(output)?;
     UndoReviewResultDto::export_all_to(output)?;
@@ -1529,9 +1562,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ApplicationService, CheckAnswerRequest, ComparisonResultDto, GradeDto, GradeReviewRequest,
-        OptimizerStatusDto, StudyIntensityDto, SuspendCardRequest, UndoReviewRequest,
-        UpdateSchedulerSettingsRequest,
+        ApplicationError, ApplicationService, CheckAnswerRequest, ComparisonResultDto, GradeDto,
+        GradeReviewRequest, OptimizerStatusDto, StudyIntensityDto, SuspendCardRequest,
+        UndoReviewRequest, UpdateSchedulerSettingsRequest,
     };
 
     #[test]
@@ -1602,6 +1635,15 @@ mod tests {
         assert_eq!(undo.schedule_version, 2);
         assert_eq!(undo.completed_reviews, 0);
         assert_eq!(service.undo_review(&undo_request).unwrap(), undo);
+        assert_eq!(service.grade_review(&grade_request).unwrap(), result);
+        assert_eq!(
+            Storage::open(&path)
+                .unwrap()
+                .review_events(SAMPLE_CARD_ID)
+                .unwrap()
+                .len(),
+            2
+        );
 
         let suspended = service
             .suspend_card(&SuspendCardRequest {
@@ -1617,6 +1659,65 @@ mod tests {
         assert_eq!(restored.schedule_version, 2);
         assert_eq!(restored.completed_reviews, 0);
         assert!(restored.suspended);
+    }
+
+    #[test]
+    fn introduced_cards_require_the_exact_due_timestamp() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("collection.db");
+        let mut storage = Storage::open(&path).unwrap();
+        storage.seed_walking_skeleton(100_000).unwrap();
+        drop(storage);
+        let service = ApplicationService::new(&path);
+        let first = GradeReviewRequest {
+            review_event_id: "introduce-card".into(),
+            card_id: SAMPLE_CARD_ID.into(),
+            card_content_version: 0,
+            schedule_version: 0,
+            raw_response: "行きます".into(),
+            chosen_grade: GradeDto::Good,
+            response_duration_ms: 1_000,
+        };
+        service.grade_review_at(&first, 100_000).unwrap();
+        let scheduled = Storage::open(&path)
+            .unwrap()
+            .load_schedule(SAMPLE_CARD_ID)
+            .unwrap();
+        assert!(scheduled.due_at_ms > 100_000);
+
+        let second = GradeReviewRequest {
+            review_event_id: "review-at-due".into(),
+            card_id: SAMPLE_CARD_ID.into(),
+            card_content_version: 0,
+            schedule_version: 1,
+            raw_response: "行きます".into(),
+            chosen_grade: GradeDto::Good,
+            response_duration_ms: 1_000,
+        };
+        assert!(matches!(
+            service.grade_review_at(&second, scheduled.due_at_ms - 1),
+            Err(ApplicationError::CardNotDue)
+        ));
+        assert_eq!(
+            Storage::open(&path)
+                .unwrap()
+                .review_events(SAMPLE_CARD_ID)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        service
+            .grade_review_at(&second, scheduled.due_at_ms)
+            .unwrap();
+        assert_eq!(
+            Storage::open(&path)
+                .unwrap()
+                .review_events(SAMPLE_CARD_ID)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

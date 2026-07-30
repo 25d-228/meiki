@@ -843,7 +843,7 @@ mod tests {
 
     #[test]
     fn new_filter_excludes_a_mature_card_after_lapse() {
-        let (_directory, service, _source_id) = service_with_search_fixture();
+        let (directory, service, _source_id) = service_with_search_fixture();
         let initial = service.get_study_card(SAMPLE_CARD_ID).unwrap();
         service
             .grade_review(&GradeReviewRequest {
@@ -857,16 +857,24 @@ mod tests {
             })
             .unwrap();
         let mature = service.get_study_card(SAMPLE_CARD_ID).unwrap();
+        let due_at_ms = Storage::open(&directory.path().join("collection.db"))
+            .unwrap()
+            .load_schedule(SAMPLE_CARD_ID)
+            .unwrap()
+            .due_at_ms;
         service
-            .grade_review(&GradeReviewRequest {
-                review_event_id: "library-lapse".into(),
-                card_id: SAMPLE_CARD_ID.into(),
-                card_content_version: mature.card_content_version,
-                schedule_version: mature.schedule_version,
-                raw_response: String::new(),
-                chosen_grade: GradeDto::Again,
-                response_duration_ms: 1_000,
-            })
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "library-lapse".into(),
+                    card_id: SAMPLE_CARD_ID.into(),
+                    card_content_version: mature.card_content_version,
+                    schedule_version: mature.schedule_version,
+                    raw_response: String::new(),
+                    chosen_grade: GradeDto::Again,
+                    response_duration_ms: 1_000,
+                },
+                due_at_ms,
+            )
             .unwrap();
 
         let mut new_only = request("");

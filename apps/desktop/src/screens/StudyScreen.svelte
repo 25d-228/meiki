@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { SvelteDate } from "svelte/reactivity";
 
   import { api } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
@@ -11,6 +12,7 @@
   import TextInput from "../lib/components/TextInput.svelte";
   import type { GradeDto } from "../lib/generated/GradeDto";
   import type { GradePreviewDto } from "../lib/generated/GradePreviewDto";
+  import type { GradeReviewRequest } from "../lib/generated/GradeReviewRequest";
   import type { GradeReviewResultDto } from "../lib/generated/GradeReviewResultDto";
   import type { RevealDto } from "../lib/generated/RevealDto";
   import type { StudyCardDto } from "../lib/generated/StudyCardDto";
@@ -20,6 +22,8 @@
     clearStudyQueue,
     readStudyQueue,
     remainingStudyCards,
+    remainingQueueEntries,
+    startStudyQueue,
     writeStudyQueue,
     type StudyQueueSession,
   } from "../lib/study-queue";
@@ -38,7 +42,8 @@
     | "next"
     | "error";
   type StableView = "prompt" | "revealed" | "next";
-  type RetryAction = "load" | "check" | "grade" | "suspend" | "undo";
+  type RetryAction =
+    "recover" | "load" | "check" | "grade" | "suspend" | "undo";
   type CompletionKind = "graded" | "suspended" | null;
   type StoredStudySession = {
     card: StudyCardDto;
@@ -52,6 +57,8 @@
 
   const sessionKey = "meiki-active-study-session";
   const autoplayKey = "meiki-autoplay-prompt-audio";
+  const selectedDeckKey = "meiki-today-deck";
+  const defaultDeckId = "default-deck";
   const grades: GradeDto[] = ["again", "hard", "good", "easy"];
 
   let { onEdit, onQueueComplete }: Props = $props();
@@ -59,7 +66,6 @@
   let recoveryView = $state<StableView>("prompt");
   let retryAction = $state<RetryAction>("load");
   let pendingGrade = $state<GradeDto | null>(null);
-  let pendingReviewEventId = $state<string | null>(null);
   let pendingUndoEventId = $state<string | null>(null);
   let completionKind = $state<CompletionKind>(null);
   let card = $state<StudyCardDto | null>(null);
@@ -81,15 +87,84 @@
 
   onMount(() => {
     autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
-    queueSession = readStudyQueue();
-    if (queueSession && queueSession.position >= queueSession.cardIds.length) {
-      clearStudyQueue();
-      queueSession = null;
-      onQueueComplete?.();
+    void prepareStudy();
+  });
+
+  async function prepareStudy(): Promise<void> {
+    view = "loading";
+    errorMessage = "";
+    try {
+      queueSession = readStudyQueue();
+      if (!queueSession) {
+        await api.initializeCollection();
+        const deckId = localStorage.getItem(selectedDeckKey) ?? defaultDeckId;
+        const overview = await currentOverview(deckId);
+        if (!overview.queue.length) {
+          finishQueue();
+          return;
+        }
+        queueSession = startStudyQueue(overview);
+      }
+      await recoverPendingReview();
+      if (!queueSession) return;
+      await reconcileQueue();
+      if (!queueSession) return;
+      await restoreOrLoad();
+    } catch (error) {
+      fail(error, "prompt", "recover");
+    }
+  }
+
+  async function currentOverview(deckId: string) {
+    const settings = await api.getSchedulerSettings(deckId);
+    const now = new Date();
+    const { start, end } = localDayBounds(now, settings.day_boundary_minutes);
+    return api.getTodayOverview({
+      deck_id: deckId,
+      now_ms: now.getTime(),
+      day_start_ms: start.getTime(),
+      day_end_ms: end.getTime(),
+    });
+  }
+
+  async function recoverPendingReview(): Promise<void> {
+    if (!queueSession?.pendingReview) return;
+    const pending = queueSession.pendingReview;
+    const recovered = await api.gradeReview(pending);
+    if (recovered.review_event_id !== pending.review_event_id) {
+      throw new Error("The recovered review command did not match.");
+    }
+    completePendingReview(recovered.review_event_id);
+  }
+
+  async function reconcileQueue(): Promise<void> {
+    if (!queueSession) return;
+    if (queueSession.position >= queueSession.entries.length) {
+      finishQueue();
       return;
     }
-    void restoreOrLoad();
-  });
+    const settings = await api.getSchedulerSettings(queueSession.deckId);
+    const now = new Date();
+    const { start, end } = localDayBounds(now, settings.day_boundary_minutes);
+    const entries = await api.reconcileStudyQueue({
+      deck_id: queueSession.deckId,
+      now_ms: now.getTime(),
+      day_start_ms: start.getTime(),
+      day_end_ms: end.getTime(),
+      entries: remainingQueueEntries(queueSession),
+    });
+    if (!entries.length) {
+      finishQueue();
+      return;
+    }
+    queueSession = {
+      ...queueSession,
+      entries,
+      position: 0,
+      pendingReview: null,
+    };
+    writeStudyQueue(queueSession);
+  }
 
   async function restoreOrLoad(): Promise<void> {
     const stored = sessionStorage.getItem(sessionKey);
@@ -102,13 +177,21 @@
     view = "loading";
     try {
       const session = JSON.parse(stored) as StoredStudySession;
+      const queued = queueSession?.entries[queueSession.position];
+      if (!queued || queued.card_id !== session.card.card_id) {
+        await loadCard();
+        return;
+      }
       const current = await api.getStudyCard(session.card.card_id);
       card = current;
       response = session.response;
       responseDurationMs = session.responseDurationMs;
       if (
         current.card_content_version === session.card.card_content_version &&
-        current.schedule_version === session.card.schedule_version
+        current.schedule_version === session.card.schedule_version &&
+        current.card_content_version === queued.card_content_version &&
+        current.schedule_version === queued.schedule_version &&
+        !current.suspended
       ) {
         reveal = session.reveal;
         result = session.result;
@@ -118,10 +201,10 @@
         reveal = null;
         result = null;
         completionKind = null;
-        restoreQueuedCard(session.card.card_id);
-        view = "prompt";
-        sessionNotice =
-          "The note changed in the editor. Your response is preserved; check it again.";
+        await reconcileQueue();
+        if (!queueSession) return;
+        await loadCard();
+        return;
       }
       promptStartedAt = performance.now();
       if (view === "prompt") await focusAnswer();
@@ -141,14 +224,36 @@
     completionKind = null;
     response = "";
     responseDurationMs = 0;
-    pendingReviewEventId = null;
     pendingUndoEventId = null;
     hintVisible = false;
     try {
-      const queuedCardId = queueSession?.cardIds[queueSession.position];
-      card = queuedCardId
-        ? await api.getStudyCard(queuedCardId)
-        : await api.initializeCollection();
+      await reconcileQueue();
+      if (!queueSession) return;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const queued = queueSession?.entries[queueSession.position];
+        if (!queued) {
+          finishQueue();
+          return;
+        }
+        try {
+          const current = await api.getStudyCard(queued.card_id);
+          if (
+            current.card_content_version === queued.card_content_version &&
+            current.schedule_version === queued.schedule_version &&
+            !current.suspended
+          ) {
+            card = current;
+            break;
+          }
+        } catch (error) {
+          if (attempt > 0) throw error;
+        }
+        await reconcileQueue();
+        if (!queueSession) return;
+      }
+      if (!card) {
+        throw new Error("The study queue changed while it was loading.");
+      }
       view = "prompt";
       promptStartedAt = performance.now();
       await focusAnswer();
@@ -184,21 +289,23 @@
   }
 
   async function grade(chosenGrade: GradeDto): Promise<void> {
-    if (!card || !reveal || view !== "revealed") return;
+    if (!card || !reveal || !queueSession || view !== "revealed") return;
     pendingGrade = chosenGrade;
-    pendingReviewEventId ??= crypto.randomUUID();
+    const pendingReview: GradeReviewRequest = queueSession.pendingReview ?? {
+      review_event_id: crypto.randomUUID(),
+      card_id: card.card_id,
+      card_content_version: card.card_content_version,
+      schedule_version: card.schedule_version,
+      raw_response: reveal.raw_response,
+      chosen_grade: chosenGrade,
+      response_duration_ms: responseDurationMs,
+    };
+    queueSession = { ...queueSession, pendingReview };
+    writeStudyQueue(queueSession);
     view = "committing";
     errorMessage = "";
     try {
-      result = await api.gradeReview({
-        review_event_id: pendingReviewEventId,
-        card_id: card.card_id,
-        card_content_version: card.card_content_version,
-        schedule_version: card.schedule_version,
-        raw_response: reveal.raw_response,
-        chosen_grade: chosenGrade,
-        response_duration_ms: responseDurationMs,
-      });
+      result = await api.gradeReview(pendingReview);
       card = {
         ...card,
         schedule_version: result.schedule_version,
@@ -206,7 +313,7 @@
         completed_reviews: card.completed_reviews + 1,
       };
       completionKind = "graded";
-      advanceStudyQueue();
+      completePendingReview(result.review_event_id);
       view = "next";
     } catch (error) {
       fail(error, "revealed", "grade");
@@ -257,7 +364,6 @@
       result = null;
       response = "";
       responseDurationMs = 0;
-      pendingReviewEventId = null;
       pendingUndoEventId = null;
       completionKind = null;
       restoreStudyQueueCard();
@@ -272,13 +378,40 @@
 
   function advanceStudyQueue(): void {
     if (!queueSession || !card) return;
-    if (queueSession.cardIds[queueSession.position] !== card.card_id) return;
+    if (queueSession.entries[queueSession.position]?.card_id !== card.card_id)
+      return;
     queueSession = {
       ...queueSession,
       position: Math.min(
-        queueSession.cardIds.length,
+        queueSession.entries.length,
         queueSession.position + 1,
       ),
+      pendingReview: null,
+    };
+    writeStudyQueue(queueSession);
+  }
+
+  function completePendingReview(reviewEventId: string): void {
+    if (!queueSession?.pendingReview) {
+      throw new Error("The pending review command is missing.");
+    }
+    const pending = queueSession.pendingReview;
+    const current = queueSession.entries[queueSession.position];
+    if (
+      pending.review_event_id !== reviewEventId ||
+      current?.card_id !== pending.card_id ||
+      current.card_content_version !== pending.card_content_version ||
+      current.schedule_version !== pending.schedule_version
+    ) {
+      throw new Error("The pending review command does not match the queue.");
+    }
+    queueSession = {
+      ...queueSession,
+      position: Math.min(
+        queueSession.entries.length,
+        queueSession.position + 1,
+      ),
+      pendingReview: null,
     };
     writeStudyQueue(queueSession);
   }
@@ -286,16 +419,19 @@
   function restoreStudyQueueCard(): void {
     if (!queueSession || !card || queueSession.position === 0) return;
     const previous = queueSession.position - 1;
-    if (queueSession.cardIds[previous] !== card.card_id) return;
-    queueSession = { ...queueSession, position: previous };
-    writeStudyQueue(queueSession);
-  }
-
-  function restoreQueuedCard(cardId: string): void {
-    if (!queueSession) return;
-    const cardIndex = queueSession.cardIds.indexOf(cardId);
-    if (cardIndex < 0 || queueSession.position !== cardIndex + 1) return;
-    queueSession = { ...queueSession, position: cardIndex };
+    if (queueSession.entries[previous]?.card_id !== card.card_id) return;
+    const entries = [...queueSession.entries];
+    entries[previous] = {
+      card_id: card.card_id,
+      card_content_version: card.card_content_version,
+      schedule_version: card.schedule_version,
+    };
+    queueSession = {
+      ...queueSession,
+      entries,
+      position: previous,
+      pendingReview: null,
+    };
     writeStudyQueue(queueSession);
   }
 
@@ -304,10 +440,8 @@
       onQueueComplete?.();
       return;
     }
-    if (queueSession && queueSession.position >= queueSession.cardIds.length) {
-      clearStudyQueue();
-      queueSession = null;
-      onQueueComplete?.();
+    if (queueSession && queueSession.position >= queueSession.entries.length) {
+      finishQueue();
       return;
     }
     await loadCard();
@@ -351,7 +485,9 @@
   async function retry(): Promise<void> {
     const action = retryAction;
     view = recoveryView;
-    if (action === "load") {
+    if (action === "recover") {
+      await prepareStudy();
+    } else if (action === "load") {
       await loadCard();
     } else if (action === "check") {
       await checkAnswer();
@@ -362,6 +498,27 @@
     } else if (action === "undo") {
       await undoReview();
     }
+  }
+
+  function finishQueue(): void {
+    clearStudyQueue();
+    sessionStorage.removeItem(sessionKey);
+    queueSession = null;
+    onQueueComplete?.();
+  }
+
+  function localDayBounds(
+    now: Date,
+    boundaryMinutes: number,
+  ): { start: SvelteDate; end: SvelteDate } {
+    const start = new SvelteDate(now);
+    start.setHours(0, boundaryMinutes, 0, 0);
+    if (now.getTime() < start.getTime()) {
+      start.setDate(start.getDate() - 1);
+    }
+    const end = new SvelteDate(start);
+    end.setDate(end.getDate() + 1);
+    return { start, end };
   }
 
   function handleAnswerKeydown(event: KeyboardEvent): void {
@@ -502,7 +659,7 @@
       <div class="state-card">
         <Feedback
           tone="error"
-          title={retryAction === "load"
+          title={retryAction === "load" || retryAction === "recover"
             ? messages.collectionError
             : "The study action was not completed"}
         >
@@ -784,7 +941,7 @@
                 >
                 <Button variant="primary" shortcut="↵" onclick={continueStudy}
                   >{queueSession &&
-                  queueSession.position >= queueSession.cardIds.length
+                  queueSession.position >= queueSession.entries.length
                     ? "Finish session"
                     : queueSession
                       ? "Continue"
@@ -805,7 +962,7 @@
                 >
                 <Button variant="primary" shortcut="↵" onclick={continueStudy}
                   >{queueSession &&
-                  queueSession.position >= queueSession.cardIds.length
+                  queueSession.position >= queueSession.entries.length
                     ? "Finish session"
                     : "Continue"}</Button
                 >

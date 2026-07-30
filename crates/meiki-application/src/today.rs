@@ -3,7 +3,10 @@ use meiki_storage::{DeckRepository, SchedulerProfileRepository};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{ApplicationError, ApplicationService, timestamp_string};
+use crate::{
+    ApplicationError, ApplicationService, ReconcileStudyQueueRequest, StudyQueueEntryDto,
+    desktop_u32, timestamp_string,
+};
 
 const DEFAULT_RESPONSE_SECONDS: u64 = 20;
 const MIN_RESPONSE_MILLISECONDS: u64 = 1_000;
@@ -32,6 +35,8 @@ pub struct TodayDeckDto {
 pub struct TodayQueueCardDto {
     pub card_id: String,
     pub deck_id: String,
+    pub card_content_version: u32,
+    pub schedule_version: u32,
     pub due_at: String,
     pub ideal_due_at: String,
     pub overdue: bool,
@@ -59,6 +64,8 @@ pub struct TodayOverviewDto {
 struct QueueCandidate {
     card_id: String,
     deck_id: String,
+    card_content_version: u64,
+    schedule_version: u64,
     due_at_ms: i64,
     ideal_due_at_ms: i64,
     lifecycle: CardLifecycle,
@@ -104,6 +111,8 @@ impl ApplicationService {
             .map(|stored| QueueCandidate {
                 card_id: stored.card.id,
                 deck_id: stored.source_item.deck_id,
+                card_content_version: stored.card.content_version,
+                schedule_version: stored.schedule.version,
                 due_at_ms: stored.schedule.due_at_ms,
                 ideal_due_at_ms: stored.schedule.ideal_due_at_ms,
                 lifecycle: stored.schedule.lifecycle,
@@ -157,6 +166,11 @@ impl ApplicationService {
                     Ok(TodayQueueCardDto {
                         card_id: card.card_id,
                         deck_id: card.deck_id,
+                        card_content_version: desktop_u32(
+                            card.card_content_version,
+                            "card content version",
+                        )?,
+                        schedule_version: desktop_u32(card.schedule_version, "schedule version")?,
                         due_at: timestamp_string(card.due_at_ms)?,
                         ideal_due_at: timestamp_string(card.ideal_due_at_ms)?,
                         overdue: card.lifecycle == CardLifecycle::Introduced
@@ -166,6 +180,50 @@ impl ApplicationService {
                 })
                 .collect::<Result<Vec<_>, ApplicationError>>()?,
         })
+    }
+
+    /// Reconciles a cached study queue with the current persisted schedule.
+    ///
+    /// Cached order is preserved, while duplicate, missing, changed, inactive,
+    /// no-longer-selected, and not-yet-due entries are removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the current Today plan cannot be loaded.
+    pub fn reconcile_study_queue(
+        &self,
+        request: &ReconcileStudyQueueRequest,
+    ) -> Result<Vec<StudyQueueEntryDto>, ApplicationError> {
+        let overview = self.get_today_overview(&TodayRequest {
+            deck_id: request.deck_id.clone(),
+            now_ms: request.now_ms,
+            day_start_ms: request.day_start_ms,
+            day_end_ms: request.day_end_ms,
+        })?;
+        let eligible = overview
+            .queue
+            .into_iter()
+            .map(|card| (card.card_id.clone(), card))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut seen = std::collections::HashSet::new();
+
+        Ok(request
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                if !seen.insert(entry.card_id.as_str()) {
+                    return None;
+                }
+                let current = eligible.get(&entry.card_id)?;
+                (entry.card_content_version == current.card_content_version
+                    && entry.schedule_version == current.schedule_version)
+                    .then(|| StudyQueueEntryDto {
+                        card_id: current.card_id.clone(),
+                        card_content_version: current.card_content_version,
+                        schedule_version: current.schedule_version,
+                    })
+            })
+            .collect())
     }
 }
 
@@ -204,7 +262,7 @@ fn plan_today(
     let mut due = candidates
         .iter()
         .filter(|card| {
-            card.lifecycle == CardLifecycle::Introduced && card.due_at_ms < request.day_end_ms
+            card.lifecycle == CardLifecycle::Introduced && card.due_at_ms <= request.now_ms
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -305,17 +363,30 @@ fn desktop_count(value: usize, field: &'static str) -> Result<u32, ApplicationEr
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
-    use meiki_domain::{CardLifecycle, ComparisonResult, Grade, ReviewEventKind, ScheduleState};
-    use meiki_storage::{SAMPLE_CARD_ID, Storage};
-    use tempfile::tempdir;
+    use std::path::PathBuf;
 
-    use super::{ApplicationError, ApplicationService, QueueCandidate, TodayRequest, plan_today};
+    use chrono::Utc;
+    use meiki_domain::{
+        CardLifecycle, ComparisonResult, Deck, Direction, Grade, MatchingPolicy, ReviewEventKind,
+        ScheduleState, StudySettingsOverride,
+    };
+    use meiki_storage::{
+        CardRepository, DeckRepository, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID, Storage,
+    };
+    use tempfile::{TempDir, tempdir};
+
+    use super::{
+        ApplicationError, ApplicationService, QueueCandidate, ReconcileStudyQueueRequest,
+        StudyQueueEntryDto, TodayRequest, plan_today,
+    };
+    use crate::{GradeDto, GradeReviewRequest};
 
     fn candidate(id: &str, due_at_ms: i64, lifecycle: CardLifecycle) -> QueueCandidate {
         QueueCandidate {
             card_id: id.to_owned(),
             deck_id: "deck".to_owned(),
+            card_content_version: 0,
+            schedule_version: 0,
             due_at_ms,
             ideal_due_at_ms: due_at_ms,
             lifecycle,
@@ -381,6 +452,57 @@ mod tests {
             day_start_ms: 0,
             day_end_ms: 86_400_000,
         }
+    }
+
+    fn request_at(now_ms: i64) -> TodayRequest {
+        const DAY_MILLISECONDS: i64 = 86_400_000;
+        let day_start_ms = now_ms.div_euclid(DAY_MILLISECONDS) * DAY_MILLISECONDS;
+        TodayRequest {
+            deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+            now_ms,
+            day_start_ms,
+            day_end_ms: day_start_ms + DAY_MILLISECONDS,
+        }
+    }
+
+    fn seeded_session() -> (
+        TempDir,
+        PathBuf,
+        ApplicationService,
+        TodayRequest,
+        StudyQueueEntryDto,
+    ) {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("collection.db");
+        let mut storage = Storage::open(&path).unwrap();
+        storage.seed_walking_skeleton(100_000).unwrap();
+        drop(storage);
+        let service = ApplicationService::new(&path);
+        let mut request = request();
+        request.deck_id = meiki_storage::DEFAULT_DECK_ID.into();
+        let queued = service.get_today_overview(&request).unwrap().queue[0].clone();
+        let entry = StudyQueueEntryDto {
+            card_id: queued.card_id,
+            card_content_version: queued.card_content_version,
+            schedule_version: queued.schedule_version,
+        };
+        (directory, path, service, request, entry)
+    }
+
+    fn reconcile(
+        service: &ApplicationService,
+        request: &TodayRequest,
+        entries: Vec<StudyQueueEntryDto>,
+    ) -> Vec<StudyQueueEntryDto> {
+        service
+            .reconcile_study_queue(&ReconcileStudyQueueRequest {
+                deck_id: request.deck_id.clone(),
+                now_ms: request.now_ms,
+                day_start_ms: request.day_start_ms,
+                day_end_ms: request.day_end_ms,
+                entries,
+            })
+            .unwrap()
     }
 
     #[test]
@@ -461,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_includes_reviews_due_later_in_the_local_day() {
+    fn queue_excludes_reviews_due_later_in_the_local_day() {
         let plan = plan_today(
             &[candidate(
                 "later-today",
@@ -473,8 +595,128 @@ mod tests {
             20,
             None,
         );
+        assert_eq!(plan.due_reviews, 0);
+        assert!(plan.cards.is_empty());
+        assert_eq!(plan.next_due_at_ms, Some(1_000_000));
+    }
+
+    #[test]
+    fn queue_includes_reviews_at_the_exact_current_timestamp() {
+        let plan = plan_today(
+            &[
+                candidate("due-now", 100_000, CardLifecycle::Introduced),
+                candidate("future", 100_001, CardLifecycle::Introduced),
+            ],
+            &[],
+            &request(),
+            20,
+            None,
+        );
         assert_eq!(plan.due_reviews, 1);
-        assert_eq!(plan.cards[0].card_id, "later-today");
+        assert_eq!(plan.cards[0].card_id, "due-now");
+        assert_eq!(plan.next_due_at_ms, Some(100_001));
+    }
+
+    #[test]
+    fn resumed_queue_reconciles_against_current_persisted_state() {
+        let (_directory, _path, service, request, entry) = seeded_session();
+        let unknown = StudyQueueEntryDto {
+            card_id: "missing-card".into(),
+            card_content_version: 0,
+            schedule_version: 0,
+        };
+        assert_eq!(
+            reconcile(
+                &service,
+                &request,
+                vec![entry.clone(), entry.clone(), unknown]
+            ),
+            vec![entry]
+        );
+
+        let (_directory, path, service, request, entry) = seeded_session();
+        let mut storage = Storage::open(&path).unwrap();
+        let mut card = storage.get_card(SAMPLE_CARD_ID).unwrap();
+        card.content_version += 1;
+        card.updated_at_ms += 1;
+        storage.update_card(&card).unwrap();
+        drop(storage);
+        assert!(reconcile(&service, &request, vec![entry]).is_empty());
+
+        let (_directory, path, service, request, entry) = seeded_session();
+        let mut storage = Storage::open(&path).unwrap();
+        storage
+            .set_library_notes_suspended(&[SAMPLE_SOURCE_ID.into()], true, 100_001)
+            .unwrap();
+        drop(storage);
+        assert!(reconcile(&service, &request, vec![entry]).is_empty());
+
+        let (_directory, path, service, request, entry) = seeded_session();
+        let mut storage = Storage::open(&path).unwrap();
+        storage
+            .set_library_notes_deleted(&[SAMPLE_SOURCE_ID.into()], Some(100_001), 100_001)
+            .unwrap();
+        drop(storage);
+        assert!(reconcile(&service, &request, vec![entry]).is_empty());
+
+        let (_directory, path, service, request, entry) = seeded_session();
+        let mut storage = Storage::open(&path).unwrap();
+        storage
+            .create_deck(&Deck {
+                id: "moved-deck".into(),
+                name: "Moved".into(),
+                description: None,
+                language_tag: None,
+                direction: Direction::Auto,
+                matching_policy: MatchingPolicy::Strict,
+                settings: StudySettingsOverride::default(),
+                created_at_ms: 100_001,
+                updated_at_ms: 100_001,
+            })
+            .unwrap();
+        storage
+            .move_library_notes(&[SAMPLE_SOURCE_ID.into()], "moved-deck", 100_001)
+            .unwrap();
+        drop(storage);
+        assert!(reconcile(&service, &request, vec![entry]).is_empty());
+
+        let (_directory, path, service, request, entry) = seeded_session();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "committed-before-response".into(),
+                    card_id: entry.card_id.clone(),
+                    card_content_version: entry.card_content_version,
+                    schedule_version: entry.schedule_version,
+                    raw_response: "行きます".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 1_000,
+                },
+                request.now_ms,
+            )
+            .unwrap();
+        assert!(reconcile(&service, &request, vec![entry]).is_empty());
+        let scheduled = Storage::open(&path)
+            .unwrap()
+            .load_schedule(SAMPLE_CARD_ID)
+            .unwrap();
+        let due_request = request_at(scheduled.due_at_ms);
+        let due_card = service.get_today_overview(&due_request).unwrap().queue[0].clone();
+        let current_entry = StudyQueueEntryDto {
+            card_id: due_card.card_id,
+            card_content_version: due_card.card_content_version,
+            schedule_version: due_card.schedule_version,
+        };
+        let rewound_request = request_at(scheduled.due_at_ms - 1);
+        assert!(reconcile(&service, &rewound_request, vec![current_entry]).is_empty());
+        assert_eq!(
+            Storage::open(&path)
+                .unwrap()
+                .review_events(SAMPLE_CARD_ID)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -567,7 +809,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let started = std::time::Instant::now();
-        let plan = plan_today(&candidates, &[], &request(), 20, Some(60));
+        let mut request = request();
+        request.now_ms = request.day_end_ms - 1;
+        let plan = plan_today(&candidates, &[], &request, 20, Some(60));
         let elapsed = started.elapsed();
 
         assert_eq!(plan.due_reviews, 750_000);

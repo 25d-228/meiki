@@ -6,10 +6,10 @@ use meiki_application::{
     GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, LibraryBulkRequest,
     LibraryBulkResultDto, LibraryExportRequest, LibraryExportResultDto, LibraryOverviewDto,
     LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
-    RebuildSchedulerResultDto, RemoveClozeRequest, ReorderSegmentsRequest, RevealDto,
-    SchedulerDiagnosticsExportDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto,
-    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
-    UpdateSchedulerSettingsRequest,
+    RebuildSchedulerResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest,
+    ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto, SchedulerSettingsDto,
+    StudyCardDto, StudyMediaDto, StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto,
+    TodayRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -50,6 +50,18 @@ fn get_today_overview(
     state
         .service()
         .get_today_overview(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn reconcile_study_queue(
+    request: ReconcileStudyQueueRequest,
+    state: State<'_, AppContext>,
+) -> Result<Vec<StudyQueueEntryDto>, String> {
+    state
+        .service()
+        .reconcile_study_queue(&request)
         .map_err(|error| error.to_string())
 }
 
@@ -380,6 +392,7 @@ pub fn run() {
             initialize_collection,
             get_study_card,
             get_today_overview,
+            reconcile_study_queue,
             get_library,
             apply_library_bulk_action,
             export_library_selection,
