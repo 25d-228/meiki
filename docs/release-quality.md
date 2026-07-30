@@ -65,15 +65,15 @@ Windows.
 Run `./scripts/performance` on a release build. The budgets are deliberately
 generous cross-platform regression limits, not product claims.
 
-| Scenario                      |                              Fixture |    Budget |
-| ----------------------------- | -----------------------------------: | --------: |
-| Today queue construction      |                      1,000,000 cards |      15 s |
-| Cross-script substring search |                      250,000 records |       5 s |
-| Scheduler optimization        | 50,000 reviews across multiple years |      10 s |
-| Media integrity scan          |                       10,000 objects |      30 s |
-| Desktop shell startup         |     Primary action ready in Chromium |       2 s |
-| New database migration        |                  current v0.1 schema |       2 s |
-| Warm startup database open    |                             50 opens | 5 s total |
+| Scenario                      |                          Fixture |    Budget |
+| ----------------------------- | -------------------------------: | --------: |
+| Today queue construction      |                  1,000,000 cards |      15 s |
+| Cross-script substring search |                  250,000 records |       5 s |
+| Time-budget policy aggregate  |                  1,000,000 cards |       1 s |
+| Media integrity scan          |                   10,000 objects |      30 s |
+| Desktop shell startup         | Primary action ready in Chromium |       2 s |
+| New database migration        |              current v0.1 schema |       2 s |
+| Warm startup database open    |                         50 opens | 5 s total |
 
 The CI performance job runs serially and prints measurements in its log. A
 budget failure blocks merge. Investigate host noise once, but do not increase a
@@ -84,16 +84,15 @@ budget without documenting the regression and its user impact here.
 `npm run release:check` enforces one version across Cargo, npm, and Tauri,
 contiguous database migrations, the published archive version, bundle
 metadata, icons, and release documentation. v0.1 publishes database schema 7
-and `.meiki` archive version 1. Current development uses database schema 8 and
-archive version 2 while retaining the released schema-7 migration fixture and
-version-1 archive import coverage. Future releases must keep migration fixtures
-from every released database schema and import fixtures from every published
-archive version.
+and `.meiki` archive version 1. Current development uses database schema 10 and
+archive version 3 while retaining the released schema-7 migration fixture and
+version-1 and version-2 archive import coverage. Future releases must keep
+migration fixtures from every released database schema and import fixtures
+from every published archive version.
 
-Database migrations, imports, restores, and explicit schedule rebuilds create
-recovery points before durable state changes. A corrupt database backup or
-media companion must fail validation before replacement. Never repair
-immutable review events in place.
+Database migrations, imports, and restores create recovery points before
+durable state changes. A corrupt database backup or media companion must fail
+validation before replacement. Never repair immutable review events in place.
 
 ## Release procedure
 

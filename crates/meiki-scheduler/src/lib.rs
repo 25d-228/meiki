@@ -1,18 +1,21 @@
-//! Pure, versioned scheduling engines and local parameter optimization.
+//! Pure, versioned scheduling engines and time-budget policy control.
 //!
 //! This crate owns no UI, SQL, clock, filesystem, or mutable global state.
 
+mod controller;
 mod fsrs7;
-mod optimizer;
 
 use std::fmt;
 
 use meiki_domain::{Grade, ScheduleState};
 
-pub use fsrs7::{DEFAULT_PARAMETERS, Fsrs7Engine, PARAMETER_COUNT, SchedulerConfig};
-pub use optimizer::{
-    MINIMUM_OPTIMIZATION_REVIEWS, OptimizationDiagnostics, OptimizationResult, ReviewHistoryEntry,
+pub use controller::{
+    AutomaticPolicyDecision, AutomaticPolicyInput, BASELINE_TARGET_RETENTION_BASIS_POINTS,
+    CONTROLLER_VERSION, DeckIntakeAllocation, DeckIntakeCandidate, FORECAST_DAYS,
+    MAXIMUM_TARGET_RETENTION_BASIS_POINTS, MINIMUM_TARGET_RETENTION_BASIS_POINTS,
+    allocate_unseen_round_robin, automatic_policy,
 };
+pub use fsrs7::{DEFAULT_PARAMETERS, Fsrs7Engine, PARAMETER_COUNT, SchedulerConfig};
 
 pub const ENGINE_VERSION: &str = "fsrs-7";
 pub const DEFAULT_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -116,8 +119,4 @@ pub trait SchedulerEngine {
     /// Returns an error when the version, field count, encoding, or memory
     /// invariants are invalid.
     fn deserialize_state(&self, serialized: &str) -> Result<ScheduleState, SchedulerError>;
-
-    /// Runs deterministic local optimization with chronological holdout
-    /// validation.
-    fn optimize(&self, history: &[ReviewHistoryEntry]) -> OptimizationResult;
 }

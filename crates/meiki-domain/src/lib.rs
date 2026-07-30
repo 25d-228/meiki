@@ -222,6 +222,14 @@ pub enum StudyIntensity {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum SchedulingMode {
+    #[default]
+    Automatic,
+    Expert,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OptimizerStatus {
     #[default]
     NeverRun,
@@ -233,18 +241,71 @@ pub enum OptimizerStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CollectionSchedulingSettings {
+    pub daily_time_budget_minutes: u32,
+    pub updated_at_ms: i64,
+}
+
+impl Default for CollectionSchedulingSettings {
+    fn default() -> Self {
+        Self {
+            daily_time_budget_minutes: 30,
+            updated_at_ms: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SchedulerProfile {
     pub deck_id: String,
     pub engine_version: String,
     pub active_parameter_set_id: String,
     pub previous_parameter_set_id: Option<String>,
+    #[serde(default)]
+    pub scheduling_mode: SchedulingMode,
+    #[serde(default, alias = "daily_time_budget_minutes")]
+    pub deck_daily_time_budget_minutes: Option<u32>,
+    #[serde(default = "default_controller_version")]
+    pub controller_version: String,
+    #[serde(default = "default_controller_target")]
+    pub controller_target_retention_basis_points: u16,
+    #[serde(default = "default_controller_new_cards")]
+    pub controller_new_cards_per_day: u32,
+    #[serde(default)]
+    pub controller_last_evaluated_day_start_ms: Option<i64>,
+    #[serde(default)]
+    pub controller_review_count: u64,
+    #[serde(default)]
+    pub controller_unseen_count: u64,
+    #[serde(default)]
+    pub controller_forecast_review_seconds_per_day: u64,
+    #[serde(default)]
+    pub controller_backlog_exceeds_budget: bool,
+    #[serde(default)]
+    pub controller_explanation: String,
+    // Kept for version-2 archive compatibility. Product policy no longer uses
+    // intensity presets or the fixed-candidate optimizer.
+    #[serde(default)]
     pub intensity: StudyIntensity,
-    pub daily_time_budget_minutes: Option<u32>,
     pub day_boundary_minutes: u16,
+    #[serde(default)]
     pub optimizer_status: OptimizerStatus,
     /// Deterministic diagnostic JSON that never includes learning content.
+    #[serde(default)]
     pub optimizer_diagnostics: Option<String>,
     pub updated_at_ms: i64,
+}
+
+fn default_controller_version() -> String {
+    "time-budget-v1".into()
+}
+
+const fn default_controller_target() -> u16 {
+    9_000
+}
+
+const fn default_controller_new_cards() -> u32 {
+    20
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

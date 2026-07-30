@@ -210,7 +210,15 @@
         </dl>
       </SurfaceCard>
 
-      {#if overview?.overdue_reviews}
+      {#if overview?.backlog_exceeds_budget}
+        <Feedback tone="warning" title="Due work exceeds today’s budget">
+          <p>
+            Every due review remains available. New intake is paused before
+            automatic retention changes.
+          </p>
+          <p class="policy-explanation">{overview.policy_explanation}</p>
+        </Feedback>
+      {:else if overview?.overdue_reviews}
         <Feedback
           tone="warning"
           title={`${overview.overdue_reviews} overdue ${
@@ -243,6 +251,10 @@
 <style>
   .today-screen {
     width: min(100%, 68rem);
+  }
+
+  .policy-explanation {
+    white-space: pre-line;
   }
 
   .today-actions {

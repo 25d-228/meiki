@@ -35,6 +35,23 @@ early. Today shows the next scheduled time when no review is currently due.
 Enter does nothing while an IME composition is active. A near match provides
 feedback but is not silently accepted.
 
+## Set a daily study budget
+
+Open **Settings** and choose the collection's daily study time. A deck inherits
+that budget unless you enable its deck override. Automatic scheduling previews
+the derived retention target and new-card intake before you save.
+
+Meiki always shows every review whose exact due time has arrived. If due work
+already exceeds the budget, Settings and Today report the backlog and
+automatic mode pauses new cards before reducing retention. The day boundary
+defines the local study day and remains correct across short and long
+daylight-saving transitions.
+
+Choose **Expert** only when you want manual target retention, new-card maximum,
+maximum interval, or versioned memory-parameter import/export. Memory
+parameters and the time-budget policy are separate; policy changes affect only
+future scheduling decisions and never rewrite history.
+
 ## Back up and restore
 
 Open **Settings → Archives and recovery** to export a complete collection or a

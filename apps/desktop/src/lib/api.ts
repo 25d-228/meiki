@@ -15,7 +15,10 @@ import type { MakeClozeRequest } from "./generated/MakeClozeRequest";
 import type { RemoveClozeRequest } from "./generated/RemoveClozeRequest";
 import type { ReorderSegmentsRequest } from "./generated/ReorderSegmentsRequest";
 import type { SchedulerSettingsDto } from "./generated/SchedulerSettingsDto";
+import type { SchedulerPolicyPreviewDto } from "./generated/SchedulerPolicyPreviewDto";
 import type { SchedulerDiagnosticsExportDto } from "./generated/SchedulerDiagnosticsExportDto";
+import type { SchedulerParametersExportDto } from "./generated/SchedulerParametersExportDto";
+import type { ImportSchedulerParametersRequest } from "./generated/ImportSchedulerParametersRequest";
 import type { UpdateSchedulerSettingsRequest } from "./generated/UpdateSchedulerSettingsRequest";
 import type { DirectionDto } from "./generated/DirectionDto";
 import type { ImportMediaRequest } from "./generated/ImportMediaRequest";
@@ -153,12 +156,37 @@ export const api = {
     return invoke("update_scheduler_settings", { request });
   },
 
-  optimizeScheduler(deckId: string): Promise<SchedulerSettingsDto> {
-    return invoke("optimize_scheduler", { deckId });
+  previewSchedulerPolicy(
+    request: UpdateSchedulerSettingsRequest,
+  ): Promise<SchedulerPolicyPreviewDto> {
+    return invoke("preview_scheduler_policy", { request });
   },
 
   rollbackScheduler(deckId: string): Promise<SchedulerSettingsDto> {
     return invoke("rollback_scheduler", { deckId });
+  },
+
+  async pickSchedulerParametersFile(): Promise<string | null> {
+    const testPick = window.__MEIKI_TEST_PICK_SCHEDULER_PARAMETERS__;
+    if (testPick) return testPick();
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Meiki scheduler parameters", extensions: ["json"] }],
+    });
+    return typeof selected === "string" ? selected : null;
+  },
+
+  importSchedulerParameters(
+    request: ImportSchedulerParametersRequest,
+  ): Promise<SchedulerSettingsDto> {
+    return invoke("import_scheduler_parameters", { request });
+  },
+
+  exportSchedulerParameters(
+    deckId: string,
+  ): Promise<SchedulerParametersExportDto> {
+    return invoke("export_scheduler_parameters", { deckId });
   },
 
   exportSchedulerDiagnostics(

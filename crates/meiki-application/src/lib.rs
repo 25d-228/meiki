@@ -7,19 +7,19 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use meiki_domain::{
-    Annotation, ComparisonResult, Direction, Grade, LocalizedText, MatchingPolicy, MediaKind,
-    MediaReference, MediaRole, OptimizerStatus, ReviewEvent, ReviewEventKind,
-    SchedulerParameterSet, SchedulerProfile, SegmentContent, SourceItem, StudyIntensity,
+    Annotation, CollectionSchedulingSettings, ComparisonResult, Direction, Grade, LocalizedText,
+    MatchingPolicy, MediaKind, MediaReference, MediaRole, ReviewEvent, ReviewEventKind,
+    SchedulerParameterSet, SchedulerProfile, SchedulingMode, SegmentContent, SourceItem,
     StudySettings, StudySettingsOverride,
 };
 use meiki_media::{DetectedMediaKind, MediaError, MediaStore};
 use meiki_scheduler::{
-    ENGINE_VERSION, Fsrs7Engine, MINIMUM_OPTIMIZATION_REVIEWS, OptimizationDiagnostics,
-    OptimizationResult, ReviewHistoryEntry, SchedulerConfig, SchedulerEngine, SchedulerError,
+    AutomaticPolicyDecision, AutomaticPolicyInput, CONTROLLER_VERSION, ENGINE_VERSION,
+    FORECAST_DAYS, Fsrs7Engine, SchedulerConfig, SchedulerEngine, SchedulerError, automatic_policy,
 };
 use meiki_storage::{
     CardRepository, DeckRepository, SchedulerParameterSetRepository, SchedulerProfileRepository,
-    Storage, StorageError, StoredStudyCard,
+    SchedulingWorkload, Storage, StorageError, StoredStudyCard,
 };
 use meiki_text::{
     CaseSensitivity, ComparisonOptions, DiacriticSensitivity, DiffKind, DiffSegment,
@@ -89,6 +89,12 @@ pub enum ApplicationError {
     DiagnosticExport(#[source] std::io::Error),
     #[error("failed to serialize scheduler diagnostics: {0}")]
     DiagnosticSerialization(#[source] serde_json::Error),
+    #[error("invalid scheduler parameter file: {0}")]
+    InvalidSchedulerParameterFile(String),
+    #[error("scheduler parameter file operation failed: {0}")]
+    SchedulerParameterIo(#[source] std::io::Error),
+    #[error("scheduler parameter file JSON is invalid: {0}")]
+    SchedulerParameterJson(#[source] serde_json::Error),
     #[error("media operation failed: {0}")]
     Media(#[from] MediaError),
     #[error("portable archive operation failed: {0}")]
@@ -140,22 +146,17 @@ pub enum GradeDto {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
-pub enum StudyIntensityDto {
-    Light,
-    Balanced,
-    Intensive,
+pub enum SchedulingModeDto {
+    Automatic,
+    Expert,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
-pub enum OptimizerStatusDto {
-    NeverRun,
-    InsufficientData,
-    Adopted,
-    Rejected,
-    Failed,
-    RolledBack,
+pub enum BudgetSourceDto {
+    CollectionBudget,
+    DeckOverride,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -365,28 +366,74 @@ pub struct UndoReviewResultDto {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct SchedulerSettingsDto {
     pub deck_id: String,
-    pub intensity: StudyIntensityDto,
+    pub scheduling_mode: SchedulingModeDto,
+    pub collection_daily_time_budget_minutes: u32,
+    pub deck_daily_time_budget_minutes: Option<u32>,
+    pub effective_daily_time_budget_minutes: u32,
+    pub budget_source: BudgetSourceDto,
     pub target_retention_basis_points: u16,
     pub new_cards_per_day: u32,
-    pub daily_time_budget_minutes: Option<u32>,
     pub maximum_interval_days: u32,
     pub day_boundary_minutes: u16,
+    pub controller_version: String,
+    pub controller_last_evaluated_at: Option<String>,
+    pub controller_forecast_review_seconds_per_day: u32,
+    pub controller_backlog_exceeds_budget: bool,
+    pub controller_explanation: String,
     pub engine_version: String,
     pub active_parameter_set_id: String,
     pub previous_parameter_set_id: Option<String>,
-    pub optimizer_status: OptimizerStatusDto,
-    pub optimizer_diagnostics: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct UpdateSchedulerSettingsRequest {
     pub deck_id: String,
-    pub intensity: StudyIntensityDto,
+    pub scheduling_mode: SchedulingModeDto,
+    pub collection_daily_time_budget_minutes: u32,
+    pub deck_daily_time_budget_minutes: Option<u32>,
     pub target_retention_basis_points: u16,
     pub new_cards_per_day: u32,
-    pub daily_time_budget_minutes: Option<u32>,
     pub maximum_interval_days: u32,
     pub day_boundary_minutes: u16,
+    #[ts(type = "number")]
+    pub now_ms: i64,
+    #[ts(type = "number")]
+    pub day_start_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct SchedulerPolicyPreviewDto {
+    pub effective_daily_time_budget_minutes: u32,
+    pub budget_source: BudgetSourceDto,
+    pub target_retention_basis_points: u16,
+    pub new_cards_per_day: u32,
+    pub backlog_exceeds_budget: bool,
+    pub explanation: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct ImportSchedulerParametersRequest {
+    pub deck_id: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct SchedulerParametersExportDto {
+    pub path: String,
+}
+
+const SCHEDULER_PARAMETER_FORMAT: &str = "meiki-scheduler-parameters";
+const SCHEDULER_PARAMETER_VERSION: u32 = 1;
+const MINIMUM_CONTROLLER_RESPONSE_SAMPLES: u64 = 8;
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SchedulerParameterFile {
+    format: String,
+    version: u32,
+    parameter_set_id: String,
+    engine_version: String,
+    parameters: Vec<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -633,11 +680,6 @@ impl ApplicationService {
             next_schedule,
         };
         let committed = storage.commit_review(&event)?;
-        let _ = maybe_run_automatic_optimizer(
-            &mut storage,
-            &stored.source_item.deck_id,
-            reviewed_at_ms,
-        );
 
         Ok(GradeReviewResultDto {
             review_event_id: request.review_event_id.clone(),
@@ -740,6 +782,60 @@ impl ApplicationService {
         scheduler_settings_dto(&storage, deck_id)
     }
 
+    /// Previews the effective policy for proposed controls without persisting
+    /// any settings or schedule state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationError`] when the proposed controls or workload
+    /// state are invalid.
+    pub fn preview_scheduler_policy(
+        &self,
+        request: &UpdateSchedulerSettingsRequest,
+    ) -> Result<SchedulerPolicyPreviewDto, ApplicationError> {
+        validate_scheduler_settings_request(request)?;
+        let storage = self.open_storage()?;
+        let profile = storage.get_scheduler_profile(&request.deck_id)?;
+        let (budget, source) = requested_budget(request);
+        let (target, new_cards, backlog, explanation) = if request.scheduling_mode
+            == SchedulingModeDto::Automatic
+        {
+            let (decision, _) = policy_decision(
+                &storage,
+                &request.deck_id,
+                budget,
+                profile.controller_target_retention_basis_points,
+                profile.controller_target_retention_basis_points,
+                request.now_ms,
+            )?;
+            (
+                decision.target_retention_basis_points,
+                decision.new_cards_per_day,
+                decision.backlog_exceeds_budget,
+                decision.explanation,
+            )
+        } else {
+            (
+                request.target_retention_basis_points,
+                request.new_cards_per_day,
+                false,
+                format!(
+                    "{budget} min/day\nTarget retention: {}%\nNew cards today: {}\nReason: Expert mode keeps these manual policy values.",
+                    format_retention(request.target_retention_basis_points),
+                    request.new_cards_per_day
+                ),
+            )
+        };
+        Ok(SchedulerPolicyPreviewDto {
+            effective_daily_time_budget_minutes: budget,
+            budget_source: source,
+            target_retention_basis_points: target,
+            new_cards_per_day: new_cards,
+            backlog_exceeds_budget: backlog,
+            explanation,
+        })
+    }
+
     /// Updates scheduling controls without rescheduling existing cards.
     ///
     /// # Errors
@@ -750,52 +846,131 @@ impl ApplicationService {
         &self,
         request: &UpdateSchedulerSettingsRequest,
     ) -> Result<SchedulerSettingsDto, ApplicationError> {
+        validate_scheduler_settings_request(request)?;
         let mut storage = self.open_storage()?;
-        Fsrs7Engine::new(SchedulerConfig {
-            target_retention_basis_points: request.target_retention_basis_points,
-            maximum_interval_days: request.maximum_interval_days,
+        storage.update_collection_scheduling_settings(&CollectionSchedulingSettings {
+            daily_time_budget_minutes: request.collection_daily_time_budget_minutes,
+            updated_at_ms: request.now_ms,
         })?;
-        if request.day_boundary_minutes >= 1_440 || request.daily_time_budget_minutes == Some(0) {
-            return Err(ApplicationError::Scheduler(SchedulerError::InvalidState(
-                "settings controls are outside safe bounds",
-            )));
-        }
-
-        let now_ms = Utc::now().timestamp_millis();
         let mut deck = storage.get_deck(&request.deck_id)?;
         deck.settings = StudySettingsOverride {
             target_retention_basis_points: Some(request.target_retention_basis_points),
             new_cards_per_day: Some(request.new_cards_per_day),
             maximum_interval_days: Some(request.maximum_interval_days),
         };
-        deck.updated_at_ms = now_ms;
+        deck.updated_at_ms = request.now_ms;
         storage.update_deck(&deck)?;
 
         let mut profile = storage.get_scheduler_profile(&request.deck_id)?;
-        profile.intensity = request.intensity.into();
-        profile.daily_time_budget_minutes = request.daily_time_budget_minutes;
+        profile.scheduling_mode = request.scheduling_mode.into();
+        profile.deck_daily_time_budget_minutes = request.deck_daily_time_budget_minutes;
         profile.day_boundary_minutes = request.day_boundary_minutes;
-        profile.updated_at_ms = now_ms;
+        profile.updated_at_ms = request.now_ms;
+        if profile.scheduling_mode == SchedulingMode::Expert {
+            profile.controller_explanation =
+                "Expert mode keeps manual scheduling-policy values.".into();
+        }
         storage.update_scheduler_profile(&profile)?;
+        if profile.scheduling_mode == SchedulingMode::Automatic {
+            evaluate_and_store_policy(
+                &mut storage,
+                &request.deck_id,
+                request.now_ms,
+                request.day_start_ms,
+                true,
+            )?;
+        }
         scheduler_settings_dto(&storage, &request.deck_id)
     }
 
-    /// Runs deterministic local personalization and prospectively adopts only
-    /// a holdout-validated improvement.
-    ///
-    /// Failed or rejected optimization leaves the known-good parameters active.
+    /// Imports and activates a strictly validated, versioned parameter file.
     ///
     /// # Errors
     ///
-    /// Returns [`ApplicationError`] when required scheduler state cannot be
-    /// loaded or persisted.
-    pub fn optimize_scheduler(
+    /// Returns [`ApplicationError`] unless the deck is in Expert mode or the
+    /// file fails format, engine, or parameter validation.
+    pub fn import_scheduler_parameters(
         &self,
-        deck_id: &str,
+        request: &ImportSchedulerParametersRequest,
     ) -> Result<SchedulerSettingsDto, ApplicationError> {
         let mut storage = self.open_storage()?;
-        run_optimizer(&mut storage, deck_id, Utc::now().timestamp_millis())?;
-        scheduler_settings_dto(&storage, deck_id)
+        let profile = storage.get_scheduler_profile(&request.deck_id)?;
+        if profile.scheduling_mode != SchedulingMode::Expert {
+            return Err(ApplicationError::InvalidSchedulerParameterFile(
+                "parameter import is available only in Expert mode".into(),
+            ));
+        }
+        let bytes = fs::read(&request.path).map_err(ApplicationError::SchedulerParameterIo)?;
+        if bytes.len() > 64 * 1024 {
+            return Err(ApplicationError::InvalidSchedulerParameterFile(
+                "parameter file exceeds 64 KiB".into(),
+            ));
+        }
+        let imported: SchedulerParameterFile =
+            serde_json::from_slice(&bytes).map_err(ApplicationError::SchedulerParameterJson)?;
+        validate_scheduler_parameter_file(&imported)?;
+        let deck = storage.get_deck(&request.deck_id)?;
+        let settings = expert_study_settings(&deck);
+        Fsrs7Engine::from_parameters(
+            SchedulerConfig {
+                target_retention_basis_points: settings.target_retention_basis_points,
+                maximum_interval_days: settings.maximum_interval_days,
+            },
+            &imported.parameters,
+        )?;
+        let now_ms = Utc::now().timestamp_millis();
+        let parameter_set = SchedulerParameterSet {
+            id: format!(
+                "fsrs7-import-{}-{}-{}",
+                sanitize_parameter_id(&imported.parameter_set_id),
+                now_ms,
+                Uuid::new_v4()
+            ),
+            engine_version: imported.engine_version,
+            parameters: imported.parameters,
+            created_at_ms: now_ms,
+        };
+        storage.adopt_scheduler_parameter_set(
+            &request.deck_id,
+            &parameter_set,
+            "{\"result\":\"imported_versioned_parameter_set\"}",
+            now_ms,
+        )?;
+        scheduler_settings_dto(&storage, &request.deck_id)
+    }
+
+    /// Exports the active memory-model parameter set as versioned JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationError`] when the deck is not in Expert mode or the
+    /// file cannot be serialized and written.
+    pub fn export_scheduler_parameters(
+        &self,
+        deck_id: &str,
+    ) -> Result<SchedulerParametersExportDto, ApplicationError> {
+        let storage = self.open_storage()?;
+        let profile = storage.get_scheduler_profile(deck_id)?;
+        if profile.scheduling_mode != SchedulingMode::Expert {
+            return Err(ApplicationError::InvalidSchedulerParameterFile(
+                "parameter export is available only in Expert mode".into(),
+            ));
+        }
+        let parameters = storage.get_scheduler_parameter_set(&profile.active_parameter_set_id)?;
+        let file = SchedulerParameterFile {
+            format: SCHEDULER_PARAMETER_FORMAT.into(),
+            version: SCHEDULER_PARAMETER_VERSION,
+            parameter_set_id: parameters.id,
+            engine_version: parameters.engine_version,
+            parameters: parameters.parameters,
+        };
+        let path = scheduler_parameters_path(&self.collection_path);
+        let json =
+            serde_json::to_vec_pretty(&file).map_err(ApplicationError::SchedulerParameterJson)?;
+        fs::write(&path, json).map_err(ApplicationError::SchedulerParameterIo)?;
+        Ok(SchedulerParametersExportDto {
+            path: path.to_string_lossy().into_owned(),
+        })
     }
 
     /// Restores the previous known-good parameter set prospectively.
@@ -809,6 +984,11 @@ impl ApplicationService {
         deck_id: &str,
     ) -> Result<SchedulerSettingsDto, ApplicationError> {
         let mut storage = self.open_storage()?;
+        if storage.get_scheduler_profile(deck_id)?.scheduling_mode != SchedulingMode::Expert {
+            return Err(ApplicationError::InvalidSchedulerParameterFile(
+                "parameter rollback is available only in Expert mode".into(),
+            ));
+        }
         storage.rollback_scheduler_parameter_set(deck_id, Utc::now().timestamp_millis())?;
         scheduler_settings_dto(&storage, deck_id)
     }
@@ -831,13 +1011,13 @@ impl ApplicationService {
             "engine_version": settings.engine_version,
             "active_parameter_set_id": settings.active_parameter_set_id,
             "has_rollback_parameter_set": settings.previous_parameter_set_id.is_some(),
-            "optimizer_status": optimizer_status_name(settings.optimizer_status),
+            "scheduling_mode": scheduling_mode_name(settings.scheduling_mode),
+            "controller_version": settings.controller_version,
+            "controller_target_retention_basis_points": settings.target_retention_basis_points,
+            "controller_new_cards_per_day": settings.new_cards_per_day,
+            "controller_backlog_exceeds_budget": settings.controller_backlog_exceeds_budget,
             "projection_migration_repaired_cards":
                 storage.projection_migration_repaired_cards()?,
-            "optimizer_diagnostics": settings
-                .optimizer_diagnostics
-                .as_deref()
-                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
         });
         let report = serde_json::to_string_pretty(&report)
             .map_err(ApplicationError::DiagnosticSerialization)?;
@@ -949,12 +1129,8 @@ fn scheduler_for_card(
     card: &StoredStudyCard,
 ) -> Result<(Fsrs7Engine, SchedulerProfile, StudySettings), ApplicationError> {
     let deck = storage.get_deck(&card.source_item.deck_id)?;
-    let settings = StudySettings::resolve(
-        &StudySettings::default(),
-        &deck.settings,
-        &card.card.settings,
-    );
     let profile = storage.get_scheduler_profile(&deck.id)?;
+    let settings = effective_study_settings(&deck, &profile);
     let engine = scheduler_from_profile(storage, &profile, &settings)?;
     Ok((engine, profile, settings))
 }
@@ -990,124 +1166,232 @@ fn scheduler_settings_dto(
 ) -> Result<SchedulerSettingsDto, ApplicationError> {
     let deck = storage.get_deck(deck_id)?;
     let profile = storage.get_scheduler_profile(deck_id)?;
-    let resolved = StudySettings::resolve(
-        &StudySettings::default(),
-        &deck.settings,
-        &StudySettingsOverride::default(),
-    );
+    let collection = storage.collection_scheduling_settings()?;
+    let resolved = effective_study_settings(&deck, &profile);
+    let (effective_budget, budget_source) = effective_budget(&collection, &profile);
+    let controller_explanation = if profile.controller_explanation.trim().is_empty() {
+        format!(
+            "{effective_budget} min/day\nTarget retention: {}%\nNew cards today: {}\nReason: the automatic policy will refine this plan from local schedule state.",
+            format_retention(resolved.target_retention_basis_points),
+            resolved.new_cards_per_day
+        )
+    } else {
+        profile.controller_explanation.clone()
+    };
     Ok(SchedulerSettingsDto {
         deck_id: deck_id.to_owned(),
-        intensity: profile.intensity.into(),
+        scheduling_mode: profile.scheduling_mode.into(),
+        collection_daily_time_budget_minutes: collection.daily_time_budget_minutes,
+        deck_daily_time_budget_minutes: profile.deck_daily_time_budget_minutes,
+        effective_daily_time_budget_minutes: effective_budget,
+        budget_source,
         target_retention_basis_points: resolved.target_retention_basis_points,
         new_cards_per_day: resolved.new_cards_per_day,
-        daily_time_budget_minutes: profile.daily_time_budget_minutes,
         maximum_interval_days: resolved.maximum_interval_days,
         day_boundary_minutes: profile.day_boundary_minutes,
+        controller_version: profile.controller_version,
+        controller_last_evaluated_at: profile
+            .controller_last_evaluated_day_start_ms
+            .map(timestamp_string)
+            .transpose()?,
+        controller_forecast_review_seconds_per_day: desktop_u32(
+            profile.controller_forecast_review_seconds_per_day,
+            "controller forecast seconds",
+        )?,
+        controller_backlog_exceeds_budget: profile.controller_backlog_exceeds_budget,
+        controller_explanation,
         engine_version: profile.engine_version,
         active_parameter_set_id: profile.active_parameter_set_id,
         previous_parameter_set_id: profile.previous_parameter_set_id,
-        optimizer_status: profile.optimizer_status.into(),
-        optimizer_diagnostics: profile.optimizer_diagnostics,
     })
 }
 
-fn run_optimizer(
-    storage: &mut Storage,
-    deck_id: &str,
-    now_ms: i64,
-) -> Result<(), ApplicationError> {
-    let deck = storage.get_deck(deck_id)?;
-    let settings = StudySettings::resolve(
+pub(crate) fn effective_study_settings(
+    deck: &meiki_domain::Deck,
+    profile: &SchedulerProfile,
+) -> StudySettings {
+    match profile.scheduling_mode {
+        SchedulingMode::Automatic => StudySettings {
+            target_retention_basis_points: profile.controller_target_retention_basis_points,
+            new_cards_per_day: profile.controller_new_cards_per_day,
+            maximum_interval_days: StudySettings::default().maximum_interval_days,
+        },
+        SchedulingMode::Expert => expert_study_settings(deck),
+    }
+}
+
+fn expert_study_settings(deck: &meiki_domain::Deck) -> StudySettings {
+    StudySettings::resolve(
         &StudySettings::default(),
         &deck.settings,
         &StudySettingsOverride::default(),
-    );
-    let mut profile = storage.get_scheduler_profile(deck_id)?;
-    let engine = scheduler_from_profile(storage, &profile, &settings)?;
-    let history = storage
-        .active_review_events_for_deck(deck_id)?
-        .into_iter()
-        .map(|event| ReviewHistoryEntry {
-            card_id: event.card_id,
-            reviewed_at_ms: event.reviewed_at_ms,
-            grade: event.chosen_grade,
-        })
-        .collect::<Vec<_>>();
+    )
+}
 
-    match engine.optimize(&history) {
-        OptimizationResult::InsufficientData { reviews, minimum } => {
-            profile.optimizer_status = OptimizerStatus::InsufficientData;
-            profile.optimizer_diagnostics = Some(
-                serde_json::json!({
-                    "result": "insufficient_data",
-                    "reviews": reviews,
-                    "minimum": minimum
-                })
-                .to_string(),
-            );
-            profile.updated_at_ms = now_ms;
-            storage.update_scheduler_profile(&profile)?;
-        }
-        OptimizationResult::Adopted {
-            parameters,
-            diagnostics,
-        } => {
-            let diagnostics = optimization_diagnostics_json("adopted", &diagnostics);
-            let parameter_set = SchedulerParameterSet {
-                id: format!("fsrs7-personal-{}-{}", now_ms, Uuid::new_v4()),
-                engine_version: ENGINE_VERSION.to_owned(),
-                parameters: parameters.to_vec(),
-                created_at_ms: now_ms,
-            };
-            storage.adopt_scheduler_parameter_set(deck_id, &parameter_set, &diagnostics, now_ms)?;
-        }
-        OptimizationResult::Rejected { diagnostics } => {
-            profile.optimizer_status = OptimizerStatus::Rejected;
-            profile.optimizer_diagnostics =
-                Some(optimization_diagnostics_json("rejected", &diagnostics));
-            profile.updated_at_ms = now_ms;
-            storage.update_scheduler_profile(&profile)?;
-        }
-        OptimizationResult::Failed { reason } => {
-            profile.optimizer_status = OptimizerStatus::Failed;
-            profile.optimizer_diagnostics = Some(
-                serde_json::json!({
-                    "result": "failed",
-                    "reason": reason
-                })
-                .to_string(),
-            );
-            profile.updated_at_ms = now_ms;
-            storage.update_scheduler_profile(&profile)?;
-        }
+pub(crate) fn effective_budget(
+    collection: &CollectionSchedulingSettings,
+    profile: &SchedulerProfile,
+) -> (u32, BudgetSourceDto) {
+    profile.deck_daily_time_budget_minutes.map_or(
+        (
+            collection.daily_time_budget_minutes,
+            BudgetSourceDto::CollectionBudget,
+        ),
+        |budget| (budget, BudgetSourceDto::DeckOverride),
+    )
+}
+
+fn requested_budget(request: &UpdateSchedulerSettingsRequest) -> (u32, BudgetSourceDto) {
+    request.deck_daily_time_budget_minutes.map_or(
+        (
+            request.collection_daily_time_budget_minutes,
+            BudgetSourceDto::CollectionBudget,
+        ),
+        |budget| (budget, BudgetSourceDto::DeckOverride),
+    )
+}
+
+fn validate_scheduler_settings_request(
+    request: &UpdateSchedulerSettingsRequest,
+) -> Result<(), ApplicationError> {
+    Fsrs7Engine::new(SchedulerConfig {
+        target_retention_basis_points: request.target_retention_basis_points,
+        maximum_interval_days: request.maximum_interval_days,
+    })?;
+    if request.deck_id.trim().is_empty()
+        || !(1..=1_440).contains(&request.collection_daily_time_budget_minutes)
+        || request
+            .deck_daily_time_budget_minutes
+            .is_some_and(|value| !(1..=1_440).contains(&value))
+        || request.new_cards_per_day > 10_000
+        || request.day_boundary_minutes >= 1_440
+        || request.day_start_ms > request.now_ms
+        || request.now_ms.saturating_sub(request.day_start_ms) > 28 * 60 * 60 * 1_000
+    {
+        return Err(ApplicationError::Scheduler(SchedulerError::InvalidState(
+            "settings controls are outside safe bounds",
+        )));
     }
     Ok(())
 }
 
-fn optimization_diagnostics_json(result: &str, diagnostics: &OptimizationDiagnostics) -> String {
-    serde_json::json!({
-        "result": result,
-        "reviews": diagnostics.reviews,
-        "training_reviews": diagnostics.training_reviews,
-        "holdout_reviews": diagnostics.holdout_reviews,
-        "current_holdout_loss": diagnostics.current_holdout_loss,
-        "candidate_holdout_loss": diagnostics.candidate_holdout_loss
-    })
-    .to_string()
+fn policy_decision(
+    storage: &Storage,
+    deck_id: &str,
+    budget_minutes: u32,
+    current_target: u16,
+    previous_target: u16,
+    now_ms: i64,
+) -> Result<(AutomaticPolicyDecision, SchedulingWorkload), ApplicationError> {
+    let horizon_ms = i64::from(FORECAST_DAYS)
+        .checked_mul(86_400_000)
+        .and_then(|duration| now_ms.checked_add(duration))
+        .ok_or(ApplicationError::Scheduler(SchedulerError::InvalidState(
+            "forecast horizon is outside supported time",
+        )))?;
+    let workload = storage.scheduling_workload(deck_id, now_ms, horizon_ms)?;
+    let response_seconds = controller_response_seconds(&workload);
+    Ok((
+        automatic_policy(AutomaticPolicyInput {
+            daily_budget_minutes: budget_minutes,
+            due_cards_now: workload.due_cards_now,
+            forecast_review_occurrences: workload.forecast_review_occurrences,
+            response_seconds,
+            unseen_cards: workload.unseen_cards,
+            current_target_retention_basis_points: current_target,
+            previous_target_retention_basis_points: previous_target,
+        }),
+        workload,
+    ))
 }
 
-fn maybe_run_automatic_optimizer(
+fn controller_response_seconds(workload: &SchedulingWorkload) -> u64 {
+    if workload.response_duration_samples < MINIMUM_CONTROLLER_RESPONSE_SAMPLES {
+        return 20;
+    }
+    workload
+        .median_response_duration_ms
+        .map_or(20, |milliseconds| {
+            milliseconds.div_ceil(1_000).clamp(5, 120)
+        })
+}
+
+pub(crate) fn evaluate_and_store_policy(
     storage: &mut Storage,
     deck_id: &str,
     now_ms: i64,
+    day_start_ms: i64,
+    force: bool,
 ) -> Result<(), ApplicationError> {
-    let review_count = storage.active_review_events_for_deck(deck_id)?.len();
-    if review_count == MINIMUM_OPTIMIZATION_REVIEWS
-        || (review_count > MINIMUM_OPTIMIZATION_REVIEWS && review_count % 32 == 0)
+    let mut profile = storage.get_scheduler_profile(deck_id)?;
+    if profile.scheduling_mode != SchedulingMode::Automatic {
+        return Ok(());
+    }
+    let collection = storage.collection_scheduling_settings()?;
+    let (budget, _) = effective_budget(&collection, &profile);
+    let (decision, workload) = policy_decision(
+        storage,
+        deck_id,
+        budget,
+        profile.controller_target_retention_basis_points,
+        profile.controller_target_retention_basis_points,
+        now_ms,
+    )?;
+    let history_changed =
+        workload.review_count >= profile.controller_review_count.saturating_add(32);
+    let unseen_changed = workload.unseen_cards != profile.controller_unseen_count;
+    if !force
+        && profile.controller_last_evaluated_day_start_ms == Some(day_start_ms)
+        && !history_changed
+        && !unseen_changed
     {
-        run_optimizer(storage, deck_id, now_ms)?;
+        return Ok(());
+    }
+    profile.controller_version = CONTROLLER_VERSION.into();
+    profile.controller_target_retention_basis_points = decision.target_retention_basis_points;
+    profile.controller_new_cards_per_day = decision.new_cards_per_day;
+    profile.controller_last_evaluated_day_start_ms = Some(day_start_ms);
+    profile.controller_review_count = workload.review_count;
+    profile.controller_unseen_count = workload.unseen_cards;
+    profile.controller_forecast_review_seconds_per_day = decision.forecast_review_seconds_per_day;
+    profile.controller_backlog_exceeds_budget = decision.backlog_exceeds_budget;
+    profile.controller_explanation = decision.explanation;
+    profile.updated_at_ms = now_ms;
+    storage.update_scheduler_profile(&profile)?;
+    Ok(())
+}
+
+fn validate_scheduler_parameter_file(
+    file: &SchedulerParameterFile,
+) -> Result<(), ApplicationError> {
+    if file.format != SCHEDULER_PARAMETER_FORMAT
+        || file.version != SCHEDULER_PARAMETER_VERSION
+        || file.parameter_set_id.trim().is_empty()
+        || file.parameter_set_id.len() > 128
+        || !file
+            .parameter_set_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        || file.engine_version != ENGINE_VERSION
+    {
+        return Err(ApplicationError::InvalidSchedulerParameterFile(
+            "format, version, identifier, or engine is unsupported".into(),
+        ));
     }
     Ok(())
+}
+
+fn sanitize_parameter_id(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .take(64)
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "imported".into()
+    } else {
+        sanitized
+    }
 }
 
 fn scheduler_diagnostics_path(collection_path: &Path) -> PathBuf {
@@ -1122,14 +1406,30 @@ fn scheduler_diagnostics_path(collection_path: &Path) -> PathBuf {
     ))
 }
 
-const fn optimizer_status_name(status: OptimizerStatusDto) -> &'static str {
-    match status {
-        OptimizerStatusDto::NeverRun => "never_run",
-        OptimizerStatusDto::InsufficientData => "insufficient_data",
-        OptimizerStatusDto::Adopted => "adopted",
-        OptimizerStatusDto::Rejected => "rejected",
-        OptimizerStatusDto::Failed => "failed",
-        OptimizerStatusDto::RolledBack => "rolled_back",
+fn scheduler_parameters_path(collection_path: &Path) -> PathBuf {
+    let name = collection_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("collection.db");
+    collection_path.with_file_name(format!(
+        "{name}.scheduler-parameters-{}-{}.json",
+        Utc::now().timestamp_millis(),
+        Uuid::new_v4()
+    ))
+}
+
+const fn scheduling_mode_name(mode: SchedulingModeDto) -> &'static str {
+    match mode {
+        SchedulingModeDto::Automatic => "automatic",
+        SchedulingModeDto::Expert => "expert",
+    }
+}
+
+fn format_retention(target: u16) -> String {
+    if target % 100 == 0 {
+        (target / 100).to_string()
+    } else {
+        format!("{}.{:02}", target / 100, target % 100)
     }
 }
 
@@ -1381,35 +1681,20 @@ impl From<GradeDto> for Grade {
     }
 }
 
-impl From<StudyIntensity> for StudyIntensityDto {
-    fn from(value: StudyIntensity) -> Self {
+impl From<SchedulingMode> for SchedulingModeDto {
+    fn from(value: SchedulingMode) -> Self {
         match value {
-            StudyIntensity::Light => Self::Light,
-            StudyIntensity::Balanced => Self::Balanced,
-            StudyIntensity::Intensive => Self::Intensive,
+            SchedulingMode::Automatic => Self::Automatic,
+            SchedulingMode::Expert => Self::Expert,
         }
     }
 }
 
-impl From<StudyIntensityDto> for StudyIntensity {
-    fn from(value: StudyIntensityDto) -> Self {
+impl From<SchedulingModeDto> for SchedulingMode {
+    fn from(value: SchedulingModeDto) -> Self {
         match value {
-            StudyIntensityDto::Light => Self::Light,
-            StudyIntensityDto::Balanced => Self::Balanced,
-            StudyIntensityDto::Intensive => Self::Intensive,
-        }
-    }
-}
-
-impl From<OptimizerStatus> for OptimizerStatusDto {
-    fn from(value: OptimizerStatus) -> Self {
-        match value {
-            OptimizerStatus::NeverRun => Self::NeverRun,
-            OptimizerStatus::InsufficientData => Self::InsufficientData,
-            OptimizerStatus::Adopted => Self::Adopted,
-            OptimizerStatus::Rejected => Self::Rejected,
-            OptimizerStatus::Failed => Self::Failed,
-            OptimizerStatus::RolledBack => Self::RolledBack,
+            SchedulingModeDto::Automatic => Self::Automatic,
+            SchedulingModeDto::Expert => Self::Expert,
         }
     }
 }
@@ -1444,8 +1729,8 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     DirectionDto::export_all_to(output)?;
     ComparisonResultDto::export_all_to(output)?;
     GradeDto::export_all_to(output)?;
-    StudyIntensityDto::export_all_to(output)?;
-    OptimizerStatusDto::export_all_to(output)?;
+    SchedulingModeDto::export_all_to(output)?;
+    BudgetSourceDto::export_all_to(output)?;
     TextDiffKindDto::export_all_to(output)?;
     MediaKindDto::export_all_to(output)?;
     MediaRoleDto::export_all_to(output)?;
@@ -1469,6 +1754,9 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     UndoReviewResultDto::export_all_to(output)?;
     SchedulerSettingsDto::export_all_to(output)?;
     UpdateSchedulerSettingsRequest::export_all_to(output)?;
+    SchedulerPolicyPreviewDto::export_all_to(output)?;
+    ImportSchedulerParametersRequest::export_all_to(output)?;
+    SchedulerParametersExportDto::export_all_to(output)?;
     SchedulerDiagnosticsExportDto::export_all_to(output)?;
     AnnotationDraftDto::export_all_to(output)?;
     AuthoringSegmentKindDto::export_all_to(output)?;
@@ -1514,16 +1802,19 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
 
 #[cfg(test)]
 mod tests {
+    use meiki_domain::{Deck, Direction, MatchingPolicy, StudySettingsOverride};
     use meiki_scheduler::DEFAULT_PARAMETERS;
     use meiki_storage::{
-        DEFAULT_DECK_ID, SAMPLE_CARD_ID, SchedulerParameterSetRepository, Storage,
+        DEFAULT_DECK_ID, DeckRepository, SAMPLE_CARD_ID, SchedulerParameterSetRepository,
+        SchedulingWorkload, Storage,
     };
     use tempfile::tempdir;
 
     use super::{
-        ApplicationError, ApplicationService, CheckAnswerRequest, ComparisonResultDto, GradeDto,
-        GradeReviewRequest, OptimizerStatusDto, StudyIntensityDto, SuspendCardRequest,
-        UndoReviewRequest, UpdateSchedulerSettingsRequest,
+        ApplicationError, ApplicationService, BudgetSourceDto, CheckAnswerRequest,
+        ComparisonResultDto, GradeDto, GradeReviewRequest, ImportSchedulerParametersRequest,
+        SchedulerError, SchedulingModeDto, SuspendCardRequest, UndoReviewRequest,
+        UpdateSchedulerSettingsRequest, controller_response_seconds,
     };
 
     #[test]
@@ -1621,6 +1912,27 @@ mod tests {
     }
 
     #[test]
+    fn controller_response_estimate_uses_fallback_until_history_is_robust() {
+        let sparse = SchedulingWorkload {
+            unseen_cards: 0,
+            due_cards_now: 0,
+            forecast_review_occurrences: 0,
+            response_duration_samples: 7,
+            median_response_duration_ms: Some(1_500),
+            review_count: 7,
+        };
+        assert_eq!(controller_response_seconds(&sparse), 20);
+        assert_eq!(
+            controller_response_seconds(&SchedulingWorkload {
+                response_duration_samples: 8,
+                review_count: 8,
+                ..sparse
+            }),
+            5
+        );
+    }
+
+    #[test]
     fn introduced_cards_require_the_exact_due_timestamp() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("collection.db");
@@ -1681,15 +1993,21 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn settings_and_parameter_changes_leave_existing_projections_unchanged() {
+    fn automatic_and_expert_policy_changes_leave_existing_projections_unchanged() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("collection.db");
         let service = ApplicationService::new(&path);
         let card = service.seed_test_collection(1_000).unwrap();
         let defaults = service.get_scheduler_settings(DEFAULT_DECK_ID).unwrap();
-        assert_eq!(defaults.intensity, StudyIntensityDto::Balanced);
+        assert_eq!(defaults.scheduling_mode, SchedulingModeDto::Automatic);
+        assert_eq!(defaults.collection_daily_time_budget_minutes, 30);
+        assert_eq!(defaults.budget_source, BudgetSourceDto::CollectionBudget);
         assert_eq!(defaults.engine_version, "fsrs-7");
         assert_eq!(defaults.target_retention_basis_points, 9_000);
+        assert!(matches!(
+            service.export_scheduler_parameters(DEFAULT_DECK_ID),
+            Err(ApplicationError::InvalidSchedulerParameterFile(_))
+        ));
         let stored_parameters = Storage::open(&path)
             .unwrap()
             .get_scheduler_parameter_set(&defaults.active_parameter_set_id)
@@ -1702,20 +2020,77 @@ mod tests {
                 .all(|(stored, expected)| stored.to_bits() == expected.to_bits())
         );
 
-        let updated = service
+        let proposed = UpdateSchedulerSettingsRequest {
+            deck_id: DEFAULT_DECK_ID.into(),
+            scheduling_mode: SchedulingModeDto::Automatic,
+            collection_daily_time_budget_minutes: 15,
+            deck_daily_time_budget_minutes: None,
+            target_retention_basis_points: 8_750,
+            new_cards_per_day: 12,
+            maximum_interval_days: 2_000,
+            day_boundary_minutes: 180,
+            now_ms: 2_000,
+            day_start_ms: 0,
+        };
+        let preview = service.preview_scheduler_policy(&proposed).unwrap();
+        assert_eq!(preview.effective_daily_time_budget_minutes, 15);
+        assert_eq!(preview.budget_source, BudgetSourceDto::CollectionBudget);
+        assert_eq!(preview.target_retention_basis_points, 9_000);
+        assert_eq!(preview.new_cards_per_day, 1);
+        assert!(preview.explanation.contains("15 min/day"));
+        let updated = service.update_scheduler_settings(&proposed).unwrap();
+        assert_eq!(updated.scheduling_mode, SchedulingModeDto::Automatic);
+        assert_eq!(updated.target_retention_basis_points, 9_000);
+        assert_eq!(updated.new_cards_per_day, 1);
+        assert_eq!(updated.effective_daily_time_budget_minutes, 15);
+
+        let expert = service
             .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
-                deck_id: DEFAULT_DECK_ID.into(),
-                intensity: StudyIntensityDto::Light,
-                target_retention_basis_points: 8_750,
-                new_cards_per_day: 12,
-                daily_time_budget_minutes: Some(25),
-                maximum_interval_days: 2_000,
-                day_boundary_minutes: 180,
+                scheduling_mode: SchedulingModeDto::Expert,
+                deck_daily_time_budget_minutes: Some(25),
+                now_ms: 3_000,
+                ..proposed.clone()
             })
             .unwrap();
-        assert_eq!(updated.intensity, StudyIntensityDto::Light);
-        assert_eq!(updated.target_retention_basis_points, 8_750);
-        assert_eq!(updated.daily_time_budget_minutes, Some(25));
+        assert_eq!(expert.scheduling_mode, SchedulingModeDto::Expert);
+        assert_eq!(expert.budget_source, BudgetSourceDto::DeckOverride);
+        assert_eq!(expert.effective_daily_time_budget_minutes, 25);
+        assert_eq!(expert.target_retention_basis_points, 8_750);
+        assert_eq!(expert.new_cards_per_day, 12);
+
+        let exported_parameters = service
+            .export_scheduler_parameters(DEFAULT_DECK_ID)
+            .unwrap();
+        let imported = service
+            .import_scheduler_parameters(&ImportSchedulerParametersRequest {
+                deck_id: DEFAULT_DECK_ID.into(),
+                path: exported_parameters.path,
+            })
+            .unwrap();
+        assert_ne!(
+            imported.active_parameter_set_id,
+            defaults.active_parameter_set_id
+        );
+        assert_eq!(
+            imported.previous_parameter_set_id.as_deref(),
+            Some(defaults.active_parameter_set_id.as_str())
+        );
+
+        let invalid_path = directory.path().join("invalid-parameters.json");
+        std::fs::write(
+            &invalid_path,
+            r#"{"format":"meiki-scheduler-parameters","version":1,"parameter_set_id":"bad","engine_version":"fsrs-7","parameters":[1.0]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            service.import_scheduler_parameters(&ImportSchedulerParametersRequest {
+                deck_id: DEFAULT_DECK_ID.into(),
+                path: invalid_path.to_string_lossy().into_owned(),
+            }),
+            Err(ApplicationError::Scheduler(
+                SchedulerError::InvalidParameterCount { .. }
+            ))
+        ));
 
         let reveal = service
             .check_answer(&CheckAnswerRequest {
@@ -1726,15 +2101,18 @@ mod tests {
             })
             .unwrap();
         service
-            .grade_review(&GradeReviewRequest {
-                review_event_id: "optimizer-review".into(),
-                card_id: card.card_id,
-                card_content_version: card.card_content_version,
-                schedule_version: card.schedule_version,
-                raw_response: reveal.raw_response,
-                chosen_grade: GradeDto::Good,
-                response_duration_ms: 900,
-            })
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "policy-review".into(),
+                    card_id: card.card_id,
+                    card_content_version: card.card_content_version,
+                    schedule_version: card.schedule_version,
+                    raw_response: reveal.raw_response,
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 900,
+                },
+                4_000,
+            )
             .unwrap();
 
         let schedule_before = Storage::open(&path)
@@ -1748,31 +2126,24 @@ mod tests {
         service
             .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
                 deck_id: DEFAULT_DECK_ID.into(),
-                intensity: StudyIntensityDto::Intensive,
+                scheduling_mode: SchedulingModeDto::Automatic,
+                collection_daily_time_budget_minutes: 90,
+                deck_daily_time_budget_minutes: None,
                 target_retention_basis_points: 9_300,
                 new_cards_per_day: 40,
-                daily_time_budget_minutes: Some(90),
                 maximum_interval_days: 5_000,
                 day_boundary_minutes: 240,
+                now_ms: 5_000,
+                day_start_ms: 0,
             })
             .unwrap();
-        let optimized = service.optimize_scheduler(DEFAULT_DECK_ID).unwrap();
-        assert_eq!(
-            optimized.optimizer_status,
-            OptimizerStatusDto::InsufficientData
-        );
-        assert!(
-            optimized
-                .optimizer_diagnostics
-                .as_deref()
-                .unwrap()
-                .contains("\"minimum\":64")
-        );
         let diagnostic_export = service
             .export_scheduler_diagnostics(DEFAULT_DECK_ID)
             .unwrap();
         let diagnostic_json = std::fs::read_to_string(&diagnostic_export.path).unwrap();
         assert!(diagnostic_json.contains("\"engine_version\": \"fsrs-7\""));
+        assert!(diagnostic_json.contains("\"scheduling_mode\": \"automatic\""));
+        assert!(diagnostic_json.contains("\"controller_version\": \"time-budget-v1\""));
         assert!(diagnostic_json.contains("\"projection_migration_repaired_cards\": 0"));
         assert!(!diagnostic_json.contains("行きます"));
         assert!(!diagnostic_json.contains(SAMPLE_CARD_ID));
@@ -1791,6 +2162,76 @@ mod tests {
                 .check_collection_schedule_integrity()
                 .unwrap()
                 .is_valid()
+        );
+    }
+
+    #[test]
+    fn deck_budget_inheritance_and_override_sources_are_visible() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&path);
+        service.get_scheduler_settings(DEFAULT_DECK_ID).unwrap();
+        let mut storage = Storage::open(&path).unwrap();
+        storage
+            .create_deck(&Deck {
+                id: "second-deck".into(),
+                name: "Second".into(),
+                description: None,
+                language_tag: None,
+                direction: Direction::Auto,
+                matching_policy: MatchingPolicy::Strict,
+                settings: StudySettingsOverride::default(),
+                created_at_ms: 1_000,
+                updated_at_ms: 1_000,
+            })
+            .unwrap();
+        drop(storage);
+
+        service
+            .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
+                deck_id: DEFAULT_DECK_ID.into(),
+                scheduling_mode: SchedulingModeDto::Automatic,
+                collection_daily_time_budget_minutes: 75,
+                deck_daily_time_budget_minutes: None,
+                target_retention_basis_points: 9_000,
+                new_cards_per_day: 20,
+                maximum_interval_days: 36_500,
+                day_boundary_minutes: 240,
+                now_ms: 2_000,
+                day_start_ms: 0,
+            })
+            .unwrap();
+        let inherited = service.get_scheduler_settings("second-deck").unwrap();
+        assert_eq!(inherited.effective_daily_time_budget_minutes, 75);
+        assert_eq!(inherited.budget_source, BudgetSourceDto::CollectionBudget);
+
+        let overridden = service
+            .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
+                deck_id: "second-deck".into(),
+                deck_daily_time_budget_minutes: Some(25),
+                now_ms: 3_000,
+                ..UpdateSchedulerSettingsRequest {
+                    deck_id: DEFAULT_DECK_ID.into(),
+                    scheduling_mode: SchedulingModeDto::Automatic,
+                    collection_daily_time_budget_minutes: 75,
+                    deck_daily_time_budget_minutes: None,
+                    target_retention_basis_points: 9_000,
+                    new_cards_per_day: 20,
+                    maximum_interval_days: 36_500,
+                    day_boundary_minutes: 240,
+                    now_ms: 2_000,
+                    day_start_ms: 0,
+                }
+            })
+            .unwrap();
+        assert_eq!(overridden.effective_daily_time_budget_minutes, 25);
+        assert_eq!(overridden.budget_source, BudgetSourceDto::DeckOverride);
+        assert_eq!(
+            service
+                .get_scheduler_settings(DEFAULT_DECK_ID)
+                .unwrap()
+                .effective_daily_time_budget_minutes,
+            75
         );
     }
 }

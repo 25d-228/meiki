@@ -280,22 +280,31 @@ export async function installMockApi(page: Page): Promise<void> {
     };
     let schedulerSettings = {
       deck_id: "default-deck",
-      intensity: "balanced",
+      scheduling_mode: "automatic",
+      collection_daily_time_budget_minutes: 30,
+      deck_daily_time_budget_minutes: null as number | null,
+      effective_daily_time_budget_minutes: 30,
+      budget_source: "collection_budget",
       target_retention_basis_points: 9000,
       new_cards_per_day: 20,
-      daily_time_budget_minutes: null as number | null,
       maximum_interval_days: 36500,
       day_boundary_minutes: 240,
+      controller_version: "time-budget-v1",
+      controller_last_evaluated_at: null as string | null,
+      controller_forecast_review_seconds_per_day: 80,
+      controller_backlog_exceeds_budget: false,
+      controller_explanation:
+        "30 min/day\nTarget retention: 90%\nNew cards today: 20\nReason: due work fits the budget.",
       engine_version: "fsrs-7",
       active_parameter_set_id: "fsrs7-default-v1",
       previous_parameter_set_id: null as string | null,
-      optimizer_status: "never_run",
-      optimizer_diagnostics: null as string | null,
     };
     let failedCheck = false;
     let failedGrade = false;
 
     window.__MEIKI_TEST_PICK_FILE__ = async (role) => `/mock/${role}`;
+    window.__MEIKI_TEST_PICK_SCHEDULER_PARAMETERS__ = async () =>
+      "/tmp/meiki-scheduler-parameters.json";
     HTMLMediaElement.prototype.play = async function () {
       localStorage.setItem(
         "meiki-e2e-media-play-count",
@@ -626,7 +635,14 @@ export async function installMockApi(page: Page): Promise<void> {
             estimate_uses_history: false,
             response_time_samples: 0,
             daily_time_budget_minutes:
-              schedulerSettings.daily_time_budget_minutes,
+              schedulerSettings.effective_daily_time_budget_minutes,
+            budget_source: schedulerSettings.budget_source,
+            target_retention_basis_points:
+              schedulerSettings.target_retention_basis_points,
+            policy_explanation: schedulerSettings.controller_explanation,
+            backlog_exceeds_budget:
+              scenario === "backlog" ||
+              schedulerSettings.controller_backlog_exceeds_budget,
             next_due_at:
               new URLSearchParams(location.search).get("collection") === "empty"
                 ? null
@@ -646,7 +662,7 @@ export async function installMockApi(page: Page): Promise<void> {
           scenario === "capped" || scenario === "budget" ? 3 : 1;
         const forcedBudget = scenario === "capped" ? 1 : null;
         const budget =
-          forcedBudget ?? schedulerSettings.daily_time_budget_minutes;
+          forcedBudget ?? schedulerSettings.effective_daily_time_budget_minutes;
         const newByDailyLimit = Math.min(
           availableNew,
           schedulerSettings.new_cards_per_day,
@@ -680,6 +696,13 @@ export async function installMockApi(page: Page): Promise<void> {
           estimate_uses_history: scenario !== "empty",
           response_time_samples: scenario === "empty" ? 0 : 8,
           daily_time_budget_minutes: budget,
+          budget_source: schedulerSettings.budget_source,
+          target_retention_basis_points:
+            schedulerSettings.target_retention_basis_points,
+          policy_explanation: schedulerSettings.controller_explanation,
+          backlog_exceeds_budget:
+            scenario === "backlog" ||
+            schedulerSettings.controller_backlog_exceeds_budget,
           next_due_at: null,
           queue: [...due, ...newCards],
         };
@@ -988,33 +1011,94 @@ export async function installMockApi(page: Page): Promise<void> {
         const request = (
           args as {
             request: {
-              intensity: string;
+              scheduling_mode: "automatic" | "expert";
+              collection_daily_time_budget_minutes: number;
+              deck_daily_time_budget_minutes: number | null;
               target_retention_basis_points: number;
               new_cards_per_day: number;
-              daily_time_budget_minutes: number | null;
               maximum_interval_days: number;
               day_boundary_minutes: number;
             };
           }
         ).request;
-        schedulerSettings = { ...schedulerSettings, ...request };
-        return copy(schedulerSettings);
-      }
-      if (command === "optimize_scheduler") {
+        const effectiveBudget =
+          request.deck_daily_time_budget_minutes ??
+          request.collection_daily_time_budget_minutes;
         schedulerSettings = {
           ...schedulerSettings,
-          optimizer_status: "insufficient_data",
-          optimizer_diagnostics:
-            '{"result":"insufficient_data","reviews":0,"minimum":64}',
+          ...request,
+          effective_daily_time_budget_minutes: effectiveBudget,
+          budget_source:
+            request.deck_daily_time_budget_minutes === null
+              ? "collection_budget"
+              : "deck_override",
+          target_retention_basis_points:
+            request.scheduling_mode === "automatic"
+              ? 9000
+              : request.target_retention_basis_points,
+          new_cards_per_day:
+            request.scheduling_mode === "automatic"
+              ? Math.min(20, Math.floor(effectiveBudget))
+              : request.new_cards_per_day,
+          controller_explanation:
+            request.scheduling_mode === "automatic"
+              ? `${effectiveBudget} min/day\nTarget retention: 90%\nNew cards today: ${Math.min(20, Math.floor(effectiveBudget))}\nReason: due work fits the budget.`
+              : `${effectiveBudget} min/day\nTarget retention: ${request.target_retention_basis_points / 100}%\nNew cards today: ${request.new_cards_per_day}\nReason: Expert mode keeps these manual policy values.`,
         };
         return copy(schedulerSettings);
+      }
+      if (command === "preview_scheduler_policy") {
+        const request = (
+          args as {
+            request: {
+              scheduling_mode: "automatic" | "expert";
+              collection_daily_time_budget_minutes: number;
+              deck_daily_time_budget_minutes: number | null;
+              target_retention_basis_points: number;
+              new_cards_per_day: number;
+            };
+          }
+        ).request;
+        const effectiveBudget =
+          request.deck_daily_time_budget_minutes ??
+          request.collection_daily_time_budget_minutes;
+        const automatic = request.scheduling_mode === "automatic";
+        const target = automatic ? 9000 : request.target_retention_basis_points;
+        const newCards = automatic
+          ? Math.min(20, Math.floor(effectiveBudget))
+          : request.new_cards_per_day;
+        return {
+          effective_daily_time_budget_minutes: effectiveBudget,
+          budget_source:
+            request.deck_daily_time_budget_minutes === null
+              ? "collection_budget"
+              : "deck_override",
+          target_retention_basis_points: target,
+          new_cards_per_day: newCards,
+          backlog_exceeds_budget: false,
+          explanation: `${effectiveBudget} min/day\nTarget retention: ${target / 100}%\nNew cards today: ${newCards}\nReason: ${automatic ? "due work fits the budget." : "Expert mode keeps these manual policy values."}`,
+        };
       }
       if (command === "rollback_scheduler") {
         schedulerSettings = {
           ...schedulerSettings,
-          optimizer_status: "rolled_back",
+          active_parameter_set_id: "fsrs7-default-v1",
+          previous_parameter_set_id: "fsrs7-import-e2e",
         };
         return copy(schedulerSettings);
+      }
+      if (command === "import_scheduler_parameters") {
+        schedulerSettings = {
+          ...schedulerSettings,
+          active_parameter_set_id: "fsrs7-import-e2e",
+          previous_parameter_set_id: schedulerSettings.active_parameter_set_id,
+        };
+        return copy(schedulerSettings);
+      }
+      if (command === "export_scheduler_parameters") {
+        return {
+          path: "/tmp/collection.scheduler-parameters.json",
+        };
       }
       if (command === "export_scheduler_diagnostics") {
         return {
