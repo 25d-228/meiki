@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use meiki_application::{
     ApplicationService, ArchiveExportRequest, ArchiveImportModeDto, ArchiveImportRequest,
     ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto, BackupDto, CheckAnswerRequest,
-    GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, LibraryBulkRequest,
-    LibraryBulkResultDto, LibraryExportRequest, LibraryExportResultDto, LibraryOverviewDto,
-    LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
-    ReconcileStudyQueueRequest, RemoveClozeRequest, ReorderSegmentsRequest, RevealDto,
-    SchedulerDiagnosticsExportDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto,
+    GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest,
+    LibraryBulkRequest, LibraryBulkResultDto, LibraryExportRequest, LibraryExportResultDto,
+    LibraryOverviewDto, LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto,
+    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest,
+    ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto, SchedulerParametersExportDto,
+    SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto,
     StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest,
     UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
@@ -249,13 +250,13 @@ fn update_scheduler_settings(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn optimize_scheduler(
-    deck_id: String,
+fn preview_scheduler_policy(
+    request: UpdateSchedulerSettingsRequest,
     state: State<'_, AppContext>,
-) -> Result<SchedulerSettingsDto, String> {
+) -> Result<SchedulerPolicyPreviewDto, String> {
     state
         .service()
-        .optimize_scheduler(&deck_id)
+        .preview_scheduler_policy(&request)
         .map_err(|error| error.to_string())
 }
 
@@ -268,6 +269,30 @@ fn rollback_scheduler(
     state
         .service()
         .rollback_scheduler(&deck_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn import_scheduler_parameters(
+    request: ImportSchedulerParametersRequest,
+    state: State<'_, AppContext>,
+) -> Result<SchedulerSettingsDto, String> {
+    state
+        .service()
+        .import_scheduler_parameters(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn export_scheduler_parameters(
+    deck_id: String,
+    state: State<'_, AppContext>,
+) -> Result<SchedulerParametersExportDto, String> {
+    state
+        .service()
+        .export_scheduler_parameters(&deck_id)
         .map_err(|error| error.to_string())
 }
 
@@ -399,8 +424,10 @@ pub fn run() {
             undo_review,
             get_scheduler_settings,
             update_scheduler_settings,
-            optimize_scheduler,
+            preview_scheduler_policy,
             rollback_scheduler,
+            import_scheduler_parameters,
+            export_scheduler_parameters,
             export_scheduler_diagnostics,
             new_authoring_draft,
             import_media,

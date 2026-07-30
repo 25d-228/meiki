@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { SvelteDate } from "svelte/reactivity";
 
   import { api } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
@@ -8,10 +9,13 @@
   import Field from "../lib/components/Field.svelte";
   import SurfaceCard from "../lib/components/SurfaceCard.svelte";
   import type { SchedulerSettingsDto } from "../lib/generated/SchedulerSettingsDto";
+  import type { SchedulerPolicyPreviewDto } from "../lib/generated/SchedulerPolicyPreviewDto";
+  import type { SchedulingModeDto } from "../lib/generated/SchedulingModeDto";
+  import type { UpdateSchedulerSettingsRequest } from "../lib/generated/UpdateSchedulerSettingsRequest";
   import type { ArchiveImportModeDto } from "../lib/generated/ArchiveImportModeDto";
   import type { BackupDto } from "../lib/generated/BackupDto";
+  import type { BudgetSourceDto } from "../lib/generated/BudgetSourceDto";
   import type { PortableArchivePreviewDto } from "../lib/generated/PortableArchivePreviewDto";
-  import type { StudyIntensityDto } from "../lib/generated/StudyIntensityDto";
   import type { ThemeMode } from "../lib/ui";
 
   type Props = {
@@ -21,20 +25,21 @@
 
   const deckId = "default-deck";
   const autoplayKey = "meiki-autoplay-prompt-audio";
-  const retentionPreset: Record<StudyIntensityDto, number> = {
-    light: 8500,
-    balanced: 9000,
-    intensive: 9300,
-  };
 
   let { theme, onThemeChange }: Props = $props();
   let settings = $state<SchedulerSettingsDto | null>(null);
-  let intensity = $state<StudyIntensityDto>("balanced");
+  let schedulingMode = $state<SchedulingModeDto>("automatic");
+  let collectionBudgetHours = $state(0);
+  let collectionBudgetMinutes = $state(30);
+  let useDeckBudget = $state(false);
+  let deckBudgetHours = $state(0);
+  let deckBudgetMinutes = $state(30);
   let targetRetention = $state(9000);
   let newCardsPerDay = $state(20);
-  let dailyBudget = $state<number | "">("");
   let maximumIntervalDays = $state(36500);
   let dayBoundaryMinutes = $state(240);
+  let policyPreview = $state<SchedulerPolicyPreviewDto | null>(null);
+  let previewedRequest = $state<UpdateSchedulerSettingsRequest | null>(null);
   let autoplayPromptAudio = $state(false);
   let busy = $state(false);
   let notice = $state("");
@@ -54,12 +59,29 @@
 
   function applySettings(next: SchedulerSettingsDto): void {
     settings = next;
-    intensity = next.intensity;
+    schedulingMode = next.scheduling_mode;
+    [collectionBudgetHours, collectionBudgetMinutes] = splitDuration(
+      next.collection_daily_time_budget_minutes,
+    );
+    useDeckBudget = next.deck_daily_time_budget_minutes !== null;
+    [deckBudgetHours, deckBudgetMinutes] = splitDuration(
+      next.deck_daily_time_budget_minutes ??
+        next.collection_daily_time_budget_minutes,
+    );
     targetRetention = next.target_retention_basis_points;
     newCardsPerDay = next.new_cards_per_day;
-    dailyBudget = next.daily_time_budget_minutes ?? "";
     maximumIntervalDays = next.maximum_interval_days;
     dayBoundaryMinutes = next.day_boundary_minutes;
+    policyPreview = {
+      effective_daily_time_budget_minutes:
+        next.effective_daily_time_budget_minutes,
+      budget_source: next.budget_source,
+      target_retention_basis_points: next.target_retention_basis_points,
+      new_cards_per_day: next.new_cards_per_day,
+      backlog_exceeds_budget: next.controller_backlog_exceeds_budget,
+      explanation: next.controller_explanation,
+    };
+    previewedRequest = null;
   }
 
   async function loadSettings(): Promise<void> {
@@ -67,6 +89,9 @@
     error = "";
     try {
       applySettings(await api.getSchedulerSettings(deckId));
+      const request = schedulingRequest();
+      policyPreview = await api.previewSchedulerPolicy(request);
+      previewedRequest = request;
     } catch (cause) {
       error = message(cause);
     } finally {
@@ -74,9 +99,52 @@
     }
   }
 
-  function chooseIntensity(next: StudyIntensityDto): void {
-    intensity = next;
-    targetRetention = retentionPreset[next];
+  function markPolicyChanged(): void {
+    policyPreview = null;
+    previewedRequest = null;
+  }
+
+  function chooseBudget(minutes: number): void {
+    [collectionBudgetHours, collectionBudgetMinutes] = splitDuration(minutes);
+    markPolicyChanged();
+  }
+
+  function schedulingRequest(): UpdateSchedulerSettingsRequest {
+    const now = new SvelteDate();
+    const dayStart = new SvelteDate(now);
+    dayStart.setHours(0, dayBoundaryMinutes, 0, 0);
+    if (now.getTime() < dayStart.getTime()) {
+      dayStart.setDate(dayStart.getDate() - 1);
+    }
+    return {
+      deck_id: deckId,
+      scheduling_mode: schedulingMode,
+      collection_daily_time_budget_minutes: collectionBudgetTotal(),
+      deck_daily_time_budget_minutes: useDeckBudget ? deckBudgetTotal() : null,
+      target_retention_basis_points: targetRetention,
+      new_cards_per_day: newCardsPerDay,
+      maximum_interval_days: maximumIntervalDays,
+      day_boundary_minutes: dayBoundaryMinutes,
+      now_ms: now.getTime(),
+      day_start_ms: dayStart.getTime(),
+    };
+  }
+
+  async function previewPolicy(): Promise<void> {
+    busy = true;
+    notice = "";
+    error = "";
+    try {
+      const request = schedulingRequest();
+      policyPreview = await api.previewSchedulerPolicy(request);
+      previewedRequest = request;
+    } catch (cause) {
+      policyPreview = null;
+      previewedRequest = null;
+      error = message(cause);
+    } finally {
+      busy = false;
+    }
   }
 
   async function save(): Promise<void> {
@@ -85,15 +153,9 @@
     error = "";
     try {
       applySettings(
-        await api.updateSchedulerSettings({
-          deck_id: deckId,
-          intensity,
-          target_retention_basis_points: targetRetention,
-          new_cards_per_day: newCardsPerDay,
-          daily_time_budget_minutes: dailyBudget === "" ? null : dailyBudget,
-          maximum_interval_days: maximumIntervalDays,
-          day_boundary_minutes: dayBoundaryMinutes,
-        }),
+        await api.updateSchedulerSettings(
+          previewedRequest ?? schedulingRequest(),
+        ),
       );
       localStorage.setItem(autoplayKey, String(autoplayPromptAudio));
       notice = "Scheduling preferences saved.";
@@ -104,18 +166,38 @@
     }
   }
 
-  async function optimize(): Promise<void> {
-    await runAction(
-      () => api.optimizeScheduler(deckId),
-      "Local personalization finished.",
-    );
-  }
-
   async function rollback(): Promise<void> {
     await runAction(
       () => api.rollbackScheduler(deckId),
       "Previous scheduler parameters restored.",
     );
+  }
+
+  async function importParameters(): Promise<void> {
+    const path = await api.pickSchedulerParametersFile();
+    if (!path) return;
+    await runAction(
+      () =>
+        api.importSchedulerParameters({
+          deck_id: deckId,
+          path,
+        }),
+      "Scheduler parameters imported for future reviews.",
+    );
+  }
+
+  async function exportParameters(): Promise<void> {
+    busy = true;
+    notice = "";
+    error = "";
+    try {
+      const result = await api.exportSchedulerParameters(deckId);
+      notice = `Scheduler parameters exported: ${result.path}`;
+    } catch (cause) {
+      error = message(cause);
+    } finally {
+      busy = false;
+    }
   }
 
   async function exportDiagnostics(): Promise<void> {
@@ -252,6 +334,31 @@
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
     return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
   }
+
+  function formatDuration(minutes: number): string {
+    if (minutes < 60) return `${minutes} minutes`;
+    const hours = Math.floor(minutes / 60);
+    const remainder = minutes % 60;
+    return remainder === 0
+      ? `${hours} ${hours === 1 ? "hour" : "hours"}`
+      : `${hours} hr ${remainder} min`;
+  }
+
+  function splitDuration(minutes: number): [number, number] {
+    return [Math.floor(minutes / 60), minutes % 60];
+  }
+
+  function collectionBudgetTotal(): number {
+    return collectionBudgetHours * 60 + collectionBudgetMinutes;
+  }
+
+  function deckBudgetTotal(): number {
+    return deckBudgetHours * 60 + deckBudgetMinutes;
+  }
+
+  function budgetSourceLabel(source: BudgetSourceDto): string {
+    return source === "deck_override" ? "Deck override" : "Collection budget";
+  }
 </script>
 
 <section class="screen settings-screen" aria-labelledby="settings-title">
@@ -260,14 +367,14 @@
       <span class="eyebrow">Preferences</span>
       <h1 id="settings-title" class="screen-title">Settings</h1>
       <p class="screen-description">
-        Balanced scheduling works immediately. Exact controls remain available
-        when you need them.
+        Set how much time you have. Meiki adapts new intake and retention while
+        keeping every due review visible.
       </p>
     </div>
     <Button
       variant="primary"
       data-primary-action
-      disabled={busy || !settings}
+      disabled={busy || !settings || !policyPreview}
       onclick={save}>Save preferences</Button
     >
   </header>
@@ -308,29 +415,321 @@
       </Field>
 
       <Field
-        id="study-intensity"
-        label="Study intensity"
-        description="A preset changes target retention; you can refine it under Advanced."
+        id="scheduling-mode"
+        label="Scheduling mode"
+        description="Automatic is recommended. Expert mode exposes manual policy and memory-parameter controls."
       >
         <div
           class="segmented"
-          id="study-intensity"
+          id="scheduling-mode"
           role="group"
-          aria-label="Study intensity"
+          aria-label="Scheduling mode"
         >
-          {#each ["light", "balanced", "intensive"] as StudyIntensityDto[] as mode (mode)}
+          {#each ["automatic", "expert"] as SchedulingModeDto[] as mode (mode)}
             <Button
-              variant={intensity === mode ? "primary" : "secondary"}
+              variant={schedulingMode === mode ? "primary" : "secondary"}
               size="small"
-              aria-pressed={intensity === mode}
+              aria-pressed={schedulingMode === mode}
               disabled={busy}
-              onclick={() => chooseIntensity(mode)}
+              onclick={() => {
+                schedulingMode = mode;
+                markPolicyChanged();
+              }}
             >
               {mode[0].toUpperCase() + mode.slice(1)}
             </Button>
           {/each}
         </div>
       </Field>
+
+      <Field
+        id="collection-daily-budget"
+        label="Daily study time"
+        description="This collection-wide budget includes reviews and new cards."
+      >
+        <div class="budget-control">
+          <div
+            class="segmented"
+            role="group"
+            aria-label="Daily study time presets"
+          >
+            {#each [15, 30, 60, 120] as minutes (minutes)}
+              <Button
+                variant={collectionBudgetTotal() === minutes
+                  ? "primary"
+                  : "secondary"}
+                size="small"
+                aria-pressed={collectionBudgetTotal() === minutes}
+                disabled={busy}
+                onclick={() => chooseBudget(minutes)}
+              >
+                {minutes < 60 ? `${minutes} min` : `${minutes / 60} hr`}
+              </Button>
+            {/each}
+            <Button
+              variant={[15, 30, 60, 120].includes(collectionBudgetTotal())
+                ? "secondary"
+                : "primary"}
+              size="small"
+              aria-pressed={![15, 30, 60, 120].includes(
+                collectionBudgetTotal(),
+              )}
+              disabled={busy}
+              onclick={() =>
+                document.getElementById("daily-budget-hours")?.focus()}
+            >
+              Custom
+            </Button>
+          </div>
+          <div class="duration-inputs">
+            <label>
+              <span>Hours</span>
+              <input
+                id="daily-budget-hours"
+                type="number"
+                min="0"
+                max="24"
+                aria-label="Daily study hours"
+                bind:value={collectionBudgetHours}
+                oninput={markPolicyChanged}
+                disabled={busy}
+              />
+            </label>
+            <label>
+              <span>Minutes</span>
+              <input
+                type="number"
+                min="0"
+                max="59"
+                aria-label="Daily study minutes"
+                bind:value={collectionBudgetMinutes}
+                oninput={markPolicyChanged}
+                disabled={busy}
+              />
+            </label>
+          </div>
+          <span class="value">{formatDuration(collectionBudgetTotal())}</span>
+        </div>
+      </Field>
+
+      <div class="setting-row">
+        <div>
+          <strong>Override for this deck</strong>
+          <p>
+            {useDeckBudget
+              ? "This deck uses its own daily budget."
+              : "This deck inherits the collection budget."}
+          </p>
+        </div>
+        <label class="toggle">
+          <input
+            id="use-deck-budget"
+            type="checkbox"
+            bind:checked={useDeckBudget}
+            onchange={markPolicyChanged}
+            disabled={busy}
+          />
+          <span>{useDeckBudget ? "Deck override" : "Collection budget"}</span>
+        </label>
+      </div>
+
+      {#if useDeckBudget}
+        <Field
+          id="deck-daily-budget"
+          label="Deck daily time"
+          description="Minutes for this deck; other decks keep the collection budget."
+        >
+          <div class="duration-inputs" id="deck-daily-budget">
+            <label>
+              <span>Hours</span>
+              <input
+                type="number"
+                min="0"
+                max="24"
+                aria-label="Deck daily study hours"
+                bind:value={deckBudgetHours}
+                oninput={markPolicyChanged}
+                disabled={busy}
+              />
+            </label>
+            <label>
+              <span>Minutes</span>
+              <input
+                type="number"
+                min="0"
+                max="59"
+                aria-label="Deck daily study minutes"
+                bind:value={deckBudgetMinutes}
+                oninput={markPolicyChanged}
+                disabled={busy}
+              />
+            </label>
+          </div>
+        </Field>
+      {/if}
+
+      <Field
+        id="day-boundary"
+        label="Day boundary (minutes after midnight)"
+        description="240 means that a new study day starts at 04:00 local time."
+      >
+        <input
+          id="day-boundary"
+          type="number"
+          min="0"
+          max="1439"
+          bind:value={dayBoundaryMinutes}
+          oninput={markPolicyChanged}
+          disabled={busy}
+        />
+      </Field>
+
+      {#if schedulingMode === "expert"}
+        <details open>
+          <summary>Expert scheduling policy</summary>
+          <div class="advanced">
+            <div class="control-grid">
+              <Field
+                id="target-retention"
+                label="Target retention (basis points)"
+                description="9000 means a 90% target."
+              >
+                <input
+                  id="target-retention"
+                  type="number"
+                  min="7000"
+                  max="9900"
+                  step="10"
+                  bind:value={targetRetention}
+                  oninput={markPolicyChanged}
+                  disabled={busy}
+                />
+              </Field>
+              <Field
+                id="new-cards"
+                label="Maximum new cards per day"
+                description="Use zero to pause unseen cards."
+              >
+                <input
+                  id="new-cards"
+                  type="number"
+                  min="0"
+                  max="10000"
+                  bind:value={newCardsPerDay}
+                  oninput={markPolicyChanged}
+                  disabled={busy}
+                />
+              </Field>
+              <Field id="maximum-interval" label="Maximum interval (days)">
+                <input
+                  id="maximum-interval"
+                  type="number"
+                  min="1"
+                  max="36500"
+                  bind:value={maximumIntervalDays}
+                  oninput={markPolicyChanged}
+                  disabled={busy}
+                />
+              </Field>
+            </div>
+
+            {#if settings}
+              <dl class="scheduler-status">
+                <div>
+                  <dt>Engine</dt>
+                  <dd>{settings.engine_version}</dd>
+                </div>
+                <div>
+                  <dt>Parameters</dt>
+                  <dd>{settings.active_parameter_set_id}</dd>
+                </div>
+                <div>
+                  <dt>Policy</dt>
+                  <dd>Manual expert override</dd>
+                </div>
+              </dl>
+            {/if}
+
+            <div class="scheduler-actions">
+              <Button
+                size="small"
+                disabled={busy || settings?.scheduling_mode !== "expert"}
+                onclick={importParameters}>Import parameters</Button
+              >
+              <Button
+                size="small"
+                disabled={busy || settings?.scheduling_mode !== "expert"}
+                onclick={exportParameters}>Export parameters</Button
+              >
+              <Button
+                size="small"
+                disabled={busy ||
+                  settings?.scheduling_mode !== "expert" ||
+                  !settings?.previous_parameter_set_id}
+                onclick={rollback}>Roll back parameters</Button
+              >
+              <Button size="small" disabled={busy} onclick={exportDiagnostics}
+                >Export diagnostics</Button
+              >
+            </div>
+            <p class="advanced-note">
+              Memory parameters describe recall. The manual policy controls
+              workload. Neither change rewrites prior review events.
+            </p>
+          </div>
+        </details>
+      {/if}
+
+      <div class="policy-preview" aria-live="polite">
+        <div>
+          <strong>Policy preview</strong>
+          <p>
+            Preview the derived plan before saving. Existing due cards are never
+            hidden when the budget is tight.
+          </p>
+        </div>
+        <Button size="small" disabled={busy} onclick={previewPolicy}
+          >Preview policy</Button
+        >
+        {#if policyPreview}
+          <dl class="scheduler-status">
+            <div>
+              <dt>Budget</dt>
+              <dd>
+                {policyPreview.effective_daily_time_budget_minutes} min ({budgetSourceLabel(
+                  policyPreview.budget_source,
+                )})
+              </dd>
+            </div>
+            <div>
+              <dt>Retention</dt>
+              <dd>
+                {(policyPreview.target_retention_basis_points / 100).toFixed(
+                  1,
+                )}%
+              </dd>
+            </div>
+            <div>
+              <dt>New cards</dt>
+              <dd>{policyPreview.new_cards_per_day}</dd>
+            </div>
+          </dl>
+          {#if policyPreview.backlog_exceeds_budget}
+            <Feedback
+              tone="warning"
+              title="Due work exceeds this budget"
+              compact
+            >
+              <p>Meiki will still show every due review.</p>
+            </Feedback>
+          {/if}
+          <pre aria-label="Policy explanation">{policyPreview.explanation}</pre>
+        {:else}
+          <Feedback title="Preview required" compact>
+            <p>Preview these settings to enable Save preferences.</p>
+          </Feedback>
+        {/if}
+      </div>
 
       <div class="setting-row">
         <div>
@@ -351,131 +750,13 @@
         </label>
       </div>
 
-      <div class="control-grid">
-        <Field
-          id="new-cards"
-          label="New cards per day"
-          description="Use zero to pause new cards."
-        >
-          <input
-            id="new-cards"
-            type="number"
-            min="0"
-            max="10000"
-            bind:value={newCardsPerDay}
-            disabled={busy}
-          />
-        </Field>
-        <Field
-          id="daily-budget"
-          label="Daily time budget"
-          description="Minutes; leave empty for no limit."
-          optional
-        >
-          <input
-            id="daily-budget"
-            type="number"
-            min="1"
-            max="1440"
-            placeholder="No limit"
-            bind:value={dailyBudget}
-            disabled={busy}
-          />
-        </Field>
-      </div>
-
       <div class="setting-row">
         <div>
           <strong>Collection</strong>
-          <p>Learning content and personalization remain local.</p>
+          <p>Learning content and scheduler data remain local.</p>
         </div>
         <span class="value">On this device</span>
       </div>
-
-      <details>
-        <summary>Advanced</summary>
-        <div class="advanced">
-          <div class="control-grid">
-            <Field
-              id="target-retention"
-              label="Target retention (basis points)"
-              description="9000 means a 90% target."
-            >
-              <input
-                id="target-retention"
-                type="number"
-                min="7000"
-                max="9900"
-                step="10"
-                bind:value={targetRetention}
-                disabled={busy}
-              />
-            </Field>
-            <Field id="maximum-interval" label="Maximum interval (days)">
-              <input
-                id="maximum-interval"
-                type="number"
-                min="1"
-                max="36500"
-                bind:value={maximumIntervalDays}
-                disabled={busy}
-              />
-            </Field>
-            <Field
-              id="day-boundary"
-              label="Day boundary (minutes after midnight)"
-              description="240 means 04:00 local time."
-            >
-              <input
-                id="day-boundary"
-                type="number"
-                min="0"
-                max="1439"
-                bind:value={dayBoundaryMinutes}
-                disabled={busy}
-              />
-            </Field>
-          </div>
-
-          {#if settings}
-            <dl class="scheduler-status">
-              <div>
-                <dt>Engine</dt>
-                <dd>{settings.engine_version}</dd>
-              </div>
-              <div>
-                <dt>Parameters</dt>
-                <dd>{settings.active_parameter_set_id}</dd>
-              </div>
-              <div>
-                <dt>Optimizer</dt>
-                <dd>{settings.optimizer_status.replaceAll("_", " ")}</dd>
-              </div>
-            </dl>
-            {#if settings.optimizer_diagnostics}
-              <pre
-                aria-label="Scheduler diagnostics">{settings.optimizer_diagnostics}</pre>
-            {/if}
-          {/if}
-
-          <div class="scheduler-actions">
-            <Button size="small" disabled={busy} onclick={optimize}
-              >Personalize now</Button
-            >
-            <Button
-              size="small"
-              disabled={busy || !settings?.previous_parameter_set_id}
-              onclick={rollback}>Roll back parameters</Button
-            >
-            <Button size="small" disabled={busy} onclick={exportDiagnostics}
-              >Export diagnostics</Button
-            >
-          </div>
-          <p class="advanced-note">
-            Parameter and policy changes affect future reviews only.
-          </p>
-        </div>
-      </details>
     </div>
   </SurfaceCard>
 
@@ -674,6 +955,47 @@
     gap: var(--space-5);
   }
 
+  .budget-control,
+  .policy-preview {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  .budget-control {
+    grid-template-columns: 1fr auto;
+    align-items: center;
+  }
+
+  .duration-inputs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(5.5rem, 8rem));
+    gap: var(--space-3);
+  }
+
+  .duration-inputs label {
+    display: grid;
+    gap: var(--space-1);
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+    font-weight: 700;
+  }
+
+  .budget-control .segmented {
+    grid-column: 1 / -1;
+  }
+
+  .policy-preview {
+    padding: var(--space-4);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-raised);
+  }
+
+  .policy-preview p,
+  .policy-preview dt {
+    color: var(--color-text);
+  }
+
   input:not([type="checkbox"]) {
     width: 100%;
     min-height: var(--control-height);
@@ -832,5 +1154,11 @@
 
   .advanced-note {
     margin: 0;
+  }
+
+  @media (max-width: 42rem) {
+    .budget-control {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

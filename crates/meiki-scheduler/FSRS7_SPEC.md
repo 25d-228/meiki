@@ -43,12 +43,28 @@ At 90% target retention, a 4.1283-day stability produces a
 256,342,507-millisecond interval. The executable fixture also verifies this
 fractional interval.
 
-## Personalization
+## Memory model and workload policy
 
-Local optimization starts after 64 useful reviews (reviews after a card's
-first grade). Candidate parameters are selected on the chronological first 80%
-of history and adopted only when they remain valid and reduce log loss on the
-held-out final 20%. Adoption is prospective: it changes the active parameter
-set without changing existing projections. Projection repair restores the
-exact snapshots in immutable history and never reruns grades through an
-engine.
+FSRS-7 parameters describe memory. The `time-budget-v1` controller is a
+separate scheduling policy and never fits or invents those parameters.
+Automatic mode evaluates aggregate schedule state over a rolling 28-day
+horizon. It uses actual due timestamps, current intervals, a bounded median
+response time, and an explicit first-review cost.
+
+The controller starts from 90% target retention within a safe 80–95% range.
+When projected work exceeds the daily budget, it first reduces new intake to
+zero and only then lowers retention in one-percentage-point steps. Spare time
+adds unseen cards before raising retention above 90%; it raises retention only
+when no unseen cards remain. Existing due cards are always visible, including
+when their estimated work exceeds the budget.
+
+Results are deterministic and recomputed at a local-day transition, after
+material history or unseen-card changes, or when settings change. Multiple
+decks sharing an allowance receive unseen cards in stable deck-ID round-robin
+order. The aggregate controller has constant memory use; it does not load card
+content or construct a million-card candidate vector.
+
+Expert mode allows manual target retention, new-card maximum, and maximum
+interval. It also supports strict versioned import/export of memory parameter
+sets. Parameter adoption is prospective and never changes existing schedule
+projections or immutable review history.

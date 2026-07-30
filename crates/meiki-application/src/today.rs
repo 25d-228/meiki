@@ -1,11 +1,12 @@
-use meiki_domain::{CardLifecycle, ReviewEvent, StudySettings, StudySettingsOverride};
+use meiki_domain::{CardLifecycle, ReviewEvent};
 use meiki_storage::{DeckRepository, SchedulerProfileRepository};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    ApplicationError, ApplicationService, ReconcileStudyQueueRequest, StudyQueueEntryDto,
-    desktop_u32, timestamp_string,
+    ApplicationError, ApplicationService, BudgetSourceDto, ReconcileStudyQueueRequest,
+    StudyQueueEntryDto, desktop_u32, effective_budget, effective_study_settings,
+    evaluate_and_store_policy, timestamp_string,
 };
 
 const DEFAULT_RESPONSE_SECONDS: u64 = 20;
@@ -56,6 +57,10 @@ pub struct TodayOverviewDto {
     pub estimate_uses_history: bool,
     pub response_time_samples: u32,
     pub daily_time_budget_minutes: Option<u32>,
+    pub budget_source: BudgetSourceDto,
+    pub target_retention_basis_points: u16,
+    pub policy_explanation: String,
+    pub backlog_exceeds_budget: bool,
     pub next_due_at: Option<String>,
     pub queue: Vec<TodayQueueCardDto>,
 }
@@ -100,7 +105,10 @@ struct QueuePlan {
 }
 
 impl ApplicationService {
-    /// Builds a deterministic, read-only queue projection for one local day.
+    /// Builds a deterministic queue projection for one local day.
+    ///
+    /// Automatic mode may persist derived controller metadata. Card
+    /// projections and immutable review history remain unchanged.
     ///
     /// # Errors
     ///
@@ -111,14 +119,19 @@ impl ApplicationService {
         request: &TodayRequest,
     ) -> Result<TodayOverviewDto, ApplicationError> {
         validate_day(request)?;
-        let storage = self.open_storage()?;
+        let mut storage = self.open_storage()?;
         let deck = storage.get_deck(&request.deck_id)?;
+        evaluate_and_store_policy(
+            &mut storage,
+            &request.deck_id,
+            request.now_ms,
+            request.day_start_ms,
+            false,
+        )?;
         let profile = storage.get_scheduler_profile(&request.deck_id)?;
-        let settings = StudySettings::resolve(
-            &StudySettings::default(),
-            &deck.settings,
-            &StudySettingsOverride::default(),
-        );
+        let collection = storage.collection_scheduling_settings()?;
+        let settings = effective_study_settings(&deck, &profile);
+        let (daily_budget, budget_source) = effective_budget(&collection, &profile);
         let candidates = storage
             .study_cards_for_deck(&request.deck_id)?
             .into_iter()
@@ -140,7 +153,7 @@ impl ApplicationService {
             &reviews,
             request,
             settings.new_cards_per_day,
-            profile.daily_time_budget_minutes,
+            Some(daily_budget),
         );
         let decks = storage
             .list_decks()?
@@ -172,7 +185,11 @@ impl ApplicationService {
                 plan.response_time_samples,
                 "response time sample count",
             )?,
-            daily_time_budget_minutes: profile.daily_time_budget_minutes,
+            daily_time_budget_minutes: Some(daily_budget),
+            budget_source,
+            target_retention_basis_points: settings.target_retention_basis_points,
+            policy_explanation: profile.controller_explanation,
+            backlog_exceeds_budget: profile.controller_backlog_exceeds_budget,
             next_due_at: plan.next_due_at_ms.map(timestamp_string).transpose()?,
             queue: plan
                 .cards
@@ -410,8 +427,8 @@ mod tests {
         ReviewEventKind, ScheduleState, StudySettingsOverride,
     };
     use meiki_storage::{
-        CardRepository, DeckRepository, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID, SourceNoteRepository,
-        Storage,
+        CardRepository, DeckRepository, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID,
+        SchedulerProfileRepository, SourceNoteRepository, Storage,
     };
     use tempfile::{TempDir, tempdir};
 
@@ -783,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn overview_is_read_only_and_restart_safe() {
+    fn overview_preserves_learning_state_and_is_restart_safe() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("collection.db");
         let service = ApplicationService::new(&path);
@@ -817,6 +834,81 @@ mod tests {
 
         let restarted = ApplicationService::new(&path);
         assert_eq!(restarted.get_today_overview(&request).unwrap(), overview);
+    }
+
+    #[test]
+    fn controller_recomputes_once_across_short_and_long_local_days() {
+        const HOUR_MS: i64 = 60 * 60 * 1_000;
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&path);
+        service.seed_test_collection(1_000).unwrap();
+
+        let first = TodayRequest {
+            deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+            now_ms: 100_000,
+            day_start_ms: 0,
+            day_end_ms: 25 * HOUR_MS,
+        };
+        service.get_today_overview(&first).unwrap();
+        let first_profile = Storage::open(&path)
+            .unwrap()
+            .get_scheduler_profile(meiki_storage::DEFAULT_DECK_ID)
+            .unwrap();
+        assert_eq!(
+            first_profile.controller_last_evaluated_day_start_ms,
+            Some(0)
+        );
+        assert_eq!(first_profile.updated_at_ms, first.now_ms);
+
+        let same_day = TodayRequest {
+            now_ms: first.now_ms + 1,
+            ..first.clone()
+        };
+        service.get_today_overview(&same_day).unwrap();
+        let unchanged = Storage::open(&path)
+            .unwrap()
+            .get_scheduler_profile(meiki_storage::DEFAULT_DECK_ID)
+            .unwrap();
+        assert_eq!(unchanged.updated_at_ms, first.now_ms);
+
+        let short_day_start = 23 * HOUR_MS;
+        let short_day = TodayRequest {
+            deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+            now_ms: short_day_start + 100_000,
+            day_start_ms: short_day_start,
+            day_end_ms: short_day_start + 25 * HOUR_MS,
+        };
+        service.get_today_overview(&short_day).unwrap();
+        let after_short_day = Storage::open(&path)
+            .unwrap()
+            .get_scheduler_profile(meiki_storage::DEFAULT_DECK_ID)
+            .unwrap();
+        assert_eq!(
+            after_short_day.controller_last_evaluated_day_start_ms,
+            Some(short_day_start)
+        );
+
+        let long_day_start = short_day_start + 25 * HOUR_MS;
+        let long_day = TodayRequest {
+            deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+            now_ms: long_day_start + 100_000,
+            day_start_ms: long_day_start,
+            day_end_ms: long_day_start + 23 * HOUR_MS,
+        };
+        service.get_today_overview(&long_day).unwrap();
+        let after_long_day = Storage::open(&path)
+            .unwrap()
+            .get_scheduler_profile(meiki_storage::DEFAULT_DECK_ID)
+            .unwrap();
+        assert_eq!(
+            after_long_day.controller_last_evaluated_day_start_ms,
+            Some(long_day_start)
+        );
+        assert_eq!(
+            after_long_day.controller_target_retention_basis_points,
+            first_profile.controller_target_retention_basis_points
+        );
     }
 
     #[test]

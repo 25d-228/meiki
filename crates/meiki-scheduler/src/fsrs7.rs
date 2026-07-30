@@ -2,10 +2,7 @@ use std::fmt::Write;
 
 use meiki_domain::{CardLifecycle, Grade, ScheduleState};
 
-use crate::{
-    ENGINE_VERSION, OptimizationResult, ReviewHistoryEntry, ScheduleDecision, SchedulerEngine,
-    SchedulerError, optimizer,
-};
+use crate::{ENGINE_VERSION, ScheduleDecision, SchedulerEngine, SchedulerError};
 
 const MILLISECONDS_PER_DAY: f64 = 86_400_000.0;
 const MINIMUM_INTERVAL_MILLISECONDS: u64 = 60_000;
@@ -428,10 +425,6 @@ impl SchedulerEngine for Fsrs7Engine {
             ));
         }
         Ok(state)
-    }
-
-    fn optimize(&self, history: &[ReviewHistoryEntry]) -> OptimizationResult {
-        optimizer::optimize(self, history)
     }
 }
 

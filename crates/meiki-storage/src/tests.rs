@@ -11,9 +11,9 @@ use super::{
     AUTHORING_DEFAULTS_MIGRATION, AnnotationRepository, CARD_LIFECYCLE_MIGRATION,
     CORE_MODEL_MIGRATION, CardRepository, ClozeRepository, DEFAULT_DECK_ID, DeckRepository,
     FOUNDATION_MIGRATION, FSRS7_SCHEDULER_MIGRATION, LIBRARY_MIGRATION, MEDIA_PIPELINE_MIGRATION,
-    MediaRepository, SAMPLE_CARD_ID, STUDY_SESSION_MIGRATION, SchedulerParameterSetRepository,
-    SchedulerProfileRepository, SourceNoteRepository, Storage, StorageError, StoredSourceNote,
-    TagRepository,
+    MediaRepository, PROJECTION_INTEGRITY_MIGRATION, SAMPLE_CARD_ID, STUDY_SESSION_MIGRATION,
+    SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository, Storage,
+    StorageError, StoredSourceNote, TagRepository,
 };
 
 fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent {
@@ -91,6 +91,15 @@ fn open_version_eight_fixture(path: &std::path::Path) -> Storage {
         connection.execute_batch(migration).unwrap();
     }
     Storage { connection }
+}
+
+fn open_version_nine_fixture(path: &std::path::Path) -> Storage {
+    let storage = open_version_eight_fixture(path);
+    storage
+        .connection
+        .execute_batch(PROJECTION_INTEGRITY_MIGRATION)
+        .unwrap();
+    storage
 }
 
 #[test]
@@ -398,8 +407,62 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     std::fs::write(&path, RELEASED_V0_1_SCHEMA).unwrap();
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 9);
+    assert_eq!(storage.schema_version().unwrap(), 10);
     assert_eq!(storage.get_deck(DEFAULT_DECK_ID).unwrap().name, "Default");
+}
+
+#[test]
+fn version_ten_migrates_legacy_policy_without_losing_user_choices() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("policy-v9.db");
+    let mut legacy = open_version_nine_fixture(&path);
+    legacy
+        .connection
+        .execute(
+            "UPDATE scheduler_profiles
+             SET intensity = 'intensive', daily_time_budget_minutes = 45
+             WHERE deck_id = ?1",
+            [DEFAULT_DECK_ID],
+        )
+        .unwrap();
+    legacy.create_deck(&deck("manual-deck")).unwrap();
+    legacy
+        .connection
+        .execute(
+            "UPDATE scheduler_profiles
+             SET daily_time_budget_minutes = 25
+             WHERE deck_id = 'manual-deck'",
+            [],
+        )
+        .unwrap();
+    drop(legacy);
+
+    let migrated = Storage::open(&path).unwrap();
+    assert_eq!(migrated.schema_version().unwrap(), 10);
+    assert_eq!(
+        migrated
+            .collection_scheduling_settings()
+            .unwrap()
+            .daily_time_budget_minutes,
+        45
+    );
+    let automatic = migrated.get_scheduler_profile(DEFAULT_DECK_ID).unwrap();
+    assert_eq!(
+        automatic.scheduling_mode,
+        meiki_domain::SchedulingMode::Automatic
+    );
+    assert_eq!(automatic.deck_daily_time_budget_minutes, None);
+    assert_eq!(automatic.controller_target_retention_basis_points, 9_300);
+
+    let expert = migrated.get_scheduler_profile("manual-deck").unwrap();
+    assert_eq!(expert.scheduling_mode, meiki_domain::SchedulingMode::Expert);
+    assert_eq!(expert.deck_daily_time_budget_minutes, Some(25));
+    assert_eq!(expert.controller_target_retention_basis_points, 9_200);
+    assert_eq!(expert.controller_new_cards_per_day, 12);
+    assert_eq!(
+        migration_backup_schema_version(directory.path(), "policy-v9.db.migration-v9-"),
+        9
+    );
 }
 
 #[test]
@@ -443,6 +506,32 @@ fn review_append_projection_and_queue_update_are_atomic() {
         Err(StorageError::StaleReview)
     ));
     assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
+}
+
+#[test]
+fn scheduling_workload_uses_aggregates_and_a_bounded_response_median() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let empty_history = storage
+        .scheduling_workload(DEFAULT_DECK_ID, 10_000, 2_419_210_000)
+        .unwrap();
+    assert_eq!(empty_history.unseen_cards, 1);
+    assert_eq!(empty_history.due_cards_now, 0);
+    assert_eq!(empty_history.forecast_review_occurrences, 0);
+    assert_eq!(empty_history.median_response_duration_ms, None);
+
+    let mut event = sample_event(&storage, "workload-review", 10_000);
+    event.response_duration_ms = 1_500;
+    storage.commit_review(&event).unwrap();
+    let workload = storage
+        .scheduling_workload(DEFAULT_DECK_ID, 10_000, 2_419_210_000)
+        .unwrap();
+    assert_eq!(workload.unseen_cards, 0);
+    assert_eq!(workload.due_cards_now, 0);
+    assert!(workload.forecast_review_occurrences > 0);
+    assert_eq!(workload.response_duration_samples, 1);
+    assert_eq!(workload.median_response_duration_ms, Some(1_500));
+    assert_eq!(workload.review_count, 1);
 }
 
 #[test]
@@ -633,7 +722,7 @@ fn version_nine_migration_backs_up_and_repairs_only_from_recorded_snapshots() {
     drop(storage);
 
     let repaired = Storage::open(&path).unwrap();
-    assert_eq!(repaired.schema_version().unwrap(), 9);
+    assert_eq!(repaired.schema_version().unwrap(), 10);
     assert_eq!(repaired.projection_migration_repaired_cards().unwrap(), 1);
     assert_eq!(repaired.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
     assert_eq!(
@@ -864,7 +953,7 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 9);
+    assert_eq!(storage.schema_version().unwrap(), 10);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "v1.db.migration-v1-"),
         1
@@ -941,7 +1030,7 @@ fn version_five_media_migrates_to_roles_and_technical_metadata() {
     drop(connection);
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 9);
+    assert_eq!(storage.schema_version().unwrap(), 10);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "legacy-media.db.migration-v5-"),
         5

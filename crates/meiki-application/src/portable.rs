@@ -519,6 +519,7 @@ fn build_collection(
     scheduler_parameter_sets.sort_by(|left, right| left.id.cmp(&right.id));
 
     Ok(PortableCollection {
+        collection_scheduling_settings: storage.collection_scheduling_settings()?,
         decks,
         notes: portable_notes,
         scheduler_parameter_sets,
@@ -657,6 +658,10 @@ fn populate_staging(
     replace: bool,
 ) -> Result<(), ApplicationError> {
     if replace {
+        storage
+            .update_collection_scheduling_settings(&collection.collection_scheduling_settings)?;
+    }
+    if replace {
         storage.delete_deck(DEFAULT_DECK_ID)?;
         storage.delete_scheduler_parameter_set(DEFAULT_SCHEDULER_PARAMETER_SET_ID)?;
     }
@@ -775,7 +780,7 @@ mod tests {
         ArchiveExportRequest, ArchiveImportModeDto, ArchiveImportRequest, ArchiveScopeDto,
     };
     use crate::{
-        ApplicationService, GradeDto, GradeReviewRequest, StudyIntensityDto,
+        ApplicationService, GradeDto, GradeReviewRequest, SchedulingModeDto,
         UpdateSchedulerSettingsRequest,
     };
 
@@ -853,12 +858,15 @@ mod tests {
         service
             .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
                 deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
-                intensity: StudyIntensityDto::Intensive,
+                scheduling_mode: SchedulingModeDto::Expert,
+                collection_daily_time_budget_minutes: 120,
+                deck_daily_time_budget_minutes: None,
                 target_retention_basis_points: 9_500,
                 new_cards_per_day: 50,
-                daily_time_budget_minutes: Some(120),
                 maximum_interval_days: 20_000,
                 day_boundary_minutes: 240,
+                now_ms: 110_000,
+                day_start_ms: 0,
             })
             .unwrap();
 

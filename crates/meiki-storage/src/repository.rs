@@ -1,18 +1,21 @@
 use std::collections::{HashMap, HashSet};
 
 use meiki_domain::{
-    Annotation, Card, CardLifecycle, Cloze, Deck, LocalizedText, MediaKind, MediaReference,
-    MediaRole, OptimizerStatus, ScheduleState, SchedulerParameterSet, SchedulerProfile,
-    SegmentContent, SemanticSegment, SourceItem, StudyIntensity, Tag,
+    Annotation, Card, CardLifecycle, Cloze, CollectionSchedulingSettings, Deck, LocalizedText,
+    MediaKind, MediaReference, MediaRole, OptimizerStatus, ScheduleState, SchedulerParameterSet,
+    SchedulerProfile, SchedulingMode, SegmentContent, SemanticSegment, SourceItem, StudyIntensity,
+    Tag,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::{
-    DEFAULT_SCHEDULER_PARAMETER_SET_ID, Storage, StorageError, StoredLibraryCard,
-    StoredLibraryNote, StoredSourceNote, StoredStudyCard, direction_from_database,
-    direction_to_database, entity_not_found, matching_policy_from_database,
-    matching_policy_to_database,
+    DEFAULT_SCHEDULER_PARAMETER_SET_ID, SchedulingWorkload, Storage, StorageError,
+    StoredLibraryCard, StoredLibraryNote, StoredSourceNote, StoredStudyCard,
+    direction_from_database, direction_to_database, entity_not_found,
+    matching_policy_from_database, matching_policy_to_database,
 };
+
+const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
 
 /// Persistence operations for mutable decks.
 ///
@@ -446,19 +449,39 @@ impl SchedulerProfileRepository for Storage {
              SET engine_version = ?1,
                  active_parameter_set_id = ?2,
                  previous_parameter_set_id = ?3,
-                 intensity = ?4,
+                 scheduling_mode = ?4,
                  daily_time_budget_minutes = ?5,
-                 day_boundary_minutes = ?6,
-                 optimizer_status = ?7,
-                 optimizer_diagnostics = ?8,
-                 updated_at_ms = ?9
-             WHERE deck_id = ?10",
+                 controller_version = ?6,
+                 controller_target_retention_basis_points = ?7,
+                 controller_new_cards_per_day = ?8,
+                 controller_last_evaluated_day_start_ms = ?9,
+                 controller_review_count = ?10,
+                 controller_unseen_count = ?11,
+                 controller_forecast_review_seconds_per_day = ?12,
+                 controller_backlog_exceeds_budget = ?13,
+                 controller_explanation = ?14,
+                 intensity = ?15,
+                 day_boundary_minutes = ?16,
+                 optimizer_status = ?17,
+                 optimizer_diagnostics = ?18,
+                 updated_at_ms = ?19
+             WHERE deck_id = ?20",
             params![
                 profile.engine_version,
                 profile.active_parameter_set_id,
                 profile.previous_parameter_set_id,
+                scheduling_mode_to_database(profile.scheduling_mode),
+                profile.deck_daily_time_budget_minutes,
+                profile.controller_version,
+                profile.controller_target_retention_basis_points,
+                profile.controller_new_cards_per_day,
+                profile.controller_last_evaluated_day_start_ms,
+                profile.controller_review_count,
+                profile.controller_unseen_count,
+                profile.controller_forecast_review_seconds_per_day,
+                profile.controller_backlog_exceeds_budget,
+                profile.controller_explanation,
                 intensity_to_database(profile.intensity),
-                profile.daily_time_budget_minutes,
                 profile.day_boundary_minutes,
                 optimizer_status_to_database(profile.optimizer_status),
                 profile.optimizer_diagnostics,
@@ -471,6 +494,157 @@ impl SchedulerProfileRepository for Storage {
 }
 
 impl Storage {
+    /// Loads the collection-wide default daily study budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the singleton settings row is missing or
+    /// cannot be decoded.
+    pub fn collection_scheduling_settings(
+        &self,
+    ) -> Result<CollectionSchedulingSettings, StorageError> {
+        Ok(self.connection.query_row(
+            "SELECT daily_time_budget_minutes, updated_at_ms
+             FROM collection_scheduler_settings
+             WHERE singleton = 1",
+            [],
+            |row| {
+                Ok(CollectionSchedulingSettings {
+                    daily_time_budget_minutes: row.get(0)?,
+                    updated_at_ms: row.get(1)?,
+                })
+            },
+        )?)
+    }
+
+    /// Updates the collection-wide default daily study budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the budget is invalid or cannot be
+    /// persisted.
+    pub fn update_collection_scheduling_settings(
+        &mut self,
+        settings: &CollectionSchedulingSettings,
+    ) -> Result<(), StorageError> {
+        if !(1..=1_440).contains(&settings.daily_time_budget_minutes) {
+            return Err(StorageError::InvalidAggregate(
+                "collection daily time budget must be between 1 and 1440 minutes".into(),
+            ));
+        }
+        let changed = self.connection.execute(
+            "UPDATE collection_scheduler_settings
+             SET daily_time_budget_minutes = ?1, updated_at_ms = ?2
+             WHERE singleton = 1",
+            params![settings.daily_time_budget_minutes, settings.updated_at_ms],
+        )?;
+        ensure_changed(changed, "collection scheduler settings", "1")
+    }
+
+    /// Aggregates bounded controller inputs without loading card content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the deck is missing, bounds are invalid,
+    /// or aggregate state cannot be queried.
+    pub fn scheduling_workload(
+        &self,
+        deck_id: &str,
+        now_ms: i64,
+        horizon_end_ms: i64,
+    ) -> Result<SchedulingWorkload, StorageError> {
+        const DAY_MS: i64 = 86_400_000;
+        if horizon_end_ms <= now_ms {
+            return Err(StorageError::InvalidAggregate(
+                "the scheduling forecast horizon must follow the current time".into(),
+            ));
+        }
+        self.get_deck(deck_id)?;
+        let (unseen_cards, due_cards_now, forecast_review_occurrences) =
+            self.connection.query_row(
+                "SELECT
+                    COALESCE(SUM(CASE
+                        WHEN schedule_states.lifecycle = 'unseen' THEN 1 ELSE 0
+                    END), 0),
+                    COALESCE(SUM(CASE
+                        WHEN schedule_states.lifecycle = 'introduced'
+                         AND schedule_states.due_at_ms <= ?2
+                        THEN 1 ELSE 0
+                    END), 0),
+                    COALESCE(SUM(CASE
+                        WHEN schedule_states.lifecycle = 'introduced'
+                         AND schedule_states.due_at_ms < ?3
+                        THEN 1 + MIN(
+                            27,
+                            MAX(
+                                0,
+                                (?3 - MAX(schedule_states.due_at_ms, ?2))
+                                / MAX(schedule_states.interval_milliseconds, ?4)
+                            )
+                        )
+                        ELSE 0
+                    END), 0)
+                 FROM schedule_states
+                 JOIN cards ON cards.id = schedule_states.card_id
+                 JOIN clozes ON clozes.id = cards.cloze_id
+                 JOIN source_items ON source_items.id = clozes.source_item_id
+                 WHERE source_items.deck_id = ?1
+                   AND source_items.deleted_at_ms IS NULL
+                   AND cards.suspended = 0",
+                params![deck_id, now_ms, horizon_end_ms, DAY_MS],
+                |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, u64>(2)?,
+                    ))
+                },
+            )?;
+        let mut response_durations = self
+            .connection
+            .prepare(
+                "SELECT review_events.response_duration_ms
+                 FROM review_events
+                 JOIN cards ON cards.id = review_events.card_id
+                 JOIN clozes ON clozes.id = cards.cloze_id
+                 JOIN source_items ON source_items.id = clozes.source_item_id
+                 WHERE source_items.deck_id = ?1
+                   AND review_events.event_kind = 'review'
+                   AND review_events.response_duration_ms BETWEEN 1000 AND 600000
+                 ORDER BY review_events.reviewed_at_ms DESC, review_events.id DESC
+                 LIMIT ?2",
+            )?
+            .query_map(params![deck_id, MAXIMUM_RESPONSE_DURATION_SAMPLES], |row| {
+                row.get::<_, u64>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        response_durations.sort_unstable();
+        let response_duration_samples = u64::try_from(response_durations.len())
+            .map_err(|_| StorageError::NumericRange("controller response duration sample count"))?;
+        let median_response_duration_ms = response_durations
+            .get(response_durations.len() / 2)
+            .copied();
+        let review_count = self.connection.query_row(
+            "SELECT COUNT(*)
+             FROM review_events
+             JOIN cards ON cards.id = review_events.card_id
+             JOIN clozes ON clozes.id = cards.cloze_id
+             JOIN source_items ON source_items.id = clozes.source_item_id
+             WHERE source_items.deck_id = ?1
+               AND review_events.event_kind = 'review'",
+            [deck_id],
+            |row| row.get::<_, u64>(0),
+        )?;
+        Ok(SchedulingWorkload {
+            unseen_cards,
+            due_cards_now,
+            forecast_review_occurrences,
+            response_duration_samples,
+            median_response_duration_ms,
+            review_count,
+        })
+    }
+
     /// Atomically stores and activates a new immutable parameter set.
     ///
     /// Existing schedule projections are deliberately left unchanged; the new
@@ -1570,8 +1744,18 @@ fn load_scheduler_profile(
                 engine_version,
                 active_parameter_set_id,
                 previous_parameter_set_id,
-                intensity,
+                scheduling_mode,
                 daily_time_budget_minutes,
+                controller_version,
+                controller_target_retention_basis_points,
+                controller_new_cards_per_day,
+                controller_last_evaluated_day_start_ms,
+                controller_review_count,
+                controller_unseen_count,
+                controller_forecast_review_seconds_per_day,
+                controller_backlog_exceeds_budget,
+                controller_explanation,
+                intensity,
                 day_boundary_minutes,
                 optimizer_status,
                 optimizer_diagnostics,
@@ -1585,14 +1769,25 @@ fn load_scheduler_profile(
                     engine_version: row.get(1)?,
                     active_parameter_set_id: row.get(2)?,
                     previous_parameter_set_id: row.get(3)?,
-                    intensity: intensity_from_database(&row.get::<_, String>(4)?)
+                    scheduling_mode: scheduling_mode_from_database(&row.get::<_, String>(4)?)
                         .map_err(to_sql_conversion_error)?,
-                    daily_time_budget_minutes: row.get(5)?,
-                    day_boundary_minutes: row.get(6)?,
-                    optimizer_status: optimizer_status_from_database(&row.get::<_, String>(7)?)
+                    deck_daily_time_budget_minutes: row.get(5)?,
+                    controller_version: row.get(6)?,
+                    controller_target_retention_basis_points: row.get(7)?,
+                    controller_new_cards_per_day: row.get(8)?,
+                    controller_last_evaluated_day_start_ms: row.get(9)?,
+                    controller_review_count: row.get(10)?,
+                    controller_unseen_count: row.get(11)?,
+                    controller_forecast_review_seconds_per_day: row.get(12)?,
+                    controller_backlog_exceeds_budget: row.get(13)?,
+                    controller_explanation: row.get(14)?,
+                    intensity: intensity_from_database(&row.get::<_, String>(15)?)
                         .map_err(to_sql_conversion_error)?,
-                    optimizer_diagnostics: row.get(8)?,
-                    updated_at_ms: row.get(9)?,
+                    day_boundary_minutes: row.get(16)?,
+                    optimizer_status: optimizer_status_from_database(&row.get::<_, String>(17)?)
+                        .map_err(to_sql_conversion_error)?,
+                    optimizer_diagnostics: row.get(18)?,
+                    updated_at_ms: row.get(19)?,
                 })
             },
         )
@@ -1605,8 +1800,13 @@ fn validate_scheduler_profile(
     profile: &SchedulerProfile,
 ) -> Result<(), StorageError> {
     if profile.day_boundary_minutes >= 1_440
-        || profile.daily_time_budget_minutes == Some(0)
+        || profile
+            .deck_daily_time_budget_minutes
+            .is_some_and(|budget| !(1..=1_440).contains(&budget))
         || profile.engine_version.is_empty()
+        || profile.controller_version.is_empty()
+        || !(8_000..=9_500).contains(&profile.controller_target_retention_basis_points)
+        || profile.controller_new_cards_per_day > 10_000
     {
         return Err(StorageError::InvalidAggregate(
             "scheduler profile controls are outside safe bounds".into(),
@@ -1632,6 +1832,24 @@ fn validate_scheduler_profile(
         }
     }
     Ok(())
+}
+
+const fn scheduling_mode_to_database(value: SchedulingMode) -> &'static str {
+    match value {
+        SchedulingMode::Automatic => "automatic",
+        SchedulingMode::Expert => "expert",
+    }
+}
+
+fn scheduling_mode_from_database(value: &str) -> Result<SchedulingMode, StorageError> {
+    match value {
+        "automatic" => Ok(SchedulingMode::Automatic),
+        "expert" => Ok(SchedulingMode::Expert),
+        _ => Err(StorageError::InvalidStoredValue {
+            field: "scheduling mode",
+            value: value.to_owned(),
+        }),
+    }
 }
 
 const fn intensity_to_database(value: StudyIntensity) -> &'static str {

@@ -11,8 +11,8 @@ use std::{
 };
 
 use meiki_domain::{
-    Card, CardLifecycle, Cloze, Deck, ReviewEvent, ReviewEventKind, ScheduleState,
-    SchedulerParameterSet, SchedulerProfile, SourceItem,
+    Card, CardLifecycle, Cloze, CollectionSchedulingSettings, Deck, ReviewEvent, ReviewEventKind,
+    ScheduleState, SchedulerParameterSet, SchedulerProfile, SourceItem,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,7 +21,8 @@ use thiserror::Error;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const ARCHIVE_FORMAT: &str = "meiki";
-pub const ARCHIVE_VERSION: u32 = 2;
+pub const ARCHIVE_VERSION: u32 = 3;
+const PREVIOUS_ARCHIVE_VERSION: u32 = 2;
 const LEGACY_ARCHIVE_VERSION: u32 = 1;
 const MANIFEST_ENTRY: &str = "manifest.json";
 const COLLECTION_ENTRY: &str = "collection.json";
@@ -85,6 +86,8 @@ pub struct PortableNote {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PortableCollection {
+    #[serde(default)]
+    pub collection_scheduling_settings: CollectionSchedulingSettings,
     pub decks: Vec<Deck>,
     pub notes: Vec<PortableNote>,
     pub scheduler_parameter_sets: Vec<SchedulerParameterSet>,
@@ -308,6 +311,9 @@ pub fn read_archive(path: &Path) -> Result<ValidatedArchive, PortableError> {
         ));
     }
     let mut collection: PortableCollection = serde_json::from_slice(&collection_bytes)?;
+    if manifest.version < ARCHIVE_VERSION {
+        upgrade_legacy_policy(&mut collection);
+    }
     if manifest.version == LEGACY_ARCHIVE_VERSION {
         restore_legacy_lifecycles(&mut collection)?;
     }
@@ -339,6 +345,70 @@ pub fn read_archive(path: &Path) -> Result<ValidatedArchive, PortableError> {
     })
 }
 
+fn upgrade_legacy_policy(collection: &mut PortableCollection) {
+    let promoted_budget = collection
+        .scheduler_profiles
+        .iter()
+        .find(|profile| profile.deck_id == "default-deck")
+        .and_then(|profile| profile.deck_daily_time_budget_minutes)
+        .or_else(|| {
+            collection
+                .scheduler_profiles
+                .iter()
+                .find_map(|profile| profile.deck_daily_time_budget_minutes)
+        })
+        .or_else(|| {
+            collection
+                .scheduler_profiles
+                .first()
+                .map(|profile| match profile.intensity {
+                    meiki_domain::StudyIntensity::Light => 15,
+                    meiki_domain::StudyIntensity::Balanced => 30,
+                    meiki_domain::StudyIntensity::Intensive => 60,
+                })
+        })
+        .unwrap_or(30);
+    collection
+        .collection_scheduling_settings
+        .daily_time_budget_minutes = promoted_budget.clamp(1, 1_440);
+
+    let decks = collection
+        .decks
+        .iter()
+        .map(|deck| (deck.id.as_str(), &deck.settings))
+        .collect::<HashMap<_, _>>();
+    for profile in &mut collection.scheduler_profiles {
+        let settings = decks.get(profile.deck_id.as_str()).copied();
+        let has_manual_policy = settings.is_some_and(|settings| {
+            settings.target_retention_basis_points.is_some()
+                || settings.new_cards_per_day.is_some()
+                || settings.maximum_interval_days.is_some()
+        });
+        profile.scheduling_mode = if has_manual_policy {
+            meiki_domain::SchedulingMode::Expert
+        } else {
+            meiki_domain::SchedulingMode::Automatic
+        };
+        profile.controller_target_retention_basis_points = settings
+            .and_then(|settings| settings.target_retention_basis_points)
+            .unwrap_or(match profile.intensity {
+                meiki_domain::StudyIntensity::Light => 8_500,
+                meiki_domain::StudyIntensity::Balanced => 9_000,
+                meiki_domain::StudyIntensity::Intensive => 9_300,
+            })
+            .clamp(8_000, 9_500);
+        profile.controller_new_cards_per_day = settings
+            .and_then(|settings| settings.new_cards_per_day)
+            .unwrap_or(20)
+            .min(10_000);
+        profile.controller_explanation =
+            "Migrated policy settings; automatic mode evaluates on the next Today view.".into();
+        if profile.deck_id == "default-deck" {
+            profile.deck_daily_time_budget_minutes = None;
+        }
+    }
+}
+
 /// Validates collection identity and history relationships.
 ///
 /// # Errors
@@ -349,6 +419,13 @@ pub fn read_archive(path: &Path) -> Result<ValidatedArchive, PortableError> {
 pub fn validate_collection(collection: &PortableCollection) -> Result<(), PortableError> {
     if collection.decks.is_empty() {
         return invalid_collection("a portable collection must contain at least one deck");
+    }
+    if !(1..=1_440).contains(
+        &collection
+            .collection_scheduling_settings
+            .daily_time_budget_minutes,
+    ) {
+        return invalid_collection("the collection daily budget is outside safe bounds");
     }
     unique_ids(collection.decks.iter().map(|deck| deck.id.as_str()), "deck")?;
     unique_ids(
@@ -376,6 +453,17 @@ pub fn validate_collection(collection: &PortableCollection) -> Result<(), Portab
         .map(|set| set.id.as_str())
         .collect::<HashSet<_>>();
     for profile in &collection.scheduler_profiles {
+        if profile.engine_version.is_empty()
+            || profile.controller_version.is_empty()
+            || !(8_000..=9_500).contains(&profile.controller_target_retention_basis_points)
+            || profile.controller_new_cards_per_day > 10_000
+            || profile
+                .deck_daily_time_budget_minutes
+                .is_some_and(|budget| !(1..=1_440).contains(&budget))
+            || profile.day_boundary_minutes >= 1_440
+        {
+            return invalid_collection("scheduler profile controls are outside safe bounds");
+        }
         if !deck_ids.contains(profile.deck_id.as_str())
             || !parameter_ids.contains(profile.active_parameter_set_id.as_str())
             || profile
@@ -831,7 +919,10 @@ fn collection_counts(collection: &PortableCollection) -> Result<ArchiveCounts, P
 
 fn validate_manifest(manifest: &ArchiveManifest) -> Result<(), PortableError> {
     if manifest.format != ARCHIVE_FORMAT
-        || !(LEGACY_ARCHIVE_VERSION..=ARCHIVE_VERSION).contains(&manifest.version)
+        || !matches!(
+            manifest.version,
+            LEGACY_ARCHIVE_VERSION | PREVIOUS_ARCHIVE_VERSION | ARCHIVE_VERSION
+        )
         || manifest.collection_path != COLLECTION_ENTRY
         || manifest.created_at_ms < 0
     {
@@ -1033,10 +1124,11 @@ mod tests {
     use std::io::{Read, Write};
 
     use meiki_domain::{
-        Card, CardLifecycle, Cloze, ComparisonResult, Deck, Direction, Grade, MatchingPolicy,
-        MediaKind, MediaReference, MediaRole, OptimizerStatus, ReviewEvent, ReviewEventKind,
-        ScheduleState, SchedulerParameterSet, SchedulerProfile, SegmentContent, SemanticSegment,
-        SourceItem, StudyIntensity, StudySettingsOverride,
+        Card, CardLifecycle, Cloze, CollectionSchedulingSettings, ComparisonResult, Deck,
+        Direction, Grade, MatchingPolicy, MediaKind, MediaReference, MediaRole, OptimizerStatus,
+        ReviewEvent, ReviewEventKind, ScheduleState, SchedulerParameterSet, SchedulerProfile,
+        SchedulingMode, SegmentContent, SemanticSegment, SourceItem, StudyIntensity,
+        StudySettingsOverride,
     };
     use tempfile::tempdir;
     use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -1071,7 +1163,7 @@ mod tests {
         let restored = read_archive(&archive_path).unwrap();
 
         assert_eq!(written, restored.manifest);
-        assert_eq!(written.version, 2);
+        assert_eq!(written.version, 3);
         assert_eq!(restored.collection, collection);
         assert_eq!(
             restored.collection.notes[0]
@@ -1118,10 +1210,60 @@ mod tests {
         let restored = read_archive(&legacy).unwrap();
 
         assert_eq!(restored.manifest.version, 1);
-        assert_eq!(restored.collection, collection);
+        let mut expected = collection;
+        expected.scheduler_profiles[0].controller_explanation =
+            "Migrated policy settings; automatic mode evaluates on the next Today view.".into();
+        assert_eq!(restored.collection, expected);
         assert_eq!(
             restored.collection.notes[0].cards[0].schedule.lifecycle,
             CardLifecycle::Introduced
+        );
+    }
+
+    #[test]
+    fn version_two_archive_migrates_manual_policy_and_budget() {
+        let directory = tempdir().unwrap();
+        let media_path = directory.path().join("image.bin");
+        let media_bytes = b"\x89PNG\r\n\x1a\nportable-media";
+        std::fs::write(&media_path, media_bytes).unwrap();
+        let media_hash = content_hash(media_bytes);
+        let mut source_collection = collection(&media_hash);
+        source_collection.decks[0]
+            .settings
+            .target_retention_basis_points = Some(9_250);
+        source_collection.scheduler_profiles[0].deck_daily_time_budget_minutes = Some(45);
+        let current = directory.path().join("current.meiki");
+        write_archive(
+            &current,
+            &source_collection,
+            &[ArchiveMediaSource {
+                content_hash: media_hash,
+                path: media_path,
+            }],
+            ArchiveScope::FullCollection,
+            42,
+        )
+        .unwrap();
+        let legacy = directory.path().join("version-2.meiki");
+        rewrite_as_version_two(&current, &legacy);
+
+        let restored = read_archive(&legacy).unwrap();
+
+        assert_eq!(restored.manifest.version, 2);
+        assert_eq!(
+            restored
+                .collection
+                .collection_scheduling_settings
+                .daily_time_budget_minutes,
+            45
+        );
+        assert_eq!(
+            restored.collection.scheduler_profiles[0].scheduling_mode,
+            SchedulingMode::Expert
+        );
+        assert_eq!(
+            restored.collection.scheduler_profiles[0].controller_target_retention_basis_points,
+            9_250
         );
     }
 
@@ -1295,6 +1437,7 @@ mod tests {
             next_schedule: reviewed_schedule.clone(),
         };
         PortableCollection {
+            collection_scheduling_settings: CollectionSchedulingSettings::default(),
             decks: vec![Deck {
                 id: "deck-1".into(),
                 name: "日本語 العربية".into(),
@@ -1391,8 +1534,18 @@ mod tests {
                 engine_version: "fsrs-7".into(),
                 active_parameter_set_id: "parameters-1".into(),
                 previous_parameter_set_id: None,
+                scheduling_mode: SchedulingMode::Automatic,
+                deck_daily_time_budget_minutes: None,
+                controller_version: "time-budget-v1".into(),
+                controller_target_retention_basis_points: 9_000,
+                controller_new_cards_per_day: 20,
+                controller_last_evaluated_day_start_ms: None,
+                controller_review_count: 0,
+                controller_unseen_count: 0,
+                controller_forecast_review_seconds_per_day: 0,
+                controller_backlog_exceeds_budget: false,
+                controller_explanation: String::new(),
                 intensity: StudyIntensity::Balanced,
-                daily_time_budget_minutes: None,
                 day_boundary_minutes: 240,
                 optimizer_status: OptimizerStatus::NeverRun,
                 optimizer_diagnostics: None,
@@ -1459,6 +1612,71 @@ mod tests {
             .unwrap();
         let mut manifest: ArchiveManifest = serde_json::from_slice(&manifest_entry.1).unwrap();
         manifest.version = 1;
+        manifest.collection_sha256 = collection_sha256;
+        manifest_entry.1 = serde_json::to_vec(&manifest).unwrap();
+
+        let output = std::fs::File::create(destination).unwrap();
+        let mut writer = ZipWriter::new(output);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (name, bytes) in entries {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn rewrite_as_version_two(source: &std::path::Path, destination: &std::path::Path) {
+        let mut input = ZipArchive::new(std::fs::File::open(source).unwrap()).unwrap();
+        let mut entries = Vec::new();
+        for index in 0..input.len() {
+            let mut entry = input.by_index(index).unwrap();
+            let name = entry.name().to_owned();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            entries.push((name, bytes));
+        }
+
+        let collection_entry = entries
+            .iter_mut()
+            .find(|(name, _)| name == COLLECTION_ENTRY)
+            .unwrap();
+        let mut collection_json: serde_json::Value =
+            serde_json::from_slice(&collection_entry.1).unwrap();
+        let root = collection_json.as_object_mut().unwrap();
+        root.remove("collection_scheduling_settings");
+        for profile in root
+            .get_mut("scheduler_profiles")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+        {
+            let profile = profile.as_object_mut().unwrap();
+            let budget = profile.remove("deck_daily_time_budget_minutes").unwrap();
+            profile.insert("daily_time_budget_minutes".into(), budget);
+            for field in [
+                "scheduling_mode",
+                "controller_version",
+                "controller_target_retention_basis_points",
+                "controller_new_cards_per_day",
+                "controller_last_evaluated_day_start_ms",
+                "controller_review_count",
+                "controller_unseen_count",
+                "controller_forecast_review_seconds_per_day",
+                "controller_backlog_exceeds_budget",
+                "controller_explanation",
+            ] {
+                profile.remove(field);
+            }
+        }
+        collection_entry.1 = serde_json::to_vec(&collection_json).unwrap();
+        let collection_sha256 = content_hash(&collection_entry.1);
+
+        let manifest_entry = entries
+            .iter_mut()
+            .find(|(name, _)| name == MANIFEST_ENTRY)
+            .unwrap();
+        let mut manifest: ArchiveManifest = serde_json::from_slice(&manifest_entry.1).unwrap();
+        manifest.version = 2;
         manifest.collection_sha256 = collection_sha256;
         manifest_entry.1 = serde_json::to_vec(&manifest).unwrap();
 

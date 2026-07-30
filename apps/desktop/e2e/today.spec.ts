@@ -37,6 +37,13 @@ test("shows empty, overdue, and capped workload states", async ({ page }) => {
     "2 new cards are deferred",
   );
   await expect(page.getByRole("button", { name: "Start study" })).toBeEnabled();
+
+  await page.goto("/?today=backlog");
+  await openToday(page);
+  await expect(page.getByText("Due work exceeds today’s budget")).toBeVisible();
+  await expect(page.getByRole("status")).toContainText(
+    "Every due review remains available.",
+  );
 });
 
 test("filters by deck and explains a time-budget change", async ({ page }) => {
@@ -51,7 +58,9 @@ test("filters by deck and explains a time-budget change", async ({ page }) => {
     .locator("#main-content")
     .getByRole("button", { name: "Settings", exact: true })
     .click();
-  await page.getByLabel("Daily time budget").fill("1");
+  await page.getByLabel("Daily study hours").fill("0");
+  await page.getByLabel("Daily study minutes").fill("1");
+  await page.getByRole("button", { name: "Preview policy" }).click();
   await page.getByRole("button", { name: "Save preferences" }).click();
   await expect(page.getByText("Scheduling preferences saved.")).toBeVisible();
 

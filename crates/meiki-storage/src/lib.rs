@@ -33,7 +33,9 @@ const LIBRARY_MIGRATION: &str = include_str!("../migrations/0007_library.sql");
 const CARD_LIFECYCLE_MIGRATION: &str = include_str!("../migrations/0008_card_lifecycle.sql");
 const PROJECTION_INTEGRITY_MIGRATION: &str =
     include_str!("../migrations/0009_projection_integrity.sql");
-const LATEST_SCHEMA_VERSION: u32 = 9;
+const TIME_BUDGET_POLICY_MIGRATION: &str =
+    include_str!("../migrations/0010_time_budget_policy.sql");
+const LATEST_SCHEMA_VERSION: u32 = 10;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -106,6 +108,16 @@ pub struct StoredLibraryNote {
     pub note: StoredSourceNote,
     pub cards: Vec<StoredLibraryCard>,
     pub deleted_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchedulingWorkload {
+    pub unseen_cards: u64,
+    pub due_cards_now: u64,
+    pub forecast_review_occurrences: u64,
+    pub response_duration_samples: u64,
+    pub median_response_duration_ms: Option<u64>,
+    pub review_count: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -228,6 +240,9 @@ impl Storage {
                 [u64::try_from(repaired_cards)
                     .map_err(|_| StorageError::NumericRange("repaired card count"))?],
             )?;
+        }
+        if current < 10 {
+            transaction.execute_batch(TIME_BUDGET_POLICY_MIGRATION)?;
         }
         transaction.commit()?;
         Ok(())
