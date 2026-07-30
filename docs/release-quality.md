@@ -61,7 +61,8 @@ WCAG 2.0 A/AA and WCAG 2.1 AA rules. The suite also checks:
 
 Automated checks do not replace a screen-reader pass. Before a public release,
 manually complete the release journey with VoiceOver on macOS or NVDA on
-Windows.
+Windows. Complete the native IME and RTL-input checklist in
+[test architecture](testing.md#native-input-checklist) during the same pass.
 
 The packaged-app pass is tracked as the mandatory v0.2 release sign-off in
 [issue #43](https://github.com/25d-228/meiki/issues/43). It follows completion
@@ -85,19 +86,27 @@ snapshot alone.
 Run `./scripts/performance` on a release build. The budgets are deliberately
 generous cross-platform regression limits, not product claims.
 
-| Scenario                      |                          Fixture |    Budget |
-| ----------------------------- | -------------------------------: | --------: |
-| Today queue construction      |                  1,000,000 cards |      15 s |
-| Cross-script substring search |                  250,000 records |       5 s |
-| Time-budget policy aggregate  |                  1,000,000 cards |       1 s |
-| Media integrity scan          |                   10,000 objects |      30 s |
-| Desktop shell startup         | Primary action ready in Chromium |       2 s |
-| New database migration        |              current v0.1 schema |       2 s |
-| Warm startup database open    |                         50 opens | 5 s total |
+| Scenario                                   |                                     Fixture |    Budget |
+| ------------------------------------------ | ------------------------------------------: | --------: |
+| Storage-backed Today queue and controller  | 15,000 cards across two SQLite-backed decks |      60 s |
+| Storage-backed mixed-script Library search |                  15,000 SQLite-backed notes |      60 s |
+| Released-shape large migration             |      10,000-card schema-8 SQLite collection |      60 s |
+| Representative archive export              |                5,000 notes plus local media |      30 s |
+| Representative archive validation          |                5,000 notes plus local media |      30 s |
+| Today queue construction                   |                   1,000,000 in-memory cards |      15 s |
+| Cross-script substring search              |                   250,000 in-memory records |       5 s |
+| Time-budget policy aggregate               |                   1,000,000 aggregate cards |       1 s |
+| Media integrity scan                       |                   10,000 filesystem objects |      30 s |
+| Browser shell startup                      |            Primary action ready in Chromium |       2 s |
+| Packaged shell startup                     |                Clean collection initialized |      10 s |
+| New database migration                     |                              Current schema |       2 s |
+| Warm startup database open                 |                                    50 opens | 5 s total |
 
-The CI performance job runs serially and prints measurements in its log. A
-budget failure blocks merge. Investigate host noise once, but do not increase a
-budget without documenting the regression and its user impact here.
+The main-branch CI performance job runs serially and prints fixture bytes and
+measurements in its log. Run it locally before merging performance-sensitive
+changes. A budget failure blocks release promotion. Investigate host noise once,
+but do not increase a budget without documenting the regression and its user
+impact here.
 
 ## Version and recovery policy
 
@@ -106,7 +115,7 @@ contiguous database migrations, the published archive version, bundle
 metadata, icons, and release documentation. v0.1 publishes database schema 7
 and `.meiki` archive version 1. Current development uses database schema 10 and
 archive version 4 while retaining the released schema-7 migration fixture and
-version-1 and version-2 archive import coverage. Future releases must keep
+version-1 through version-3 archive import coverage. Future releases must keep
 migration fixtures from every released database schema and import fixtures
 from every published archive version.
 

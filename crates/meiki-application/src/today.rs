@@ -573,7 +573,7 @@ fn desktop_count(value: usize, field: &'static str) -> Result<u32, ApplicationEr
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf, time::Duration};
 
     use chrono::Utc;
     use meiki_domain::{
@@ -1329,6 +1329,81 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(error, ApplicationError::InvalidToday(_)));
+    }
+
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    fn release_budget_storage_backed_today_controller_and_library() {
+        const CARD_COUNT: u32 = 15_000;
+        const NOW_MS: i64 = 1_000_000_000;
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("large-collection.db");
+        let mut storage = Storage::open(&path).unwrap();
+        storage
+            .seed_large_performance_fixture(CARD_COUNT, NOW_MS)
+            .unwrap();
+        drop(storage);
+        let fixture_bytes = fs::metadata(&path).unwrap().len();
+
+        let open_started = std::time::Instant::now();
+        drop(Storage::open(&path).unwrap());
+        let open_elapsed = open_started.elapsed();
+
+        let service = ApplicationService::new(&path);
+        let today_started = std::time::Instant::now();
+        let overview = service
+            .get_today_overview(&TodayRequest {
+                deck_id: ALL_DECKS_ID.into(),
+                now_ms: NOW_MS,
+                day_start_ms: NOW_MS - 60_000,
+                day_end_ms: NOW_MS + 86_400_000,
+            })
+            .unwrap();
+        let today_elapsed = today_started.elapsed();
+
+        let library_started = std::time::Instant::now();
+        let library = service
+            .get_library(&LibraryRequest {
+                query: "search-target".into(),
+                deck_id: None,
+                tag_id: None,
+                due: LibraryDueFilterDto::All,
+                suspended: LibrarySuspendedFilterDto::All,
+                language_tag: None,
+                media: LibraryMediaFilterDto::All,
+                trash: LibraryTrashFilterDto::Active,
+                now_ms: NOW_MS,
+                offset: 0,
+                limit: 50,
+            })
+            .unwrap();
+        let library_elapsed = library_started.elapsed();
+
+        assert_eq!(overview.due_reviews, 10_000);
+        assert!(
+            overview
+                .queue
+                .iter()
+                .any(|card| card.card_id == "performance-card-0000000")
+        );
+        assert_eq!(library.total_matches, 3_000);
+        assert_eq!(library.notes.len(), 50);
+        assert!(open_elapsed <= Duration::from_secs(10));
+        assert!(
+            today_elapsed <= Duration::from_secs(60),
+            "storage-backed 15,000-card Today/controller path exceeded 60 s: {today_elapsed:?}"
+        );
+        assert!(
+            library_elapsed <= Duration::from_secs(60),
+            "storage-backed 15,000-note Library search exceeded 60 s: {library_elapsed:?}"
+        );
+        eprintln!(
+            "release-budget storage_backed_15000 fixture_bytes={fixture_bytes} \
+             open_ms={} today_ms={} library_ms={}",
+            open_elapsed.as_millis(),
+            today_elapsed.as_millis(),
+            library_elapsed.as_millis()
+        );
     }
 
     #[test]

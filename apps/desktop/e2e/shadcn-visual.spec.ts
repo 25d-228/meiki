@@ -358,8 +358,8 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.getByText("Expected answer")).toBeVisible();
     await page.keyboard.press("Enter");
     await expect(
-      page.locator(".complete-state[aria-live='polite']"),
-    ).toContainText("Review saved");
+      page.getByRole("heading", { name: "Review saved" }),
+    ).toBeVisible();
     await expect(page).toHaveScreenshot(`study-success-medium-${theme}.png`, {
       animations: "disabled",
       caret: "hide",
@@ -401,6 +401,35 @@ test("dialogs trap focus and restore it to their launch control", async ({
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(previewButton).toBeFocused();
+});
+
+test("alert dialogs trap focus and restore it to their launch control", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await navigate(page, "Library");
+  await page.getByText("Select this page").click();
+  const trashButton = page.getByRole("button", { name: "Move to Trash" });
+  await trashButton.click();
+  const dialog = page.getByRole("alertdialog", {
+    name: "Move selected notes to Trash?",
+  });
+  await expect(dialog).toBeVisible();
+
+  for (let index = 0; index < 8; index += 1) {
+    await page.keyboard.press("Tab");
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Boolean(document.activeElement?.closest("[role='alertdialog']")),
+        ),
+      )
+      .toBe(true);
+  }
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(trashButton).toBeFocused();
 });
 
 test("screens reflow at a 200% zoom-equivalent CSS viewport", async ({

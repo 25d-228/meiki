@@ -231,6 +231,34 @@ fn opening_a_clean_collection_is_idempotent_and_creates_no_learning_data() {
 }
 
 #[test]
+fn large_performance_fixture_preserves_production_history_invariants() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage
+        .seed_large_performance_fixture(30, 1_000_000)
+        .unwrap();
+
+    assert_eq!(storage.library_notes().unwrap().len(), 30);
+    assert_eq!(
+        storage
+            .connection
+            .query_row("SELECT COUNT(*) FROM review_events", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap(),
+        20
+    );
+    let integrity = storage.check_collection_schedule_integrity().unwrap();
+    assert_eq!(integrity.checked_cards, 30);
+    assert!(integrity.is_valid());
+    let workload = storage
+        .scheduling_workload(DEFAULT_DECK_ID, 1_000_000, 31 * 86_400_000)
+        .unwrap();
+    assert!(workload.due_cards_now > 0);
+    assert!(workload.unseen_cards > 0);
+    assert!(workload.review_count > 0);
+}
+
+#[test]
 fn parameter_adoption_is_atomic_and_prospective() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();
@@ -1948,6 +1976,47 @@ fn release_budget_startup_and_current_schema_migration() {
         "release-budget migration_new_ms={} startup_50_ms={}",
         migration_elapsed.as_millis(),
         startup_elapsed.as_millis()
+    );
+}
+
+#[test]
+#[ignore = "release performance budget; run with scripts/performance"]
+fn release_budget_large_version_eight_migration() {
+    const CARD_COUNT: u32 = 10_000;
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("large-v8.db");
+    let mut legacy = open_version_eight_fixture(&path);
+    legacy
+        .seed_large_performance_fixture(CARD_COUNT, 1_000_000_000)
+        .unwrap();
+    assert_eq!(legacy.schema_version().unwrap(), 8);
+    drop(legacy);
+    let before_bytes = std::fs::metadata(&path).unwrap().len();
+
+    let started = std::time::Instant::now();
+    let migrated = Storage::open(&path).unwrap();
+    let migration_elapsed = started.elapsed();
+    let integrity = migrated.check_collection_schedule_integrity().unwrap();
+    let after_bytes = std::fs::metadata(&path).unwrap().len();
+
+    assert_eq!(migrated.schema_version().unwrap(), 10);
+    assert_eq!(
+        integrity.checked_cards,
+        usize::try_from(CARD_COUNT).unwrap()
+    );
+    assert!(integrity.is_valid());
+    assert_eq!(
+        migration_backup_schema_version(directory.path(), "large-v8.db.migration-v8-"),
+        8
+    );
+    assert!(
+        migration_elapsed <= std::time::Duration::from_secs(60),
+        "10,000-card schema-8 migration exceeded 60 s: {migration_elapsed:?}"
+    );
+    eprintln!(
+        "release-budget migration_v8_10000 before_bytes={before_bytes} \
+         after_bytes={after_bytes} elapsed_ms={}",
+        migration_elapsed.as_millis()
     );
 }
 

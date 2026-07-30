@@ -126,11 +126,13 @@ for (const theme of ["light", "dark"] as const) {
     const answer = page.getByLabel("Your answer");
     await answer.fill("行きます");
     await answer.press("Enter");
-    await expect(page.getByText("Expected answer")).toBeVisible();
+    await expect(
+      page.getByText("Expected answer", { exact: true }),
+    ).toBeVisible();
     await page.keyboard.press("Enter");
     await expect(
-      page.locator(".complete-state[aria-live='polite']"),
-    ).toContainText("Review saved");
+      page.getByRole("heading", { name: "Review saved" }),
+    ).toBeVisible();
     await expectNoAccessibilityViolations(page);
   });
 }
@@ -151,13 +153,13 @@ test("skip navigation, focus transfer, and live study states are exposed", async
   await expect(answer).toBeFocused();
   await answer.fill("行きます");
   await answer.press("Enter");
-  await expect(page.locator(".reveal[aria-live='polite']")).toContainText(
-    "Expected answer",
-  );
+  await expect(
+    page.getByText("Expected answer", { exact: true }),
+  ).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(
-    page.locator(".complete-state[aria-live='polite']"),
-  ).toContainText("Review saved");
+    page.getByRole("heading", { name: "Review saved" }),
+  ).toBeVisible();
 });
 
 test("RTL learning content does not reverse application controls", async ({

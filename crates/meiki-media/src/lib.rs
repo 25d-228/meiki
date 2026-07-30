@@ -758,6 +758,26 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn read_only_media_root_fails_without_a_partial_object() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("safe.png");
+        fs::write(&source, png(2, 2)).unwrap();
+        let root = directory.path().join("read-only-media");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+        let store = MediaStore::new(&root);
+
+        let result = store.import_file(&source);
+
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(result, Err(MediaError::Io { .. })));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+
     #[test]
     fn restore_rejects_a_backup_with_a_changed_object() {
         let directory = tempdir().unwrap();

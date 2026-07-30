@@ -485,6 +485,202 @@ impl Storage {
         transaction.commit()?;
         Ok(())
     }
+
+    /// Inserts a deterministic, storage-backed mixed-script release fixture.
+    ///
+    /// This helper is available only to tests and explicit test-fixture builds.
+    /// It uses production schema constraints and creates valid review history
+    /// for introduced cards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the fixture cannot be committed.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[allow(clippy::too_many_lines)]
+    pub fn seed_large_performance_fixture(
+        &mut self,
+        card_count: u32,
+        now_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO decks(
+                id, name, language_tag, direction, matching_policy,
+                created_at_ms, updated_at_ms
+             ) VALUES (
+                'performance-deck', 'Performance 日本語 العربية', 'und',
+                'auto', 'strict', ?1, ?1
+             )",
+            [now_ms],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO scheduler_profiles(
+                deck_id, engine_version, active_parameter_set_id, updated_at_ms
+             ) VALUES (
+                'performance-deck', 'fsrs-7', ?1, ?2
+             )",
+            params![DEFAULT_SCHEDULER_PARAMETER_SET_ID, now_ms],
+        )?;
+
+        {
+            let mut insert_source = transaction.prepare(
+                "INSERT INTO source_items(
+                    id, language_tag, direction, created_at_ms, deck_id, updated_at_ms
+                 ) VALUES (?1, 'und', 'auto', ?2, ?3, ?2)",
+            )?;
+            let mut insert_cloze = transaction.prepare(
+                "INSERT INTO clozes(
+                    id, source_item_id, answer, accepted_answers_json,
+                    language_tag, direction, created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, '[]', 'und', 'auto', ?4, ?4)",
+            )?;
+            let mut insert_segment = transaction.prepare(
+                "INSERT INTO semantic_segments(
+                    id, source_item_id, ordinal, kind, text, cloze_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            let mut insert_card = transaction.prepare(
+                "INSERT INTO cards(
+                    id, cloze_id, content_version, created_at_ms,
+                    updated_at_ms, queue_updated_at_ms
+                 ) VALUES (?1, ?2, 0, ?3, ?3, ?3)",
+            )?;
+            let mut insert_schedule = transaction.prepare(
+                "INSERT INTO schedule_states(
+                    card_id, version, lifecycle, due_at_ms, ideal_due_at_ms,
+                    interval_milliseconds, interval_seconds, repetitions,
+                    stability_milliseconds, difficulty_millipoints,
+                    last_reviewed_at_ms, last_review_event_id
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+                 )",
+            )?;
+            let mut insert_baseline = transaction.prepare(
+                "INSERT INTO schedule_baselines(
+                    card_id, version, lifecycle, due_at_ms, ideal_due_at_ms,
+                    interval_milliseconds, interval_seconds, repetitions,
+                    stability_milliseconds, difficulty_millipoints,
+                    last_reviewed_at_ms, last_review_event_id
+                 ) VALUES (
+                    ?1, 0, 'unseen', ?2, ?2, 0, 0, 0, 0, 0, NULL, NULL
+                 )",
+            )?;
+            let mut insert_review = transaction.prepare(
+                "INSERT INTO review_events(
+                    id, card_id, card_content_version, raw_response,
+                    normalized_response, comparison, suggested_grade,
+                    chosen_grade, reviewed_at_ms, scheduler_version,
+                    scheduler_parameter_set_id, target_retention_basis_points,
+                    previous_schedule_version, previous_due_at_ms,
+                    previous_ideal_due_at_ms, previous_interval_milliseconds,
+                    previous_interval_seconds, previous_repetitions,
+                    previous_stability_milliseconds,
+                    previous_difficulty_millipoints,
+                    previous_last_reviewed_at_ms, next_schedule_version,
+                    next_due_at_ms, next_ideal_due_at_ms,
+                    next_interval_milliseconds, next_interval_seconds,
+                    next_repetitions, next_stability_milliseconds,
+                    next_difficulty_millipoints, next_last_reviewed_at_ms,
+                    event_kind, undoes_review_event_id, response_duration_ms,
+                    grade_overridden, previous_lifecycle, next_lifecycle
+                 ) VALUES (
+                    ?1, ?2, 0, ?3, ?3, 'exact', 'good', 'good', ?4, 'fsrs-7',
+                    ?5, 9000, 0, ?4, ?4, 0, 0, 0, 0, 0, NULL,
+                    1, ?6, ?6, 86400000, 86400, 1, 86400000, 5000, ?4,
+                    'review', NULL, ?7, 0, 'unseen', 'introduced'
+                 )",
+            )?;
+
+            for index in 0..card_count {
+                let suffix = format!("{index:07}");
+                let source_id = format!("performance-source-{suffix}");
+                let cloze_id = format!("performance-cloze-{suffix}");
+                let card_id = format!("performance-card-{suffix}");
+                let event_id = format!("performance-review-{suffix}");
+                let deck_id = if index % 2 == 0 {
+                    DEFAULT_DECK_ID
+                } else {
+                    "performance-deck"
+                };
+                let (context, answer) = match index % 5 {
+                    0 => ("東京 العربية search-target", "図書館"),
+                    1 => ("Cafe\u{301} आणि पुस्तक", "café"),
+                    2 => ("Meeting الساعة 三時", "三時"),
+                    3 => ("👩🏽‍💻 family 👨‍👩‍👧‍👦", "emoji"),
+                    _ => ("עברית ١٢٣ punctuation", "שלום"),
+                };
+                insert_source.execute(params![source_id, now_ms, deck_id])?;
+                insert_cloze.execute(params![cloze_id, source_id, answer, now_ms])?;
+                insert_segment.execute(params![
+                    format!("performance-context-{suffix}"),
+                    source_id,
+                    0,
+                    "text",
+                    context,
+                    Option::<String>::None,
+                ])?;
+                insert_segment.execute(params![
+                    format!("performance-answer-{suffix}"),
+                    source_id,
+                    1,
+                    "cloze",
+                    answer,
+                    cloze_id,
+                ])?;
+                insert_card.execute(params![card_id, cloze_id, now_ms])?;
+
+                if index % 3 == 2 {
+                    let due_at_ms = now_ms.saturating_add(i64::from(index));
+                    insert_baseline.execute(params![card_id, due_at_ms])?;
+                    insert_schedule.execute(params![
+                        card_id,
+                        0,
+                        "unseen",
+                        due_at_ms,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        Option::<i64>::None,
+                        Option::<String>::None,
+                    ])?;
+                } else {
+                    let due_at_ms = if index % 3 == 0 {
+                        now_ms
+                    } else {
+                        now_ms.saturating_sub(1)
+                    };
+                    let reviewed_at_ms = now_ms.saturating_sub(86_400_000);
+                    insert_baseline.execute(params![card_id, reviewed_at_ms])?;
+                    insert_review.execute(params![
+                        event_id,
+                        card_id,
+                        answer,
+                        reviewed_at_ms,
+                        DEFAULT_SCHEDULER_PARAMETER_SET_ID,
+                        due_at_ms,
+                        1_000_u64 + u64::from(index % 2_000),
+                    ])?;
+                    insert_schedule.execute(params![
+                        card_id,
+                        1,
+                        "introduced",
+                        due_at_ms,
+                        86_400_000,
+                        86_400,
+                        1,
+                        86_400_000,
+                        5_000,
+                        reviewed_at_ms,
+                        event_id,
+                    ])?;
+                }
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
 }
 
 fn prune_rolling_backups(directory: &Path, prefix: &str, keep: usize) -> Result<(), StorageError> {

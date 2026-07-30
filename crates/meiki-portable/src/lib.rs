@@ -1512,6 +1512,96 @@ mod tests {
         assert!(validate_collection(&malformed).is_err());
     }
 
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    fn release_budget_representative_archive_export_and_validation() {
+        const NOTE_COUNT: usize = 5_000;
+        let directory = tempdir().unwrap();
+        let media_path = directory.path().join("image.bin");
+        let media_bytes = b"\x89PNG\r\n\x1a\nportable-media";
+        std::fs::write(&media_path, media_bytes).unwrap();
+        let media_hash = content_hash(media_bytes);
+        let mut representative = collection(&media_hash);
+        let template = representative.notes.pop().unwrap();
+        representative.notes = (0..NOTE_COUNT)
+            .map(|index| renumber_note(&template, index))
+            .collect();
+        let archive_path = directory.path().join("representative.meiki");
+
+        let write_started = std::time::Instant::now();
+        write_archive(
+            &archive_path,
+            &representative,
+            &[ArchiveMediaSource {
+                content_hash: media_hash,
+                path: media_path,
+            }],
+            42,
+        )
+        .unwrap();
+        let write_elapsed = write_started.elapsed();
+        let archive_bytes = std::fs::metadata(&archive_path).unwrap().len();
+
+        let read_started = std::time::Instant::now();
+        let validated = read_archive(&archive_path).unwrap();
+        let read_elapsed = read_started.elapsed();
+
+        assert_eq!(validated.collection.notes.len(), NOTE_COUNT);
+        assert_eq!(validated.manifest.counts.notes, 5_000);
+        assert_eq!(validated.manifest.counts.cards, 5_000);
+        assert_eq!(validated.media_objects.len(), 1);
+        assert!(
+            write_elapsed <= std::time::Duration::from_secs(30),
+            "5,000-note archive export exceeded 30 s: {write_elapsed:?}"
+        );
+        assert!(
+            read_elapsed <= std::time::Duration::from_secs(30),
+            "5,000-note archive validation exceeded 30 s: {read_elapsed:?}"
+        );
+        eprintln!(
+            "release-budget archive_5000 archive_bytes={archive_bytes} \
+             write_ms={} validate_ms={}",
+            write_elapsed.as_millis(),
+            read_elapsed.as_millis()
+        );
+    }
+
+    fn renumber_note(template: &PortableNote, index: usize) -> PortableNote {
+        let suffix = format!("{index:05}");
+        let source_id = format!("note-{suffix}");
+        let cloze_id = format!("cloze-{suffix}");
+        let card_id = format!("card-{suffix}");
+        let review_id = format!("review-{suffix}");
+        let mut note = template.clone();
+        note.source_item.id.clone_from(&source_id);
+        note.source_item.media[0].id = format!("media-{suffix}");
+        for (ordinal, segment) in note.source_item.segments.iter_mut().enumerate() {
+            segment.id = format!("segment-{suffix}-{ordinal}");
+            if let SegmentContent::Cloze {
+                cloze_id: segment_cloze_id,
+                ..
+            } = &mut segment.content
+            {
+                segment_cloze_id.clone_from(&cloze_id);
+            }
+        }
+        note.clozes[0].id.clone_from(&cloze_id);
+        note.clozes[0].source_item_id = source_id;
+        let portable_card = &mut note.cards[0];
+        portable_card.card.id.clone_from(&card_id);
+        portable_card.card.cloze_id = cloze_id;
+        portable_card.baseline.card_id.clone_from(&card_id);
+        portable_card.schedule.card_id.clone_from(&card_id);
+        portable_card.schedule.last_review_event_id = Some(review_id.clone());
+        let event = &mut portable_card.review_events[0];
+        event.id.clone_from(&review_id);
+        event.card_id.clone_from(&card_id);
+        event.previous_schedule.card_id.clone_from(&card_id);
+        event.next_schedule.card_id = card_id;
+        event.next_schedule.last_review_event_id = Some(review_id);
+        note
+    }
+
     #[allow(clippy::too_many_lines)]
     fn collection(media_hash: &str) -> PortableCollection {
         let schedule = ScheduleState {
