@@ -17,7 +17,9 @@ use std::{
 };
 
 use meiki_domain::{Card, Cloze, Direction, MatchingPolicy, ScheduleState, SourceItem};
-use rusqlite::{Connection, MAIN_DB, OptionalExtension, params};
+#[cfg(any(test, feature = "test-fixtures"))]
+use rusqlite::params;
+use rusqlite::{Connection, MAIN_DB, OptionalExtension};
 use thiserror::Error;
 
 const FOUNDATION_MIGRATION: &str = include_str!("../migrations/0001_foundation.sql");
@@ -33,8 +35,11 @@ const LATEST_SCHEMA_VERSION: u32 = 8;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
+#[cfg(any(test, feature = "test-fixtures"))]
 pub const SAMPLE_SOURCE_ID: &str = "sample-source";
+#[cfg(any(test, feature = "test-fixtures"))]
 pub const SAMPLE_CLOZE_ID: &str = "sample-cloze";
+#[cfg(any(test, feature = "test-fixtures"))]
 pub const SAMPLE_CARD_ID: &str = "sample-card";
 
 #[derive(Debug, Error)]
@@ -106,6 +111,19 @@ pub struct Storage {
 }
 
 impl Storage {
+    /// Reports whether the collection contains any user learning material.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the collection cannot be queried.
+    pub fn has_learning_material(&self) -> Result<bool, StorageError> {
+        self.connection
+            .query_row("SELECT EXISTS(SELECT 1 FROM source_items)", [], |row| {
+                row.get(0)
+            })
+            .map_err(StorageError::from)
+    }
+
     /// Opens or creates a collection and applies pending migrations.
     ///
     /// # Errors
@@ -352,6 +370,7 @@ impl Storage {
     ///
     /// Returns [`StorageError`] when any insert or the surrounding transaction
     /// fails.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn seed_walking_skeleton(&mut self, now_ms: i64) -> Result<(), StorageError> {
         let transaction = self.connection.transaction()?;
         transaction.execute(

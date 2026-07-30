@@ -65,6 +65,58 @@ async function expectOneReviewAndNextCard(page: Page): Promise<void> {
     .toBe(1);
 }
 
+test("keeps a clean collection empty and links Study to cloze authoring", async ({
+  page,
+}) => {
+  await page.goto("/?today=empty&collection=empty");
+  await expect(
+    page.getByRole("heading", { name: "Today", level: 1 }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Library", exact: true, level: 1 }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Your library is ready" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Settings", exact: true, level: 1 }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Your collection is empty" }),
+  ).toBeVisible();
+  const primaryActions = page.locator("[data-primary-action]");
+  await expect(primaryActions).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "Create a cloze" }),
+  ).toBeVisible();
+  await expect(page.getByText("日曜日は図書館に行きます")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Create a cloze" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Add / Edit", level: 1 }),
+  ).toBeVisible();
+});
+
+test("shows the next due time when the collection has no eligible card", async ({
+  page,
+}) => {
+  await openStudy(page, "/?today=empty");
+  await expect(
+    page.getByRole("heading", { name: "Nothing is due" }),
+  ).toBeVisible();
+  await expect(page.getByText(/Your next review is due/)).toBeVisible();
+  await page.getByRole("button", { name: "Return to Today" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Today", level: 1 }),
+  ).toBeVisible();
+});
+
 test("checks, grades, and resumes at the next eligible card", async ({
   page,
 }) => {

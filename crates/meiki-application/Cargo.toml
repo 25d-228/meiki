@@ -21,5 +21,8 @@ thiserror.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true
 
+[dev-dependencies]
+meiki-storage = { path = "../meiki-storage", features = ["test-fixtures"] }
+
 [lints]
 workspace = true

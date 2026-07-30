@@ -60,6 +60,21 @@ pub struct TodayOverviewDto {
     pub queue: Vec<TodayQueueCardDto>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum StudyAvailabilityDto {
+    Ready,
+    EmptyCollection,
+    NothingDue,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct StudyPlanDto {
+    pub availability: StudyAvailabilityDto,
+    pub overview: TodayOverviewDto,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct QueueCandidate {
     card_id: String,
@@ -179,6 +194,30 @@ impl ApplicationService {
                     })
                 })
                 .collect::<Result<Vec<_>, ApplicationError>>()?,
+        })
+    }
+
+    /// Opens the collection and returns an explicit, read-only study plan.
+    ///
+    /// A clean collection remains empty. Normal empty and nothing-due states
+    /// are returned as data rather than inferred from a hard-coded card.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the current Today plan or collection contents
+    /// cannot be loaded.
+    pub fn prepare_study(&self, request: &TodayRequest) -> Result<StudyPlanDto, ApplicationError> {
+        let overview = self.get_today_overview(request)?;
+        let availability = if !overview.queue.is_empty() {
+            StudyAvailabilityDto::Ready
+        } else if self.open_storage()?.has_learning_material()? {
+            StudyAvailabilityDto::NothingDue
+        } else {
+            StudyAvailabilityDto::EmptyCollection
+        };
+        Ok(StudyPlanDto {
+            availability,
+            overview,
         })
     }
 
@@ -367,19 +406,23 @@ mod tests {
 
     use chrono::Utc;
     use meiki_domain::{
-        CardLifecycle, ComparisonResult, Deck, Direction, Grade, MatchingPolicy, ReviewEventKind,
-        ScheduleState, StudySettingsOverride,
+        CardLifecycle, ComparisonResult, Deck, Direction, Grade, LocalizedText, MatchingPolicy,
+        ReviewEventKind, ScheduleState, StudySettingsOverride,
     };
     use meiki_storage::{
-        CardRepository, DeckRepository, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID, Storage,
+        CardRepository, DeckRepository, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID, SourceNoteRepository,
+        Storage,
     };
     use tempfile::{TempDir, tempdir};
 
     use super::{
         ApplicationError, ApplicationService, QueueCandidate, ReconcileStudyQueueRequest,
-        StudyQueueEntryDto, TodayRequest, plan_today,
+        StudyAvailabilityDto, StudyQueueEntryDto, TodayRequest, plan_today,
     };
-    use crate::{GradeDto, GradeReviewRequest};
+    use crate::{
+        GradeDto, GradeReviewRequest, LibraryDueFilterDto, LibraryMediaFilterDto, LibraryRequest,
+        LibrarySuspendedFilterDto, LibraryTrashFilterDto, MakeClozeRequest,
+    };
 
     fn candidate(id: &str, due_at_ms: i64, lifecycle: CardLifecycle) -> QueueCandidate {
         QueueCandidate {
@@ -744,7 +787,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("collection.db");
         let service = ApplicationService::new(&path);
-        service.initialize_collection().unwrap();
+        service.seed_test_collection(1_000).unwrap();
         let before = Storage::open(&path)
             .unwrap()
             .load_study_card(SAMPLE_CARD_ID)
@@ -774,6 +817,180 @@ mod tests {
 
         let restarted = ApplicationService::new(&path);
         assert_eq!(restarted.get_today_overview(&request).unwrap(), overview);
+    }
+
+    #[test]
+    fn clean_collection_stays_empty_across_screens_and_restart_until_the_first_cloze() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&path);
+        let request = request_at(100_000);
+
+        let study = service.prepare_study(&request).unwrap();
+        assert_eq!(study.availability, StudyAvailabilityDto::EmptyCollection);
+        assert!(study.overview.queue.is_empty());
+        assert_eq!(study.overview.next_due_at, None);
+        assert!(
+            service
+                .get_library(&LibraryRequest {
+                    query: String::new(),
+                    deck_id: None,
+                    tag_id: None,
+                    due: LibraryDueFilterDto::All,
+                    suspended: LibrarySuspendedFilterDto::All,
+                    language_tag: None,
+                    media: LibraryMediaFilterDto::All,
+                    trash: LibraryTrashFilterDto::Active,
+                    now_ms: request.now_ms,
+                    offset: 0,
+                    limit: 50,
+                })
+                .unwrap()
+                .notes
+                .is_empty()
+        );
+        service
+            .get_scheduler_settings(meiki_storage::DEFAULT_DECK_ID)
+            .unwrap();
+        assert!(
+            service
+                .get_today_overview(&request)
+                .unwrap()
+                .queue
+                .is_empty()
+        );
+
+        {
+            let storage = Storage::open(&path).unwrap();
+            assert!(storage.library_notes().unwrap().is_empty());
+            assert!(
+                storage
+                    .study_cards_for_deck(meiki_storage::DEFAULT_DECK_ID)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                storage
+                    .active_review_events_for_deck(meiki_storage::DEFAULT_DECK_ID)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        let restarted = ApplicationService::new(&path);
+        assert_eq!(
+            restarted.prepare_study(&request).unwrap().availability,
+            StudyAvailabilityDto::EmptyCollection
+        );
+        assert!(
+            Storage::open(&path)
+                .unwrap()
+                .library_notes()
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut draft = restarted.new_authoring_draft().unwrap();
+        draft.segments[0].text = "Read widely".into();
+        let segment_id = draft.segments[0].id.clone();
+        let draft = restarted
+            .make_cloze(MakeClozeRequest {
+                draft,
+                segment_id,
+                selection_start_utf16: 5,
+                selection_end_utf16: 11,
+            })
+            .unwrap();
+        let saved = restarted.save_authoring_draft(&draft).unwrap();
+        let study = restarted.prepare_study(&request).unwrap();
+        assert_eq!(study.availability, StudyAvailabilityDto::Ready);
+        assert_eq!(study.overview.queue.len(), 1);
+        assert_eq!(study.overview.queue[0].card_id, saved.clozes[0].card_id);
+        let library = restarted
+            .get_library(&LibraryRequest {
+                query: String::new(),
+                deck_id: None,
+                tag_id: None,
+                due: LibraryDueFilterDto::All,
+                suspended: LibrarySuspendedFilterDto::All,
+                language_tag: None,
+                media: LibraryMediaFilterDto::All,
+                trash: LibraryTrashFilterDto::Active,
+                now_ms: request.now_ms,
+                offset: 0,
+                limit: 50,
+            })
+            .unwrap();
+        assert_eq!(library.notes.len(), 1);
+        assert_eq!(library.notes[0].source_id, saved.source_id);
+        assert_eq!(library.notes[0].cards[0].card_id, saved.clozes[0].card_id);
+    }
+
+    #[test]
+    fn study_plan_preserves_legacy_content_and_reports_its_next_due_time() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&path);
+        let card = service.seed_test_collection(100_000).unwrap();
+        assert_eq!(
+            service
+                .prepare_study(&request_at(100_000))
+                .unwrap()
+                .availability,
+            StudyAvailabilityDto::Ready
+        );
+
+        {
+            let mut storage = Storage::open(&path).unwrap();
+            let mut note = storage.get_source_note(SAMPLE_SOURCE_ID).unwrap();
+            note.source_item.explanation = Some(LocalizedText {
+                value: "Keep this user edit".into(),
+                language_tag: Some("en".into()),
+                direction: Direction::LeftToRight,
+            });
+            note.source_item.updated_at_ms = 100_001;
+            storage.update_source_note(&note).unwrap();
+            let mut stored_card = storage.get_card(SAMPLE_CARD_ID).unwrap();
+            stored_card.content_version += 1;
+            stored_card.updated_at_ms = 100_001;
+            storage.update_card(&stored_card).unwrap();
+        }
+        let changed = service.get_study_card(SAMPLE_CARD_ID).unwrap();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "legacy-reviewed".into(),
+                    card_id: card.card_id,
+                    card_content_version: changed.card_content_version,
+                    schedule_version: changed.schedule_version,
+                    raw_response: "行きます".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 1_000,
+                },
+                100_001,
+            )
+            .unwrap();
+        let schedule = Storage::open(&path)
+            .unwrap()
+            .load_schedule(SAMPLE_CARD_ID)
+            .unwrap();
+
+        let study = service
+            .prepare_study(&request_at(schedule.due_at_ms - 1))
+            .unwrap();
+        assert_eq!(study.availability, StudyAvailabilityDto::NothingDue);
+        assert_eq!(
+            study.overview.next_due_at,
+            Some(crate::timestamp_string(schedule.due_at_ms).unwrap())
+        );
+        let storage = Storage::open(&path).unwrap();
+        let note = storage.get_source_note(SAMPLE_SOURCE_ID).unwrap();
+        assert_eq!(
+            note.source_item.explanation.unwrap().value,
+            "Keep this user edit"
+        );
+        assert_eq!(storage.get_card(SAMPLE_CARD_ID).unwrap().content_version, 1);
+        assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
     }
 
     #[test]

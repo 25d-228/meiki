@@ -327,7 +327,10 @@ export async function installMockApi(page: Page): Promise<void> {
             };
           }
         ).request;
-        const notes = readLibraryNotes();
+        const notes =
+          new URLSearchParams(location.search).get("collection") === "empty"
+            ? []
+            : readLibraryNotes();
         const query = normalizeSearch(request.query);
         const filtered = notes.filter((note) => {
           const searchable = [
@@ -549,6 +552,31 @@ export async function installMockApi(page: Page): Promise<void> {
           byte_size: 4096,
         };
       }
+      if (command === "prepare_study") {
+        if (fixtureName === "error") {
+          throw new Error("The local collection is temporarily unavailable.");
+        }
+        const request = (
+          args as {
+            request: {
+              deck_id: string;
+              now_ms: number;
+              day_start_ms: number;
+              day_end_ms: number;
+            };
+          }
+        ).request;
+        const overview = (await window.__MEIKI_TEST_INVOKE__?.(
+          "get_today_overview",
+          { request },
+        )) as { queue: unknown[]; next_due_at: string | null };
+        const availability = overview.queue.length
+          ? "ready"
+          : new URLSearchParams(location.search).get("collection") === "empty"
+            ? "empty_collection"
+            : "nothing_due";
+        return { availability, overview };
+      }
       if (command === "get_today_overview") {
         const request = (
           args as {
@@ -599,7 +627,10 @@ export async function installMockApi(page: Page): Promise<void> {
             response_time_samples: 0,
             daily_time_budget_minutes:
               schedulerSettings.daily_time_budget_minutes,
-            next_due_at: "2026-08-01T09:00:00+00:00",
+            next_due_at:
+              new URLSearchParams(location.search).get("collection") === "empty"
+                ? null
+                : "2026-08-01T09:00:00+00:00",
             queue: [],
           };
         }
@@ -688,17 +719,14 @@ export async function installMockApi(page: Page): Promise<void> {
           );
         });
       }
-      if (command === "initialize_collection" || command === "get_study_card") {
+      if (command === "get_study_card") {
         if (fixtureName === "error") {
           throw new Error("The local collection is temporarily unavailable.");
         }
         if (fixtureName === "loading") {
           await new Promise((resolve) => setTimeout(resolve, 350));
         }
-        const cardId =
-          command === "get_study_card"
-            ? (args as { cardId: string }).cardId
-            : "sample-card";
+        const cardId = (args as { cardId: string }).cardId;
         const cardState = cardId.startsWith("new-card") ? initialState : state;
         return {
           card_id: cardId,

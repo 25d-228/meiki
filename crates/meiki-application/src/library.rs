@@ -750,7 +750,7 @@ mod tests {
     fn service_with_search_fixture() -> (tempfile::TempDir, ApplicationService, String) {
         let directory = tempdir().unwrap();
         let service = ApplicationService::new(directory.path().join("collection.db"));
-        service.initialize_collection().unwrap();
+        service.seed_test_collection(1_000).unwrap();
         let mut storage = Storage::open(&directory.path().join("collection.db")).unwrap();
         let source_id = storage.library_notes().unwrap()[0]
             .note

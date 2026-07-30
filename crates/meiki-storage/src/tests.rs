@@ -76,6 +76,30 @@ fn migration_backup_schema_version(directory: &std::path::Path, prefix: &str) ->
 }
 
 #[test]
+fn opening_a_clean_collection_is_idempotent_and_creates_no_learning_data() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("collection.db");
+    drop(Storage::open(&path).unwrap());
+    let storage = Storage::open(&path).unwrap();
+
+    assert!(!storage.has_learning_material().unwrap());
+    let count = |table: &str| -> i64 {
+        storage
+            .connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(count("decks"), 1);
+    assert_eq!(count("scheduler_profiles"), 1);
+    assert_eq!(count("source_items"), 0);
+    assert_eq!(count("clozes"), 0);
+    assert_eq!(count("cards"), 0);
+    assert_eq!(count("review_events"), 0);
+}
+
+#[test]
 fn parameter_adoption_and_rollback_are_atomic_and_prospective() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();
