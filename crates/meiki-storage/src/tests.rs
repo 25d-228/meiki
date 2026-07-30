@@ -472,6 +472,23 @@ fn review_append_projection_and_queue_update_are_atomic() {
 }
 
 #[test]
+fn injected_failure_before_review_commit_rolls_back_every_write() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let before = storage.load_study_card(SAMPLE_CARD_ID).unwrap();
+    let event = sample_event(&storage, "review-before-commit-failure", 10_000);
+
+    assert!(matches!(
+        storage.commit_review_failing_before_commit(&event),
+        Err(StorageError::InjectedTestFailure(
+            "review transaction before commit"
+        ))
+    ));
+    assert_eq!(storage.load_study_card(SAMPLE_CARD_ID).unwrap(), before);
+    assert!(storage.review_events(SAMPLE_CARD_ID).unwrap().is_empty());
+}
+
+#[test]
 fn scheduling_workload_uses_aggregates_and_a_bounded_response_median() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();

@@ -11,165 +11,111 @@ test.beforeEach(async ({ page }) => {
   ).toBeVisible();
 });
 
-async function search(page: Page, query: string, expected: string, count = 1) {
-  await page.getByRole("searchbox", { name: "Search library" }).fill(query);
-  await expect(page.getByText(`${count} matching notes`)).toBeVisible();
-  await expect(page.getByText(expected, { exact: true })).toBeVisible();
+async function lastRequest(page: Page, command: string) {
+  return page.evaluate((name) => {
+    const requests = window.__MEIKI_TEST_REQUESTS__ ?? [];
+    return requests.filter((request) => request.command === name).at(-1);
+  }, command);
 }
 
-test("searches normalized multilingual fields and filters deterministic results", async ({
+test("maps search and filter controls and renders the returned library DTO", async ({
   page,
 }) => {
-  await search(page, "図書館", "日曜日は図書館に行きます");
-  await search(page, "كتاب", "أنا أقرأ كتابًا في المكتبة");
-  await search(
-    page,
-    "café",
-    "Réviser le ＣＡＦÉ sans modifier le texte stocké",
-  );
-  await search(
-    page,
-    " الساعة ",
-    "Meetingは الساعة 三時 に始まる — this deliberately long multilingual source keeps 日本語, العربية, and English readable without changing stored text.",
-  );
+  await expect(page.getByText("日曜日は図書館に行きます")).toBeVisible();
+  await expect(page.getByText("أنا أقرأ كتابًا في المكتبة")).toBeVisible();
 
-  await page.getByRole("searchbox", { name: "Search library" }).fill("");
+  await page.getByRole("searchbox", { name: "Search library" }).fill(" كتاب ");
+  await expect
+    .poll(async () => (await lastRequest(page, "get_library"))?.args)
+    .toMatchObject({ request: { query: " كتاب " } });
+
   await page.getByRole("button", { name: "Filters" }).click();
   await page.getByLabel("Deck").selectOption("travel-deck");
-  await expect(page.getByText("2 matching notes")).toBeVisible();
-  await page.getByLabel("Deck").selectOption("");
-  await page.getByLabel("Due state").selectOption("due");
-  await expect(page.getByText("1 matching notes")).toBeVisible();
-  await expect(page.getByText("日曜日は図書館に行きます")).toBeVisible();
-  await page.getByLabel("Due state").selectOption("all");
-  await page.getByLabel("Card state").selectOption("suspended");
-  await expect(
-    page.getByText("Réviser le ＣＡＦÉ sans modifier le texte stocké"),
-  ).toBeVisible();
-  await page.getByLabel("Card state").selectOption("all");
+  await page.getByLabel("Due state").selectOption("scheduled");
   await page.getByLabel("Language metadata").selectOption("ar");
-  await expect(page.getByText("أنا أقرأ كتابًا في المكتبة")).toBeVisible();
-  await page.getByLabel("Language metadata").selectOption("");
-  await page.getByLabel("Media").selectOption("with_media");
-  await expect(page.getByText("日曜日は図書館に行きます")).toBeVisible();
-
-  const hasHorizontalOverflow = await page.evaluate(
-    () => document.documentElement.scrollWidth > window.innerWidth,
-  );
-  expect(hasHorizontalOverflow).toBe(false);
+  await page.getByLabel("Media").selectOption("without_media");
+  await expect
+    .poll(async () => (await lastRequest(page, "get_library"))?.args)
+    .toMatchObject({
+      request: {
+        deck_id: "travel-deck",
+        due: "scheduled",
+        language_tag: "ar",
+        media: "without_media",
+      },
+    });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false);
 });
 
-test("previews generated cards, returns from editing, and confirms cloze deletion", async ({
+test("renders preview and cloze-removal DTOs from edit controls", async ({
   page,
 }) => {
-  await search(page, "図書館", "日曜日は図書館に行きます");
-  await page.getByRole("button", { name: "Preview" }).click();
+  const note = page
+    .locator(".note-list > li")
+    .filter({ hasText: "日曜日は図書館に行きます" });
+  await note.getByRole("button", { name: "Preview" }).click();
   const preview = page.getByRole("dialog", { name: "Generated cards" });
   await expect(preview.getByText("日曜日は図書館に[…]")).toBeVisible();
   await expect(preview.getByText("行きます", { exact: true })).toBeVisible();
   await preview.getByRole("button", { name: "Close" }).click();
 
-  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await note.getByRole("button", { name: "Edit", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Add / Edit", level: 1 }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Return to Library" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Library", level: 1 }),
-  ).toBeVisible();
-
-  await search(page, "図書館", "日曜日は図書館に行きます");
-  await page.getByRole("button", { name: "Edit", exact: true }).click();
   await page
     .getByTestId("app-shell")
     .getByRole("button", { name: "Convert to text" })
     .click();
-  let confirmation = page.getByRole("alertdialog", {
+  const confirmation = page.getByRole("alertdialog", {
     name: "Convert this cloze to text?",
   });
   await expect(confirmation).toContainText("Saving will remove this card");
-  await confirmation.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.getByRole("button", { name: /Cloze 1/ })).toBeVisible();
-
-  await page
-    .getByTestId("app-shell")
-    .getByRole("button", { name: "Convert to text" })
-    .click();
-  confirmation = page.getByRole("alertdialog", {
-    name: "Convert this cloze to text?",
-  });
   await confirmation.getByRole("button", { name: "Convert to text" }).click();
   await expect(page.getByRole("button", { name: /Cloze 1/ })).toHaveCount(0);
+  expect((await lastRequest(page, "remove_cloze"))?.args).toMatchObject({
+    request: {
+      cloze_id: "cloze-fixture",
+      confirm_card_deletion: true,
+    },
+  });
 });
 
-test("bulk actions report exact counts, support undo, trash, and restore", async ({
+test("maps selected bulk actions after showing destructive confirmation", async ({
   page,
 }) => {
-  const statusMessage = (text: string) =>
-    page.getByTestId("app-shell").getByRole("status").filter({ hasText: text });
-  const reviewStateBefore = await page.evaluate(() =>
-    localStorage.getItem("meiki-e2e-state"),
-  );
   await page.getByText("Select this page").click();
-  await expect(page.getByText("4 notes selected")).toBeVisible();
+  await expect(page.getByText("2 notes selected")).toBeVisible();
   await page.getByRole("button", { name: "Suspend", exact: true }).click();
-  await expect(statusMessage("Suspended cards in 4 notes.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
-
-  await page.getByLabel("Select 日曜日は図書館に行きます").check();
-  await page.getByLabel("Select أنا أقرأ كتابًا في المكتبة").check();
-  await page.getByLabel("Tag name").fill("Priority");
-  await page.getByRole("button", { name: "Add tag" }).click();
-  await expect(statusMessage("Tagged 2 notes.")).toBeVisible();
-  await search(page, "priority", "日曜日は図書館に行きます", 2);
-  await expect(page.getByText("أنا أقرأ كتابًا في المكتبة")).toBeVisible();
-
-  await page.getByText("Select this page").click();
-  await expect(page.getByRole("button", { name: "Export" })).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Create .meiki archive" }),
-  ).toHaveCount(0);
-  await page.getByRole("button", { name: "Move", exact: true }).click();
-  await expect(statusMessage("Moved 2 notes.")).toBeVisible();
-  await search(page, "priority", "日曜日は図書館に行きます", 2);
+    page
+      .getByTestId("app-shell")
+      .getByRole("status")
+      .filter({ hasText: "Suspended cards in 2 notes." }),
+  ).toBeVisible();
+  expect(
+    (await lastRequest(page, "apply_library_bulk_action"))?.args,
+  ).toMatchObject({
+    request: {
+      source_ids: ["sample-source", "source-ar"],
+      action: "suspend",
+    },
+  });
+
   await page.getByText("Select this page").click();
   await page.getByRole("button", { name: "Move to Trash" }).click();
-  let confirmation = page.getByRole("alertdialog", {
+  const confirmation = page.getByRole("alertdialog", {
     name: "Move selected notes to Trash?",
   });
-  await expect(confirmation).toContainText("Move 2 selected notes to Trash?");
   await expect(confirmation).toContainText(
     "Review history and media stay intact",
   );
   await confirmation.getByRole("button", { name: "Move to Trash" }).click();
-  await expect(statusMessage("Moved 2 notes to Trash.")).toBeVisible();
-  await page.getByRole("button", { name: "Undo" }).click();
-  await expect(
-    statusMessage("Undid the last action for 2 notes."),
-  ).toBeVisible();
-
-  await page.getByText("Select this page").click();
-  await page.getByRole("button", { name: "Move to Trash" }).click();
-  confirmation = page.getByRole("alertdialog", {
-    name: "Move selected notes to Trash?",
-  });
-  await expect(confirmation).toContainText("Move 2 selected notes to Trash?");
-  await confirmation.getByRole("button", { name: "Move to Trash" }).click();
-  await expect(statusMessage("Moved 2 notes to Trash.")).toBeVisible();
-
-  await page.getByRole("searchbox", { name: "Search library" }).fill("");
-  await page.getByRole("button", { name: "Filters" }).click();
-  await page.getByLabel("Location").selectOption("deleted");
-  await expect(page.getByText("2 matching notes")).toBeVisible();
-  await expect(page.getByText("1 media")).toBeVisible();
-  await page.getByText("Select this page").click();
-  await page.getByRole("button", { name: "Restore" }).click();
-  await expect(statusMessage("Restored 2 notes.")).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Your library is ready" }),
-  ).toBeVisible();
-
   expect(
-    await page.evaluate(() => localStorage.getItem("meiki-e2e-state")),
-  ).toBe(reviewStateBefore);
+    (await lastRequest(page, "apply_library_bulk_action"))?.args,
+  ).toMatchObject({ request: { action: "delete" } });
 });

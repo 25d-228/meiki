@@ -21,6 +21,8 @@ For a release-affecting change, also run:
 
 The platform matrix, performance budgets, severity gate, signing posture, and
 tag procedure are defined in [docs/release-quality.md](docs/release-quality.md).
+Test ownership, deterministic seams, and the production-boundary failure matrix
+are defined in [docs/testing.md](docs/testing.md).
 
 Do not place SQL outside `meiki-storage`, scheduling rules outside
 `meiki-scheduler`, text comparison outside `meiki-text`, or business rules in

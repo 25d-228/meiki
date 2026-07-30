@@ -18,5 +18,9 @@ meiki-application = { path = "../../../crates/meiki-application" }
 tauri = { workspace = true, features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

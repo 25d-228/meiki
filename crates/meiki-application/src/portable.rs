@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::{ApplicationError, ApplicationService};
 use meiki_portable::{
     ArchiveMediaSource, ArchiveScope, PortableCard, PortableCollection, PortableNote,
     ValidatedArchive, read_archive, write_archive,
@@ -15,9 +16,6 @@ use meiki_storage::{
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
-
-use crate::{ApplicationError, ApplicationService};
 
 const BACKUP_RETENTION: usize = 5;
 const REPLACE_CONFIRMATION: &str = "REPLACE";
@@ -107,7 +105,11 @@ impl ApplicationService {
         let collection = build_collection(&storage)?;
         let media = media_sources(&collection, &self.media_store())?;
         let directory = self.export_directory()?;
-        let path = directory.join(format!("meiki-{}-{}.meiki", request.now_ms, Uuid::new_v4()));
+        let path = directory.join(format!(
+            "meiki-{}-{}.meiki",
+            request.now_ms,
+            self.next_id("portable-archive")
+        ));
         let manifest = write_archive(&path, &collection, &media, request.now_ms)?;
         Ok(PortableExportResultDto {
             path: path.to_string_lossy().into_owned(),

@@ -3,6 +3,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use chrono::{DateTime, Utc};
@@ -427,17 +428,85 @@ struct SchedulerParameterFile {
     parameters: Vec<f64>,
 }
 
+/// Supplies wall-clock time to application use cases.
+pub trait Clock: std::fmt::Debug + Send + Sync {
+    /// Returns the current Unix timestamp in milliseconds.
+    fn now_ms(&self) -> i64;
+}
+
+/// Supplies opaque aggregate identities to application use cases.
+pub trait IdSource: std::fmt::Debug + Send + Sync {
+    /// Returns a fresh identifier for the named purpose.
+    fn next_id(&self, purpose: &'static str) -> String;
+}
+
+#[derive(Debug)]
+struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now_ms(&self) -> i64 {
+        Utc::now().timestamp_millis()
+    }
+}
+
+#[derive(Debug)]
+struct RandomIdSource;
+
+impl IdSource for RandomIdSource {
+    fn next_id(&self, _purpose: &'static str) -> String {
+        Uuid::new_v4().to_string()
+    }
+}
+
+/// Narrow runtime inputs used to make application journeys deterministic.
+#[derive(Clone, Debug)]
+pub struct ApplicationRuntime {
+    clock: Arc<dyn Clock>,
+    ids: Arc<dyn IdSource>,
+}
+
+impl ApplicationRuntime {
+    /// Creates runtime inputs from a clock and identity source.
+    pub fn new(clock: impl Clock + 'static, ids: impl IdSource + 'static) -> Self {
+        Self {
+            clock: Arc::new(clock),
+            ids: Arc::new(ids),
+        }
+    }
+}
+
+impl Default for ApplicationRuntime {
+    fn default() -> Self {
+        Self::new(SystemClock, RandomIdSource)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ApplicationService {
     collection_path: PathBuf,
+    runtime: ApplicationRuntime,
 }
 
 impl ApplicationService {
     /// Creates a use-case service for one collection database path.
     pub fn new(collection_path: impl Into<PathBuf>) -> Self {
+        Self::with_runtime(collection_path, ApplicationRuntime::default())
+    }
+
+    /// Creates a use-case service with explicit deterministic runtime inputs.
+    pub fn with_runtime(collection_path: impl Into<PathBuf>, runtime: ApplicationRuntime) -> Self {
         Self {
             collection_path: collection_path.into(),
+            runtime,
         }
+    }
+
+    pub(crate) fn now_ms(&self) -> i64 {
+        self.runtime.clock.now_ms()
+    }
+
+    pub(crate) fn next_id(&self, purpose: &'static str) -> String {
+        self.runtime.ids.next_id(purpose)
     }
 
     #[cfg(test)]
@@ -471,7 +540,7 @@ impl ApplicationService {
             return Err(error);
         }
         let media = MediaReference {
-            id: Uuid::new_v4().to_string(),
+            id: self.next_id("media-reference"),
             content_hash: imported.content_hash,
             kind,
             role,
@@ -484,7 +553,7 @@ impl ApplicationService {
             duration_ms: imported.duration_ms,
             language_tag: request.language_tag.clone(),
             direction: request.direction.into(),
-            created_at_ms: Utc::now().timestamp_millis(),
+            created_at_ms: self.now_ms(),
         };
         Ok(self.study_media_dto(&media))
     }
@@ -523,7 +592,7 @@ impl ApplicationService {
             &answer_options(&storage, &stored)?,
         );
         let suggested_grade = suggested_grade(comparison.result);
-        let previewed_at_ms = Utc::now().timestamp_millis();
+        let previewed_at_ms = self.now_ms();
         let (engine, _, _) = scheduler_for_card(&storage, &stored)?;
         let grade_previews = [
             GradeDto::Again,
@@ -592,7 +661,7 @@ impl ApplicationService {
         &self,
         request: &GradeReviewRequest,
     ) -> Result<GradeReviewResultDto, ApplicationError> {
-        self.grade_review_at(request, Utc::now().timestamp_millis())
+        self.grade_review_at(request, self.now_ms())
     }
 
     fn grade_review_at(
@@ -694,7 +763,7 @@ impl ApplicationService {
         )?;
         let mut card = stored.card;
         card.suspended = true;
-        card.updated_at_ms = Utc::now().timestamp_millis();
+        card.updated_at_ms = self.now_ms();
         storage.update_card(&card)?;
         self.study_card_dto(&storage, &request.card_id)
     }
@@ -744,7 +813,7 @@ impl ApplicationService {
             &request.card_id,
             &request.review_event_id,
             &request.undo_event_id,
-            Utc::now().timestamp_millis(),
+            self.now_ms(),
         )?;
         undo_review_result(
             &storage,
@@ -904,13 +973,13 @@ impl ApplicationService {
             },
             &imported.parameters,
         )?;
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = self.now_ms();
         let parameter_set = SchedulerParameterSet {
             id: format!(
                 "fsrs7-import-{}-{}-{}",
                 sanitize_parameter_id(&imported.parameter_set_id),
                 now_ms,
-                Uuid::new_v4()
+                self.next_id("scheduler-parameter-set")
             ),
             engine_version: imported.engine_version,
             parameters: imported.parameters,
@@ -945,7 +1014,11 @@ impl ApplicationService {
             engine_version: parameters.engine_version,
             parameters: parameters.parameters,
         };
-        let path = scheduler_parameters_path(&self.collection_path);
+        let path = scheduler_parameters_path(
+            &self.collection_path,
+            self.now_ms(),
+            &self.next_id("scheduler-parameter-export"),
+        );
         let json =
             serde_json::to_vec_pretty(&file).map_err(ApplicationError::SchedulerParameterJson)?;
         fs::write(&path, json).map_err(ApplicationError::SchedulerParameterIo)?;
@@ -1305,15 +1378,13 @@ fn sanitize_parameter_id(value: &str) -> String {
     }
 }
 
-fn scheduler_parameters_path(collection_path: &Path) -> PathBuf {
+fn scheduler_parameters_path(collection_path: &Path, now_ms: i64, suffix: &str) -> PathBuf {
     let name = collection_path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("collection.db");
     collection_path.with_file_name(format!(
-        "{name}.scheduler-parameters-{}-{}.json",
-        Utc::now().timestamp_millis(),
-        Uuid::new_v4()
+        "{name}.scheduler-parameters-{now_ms}-{suffix}.json"
     ))
 }
 

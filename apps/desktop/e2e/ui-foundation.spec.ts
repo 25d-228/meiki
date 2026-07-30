@@ -50,7 +50,7 @@ test("all primary screens have labelled responsive shells", async ({
 test("dialog, toolbar, fields, and empty state are keyboard operable", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/?collection=empty");
   await page.getByRole("button", { name: "Library" }).click();
   await expect(
     page.getByRole("search", { name: "Library tools" }),

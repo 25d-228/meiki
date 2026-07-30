@@ -4,12 +4,15 @@ import { installMockApi } from "./support/mock-api";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
-  await page.goto("/");
+});
+
+async function openEditor(page: Page, scenario = "cjk"): Promise<void> {
+  await page.goto(`/?authoring=${scenario}`);
   await page.getByRole("button", { name: "Add / Edit" }).click();
   await expect(
     page.getByRole("heading", { name: "Add / Edit", level: 1 }),
   ).toBeVisible();
-});
+}
 
 async function sourceTextarea(page: Page) {
   return page.locator(".segment-text").last();
@@ -32,9 +35,17 @@ async function selectRange(
   );
 }
 
-test("authors multiple stable Japanese clozes, previews each, and saves", async ({
+async function lastRequest(page: Page, command: string) {
+  return page.evaluate((name) => {
+    const requests = window.__MEIKI_TEST_REQUESTS__ ?? [];
+    return requests.filter((request) => request.command === name).at(-1);
+  }, command);
+}
+
+test("maps a UTF-16 cloze request, renders its preview, and saves the edited DTO", async ({
   page,
 }) => {
+  await openEditor(page);
   const source = await sourceTextarea(page);
   await source.fill("日曜日は図書館に行きます");
   await selectRange(page, 4, 7);
@@ -42,64 +53,72 @@ test("authors multiple stable Japanese clozes, previews each, and saves", async 
   await expect(page.getByRole("button", { name: /Cloze 1/ })).toContainText(
     "図書館",
   );
-
-  await selectRange(page, 1, 5);
-  await page.getByRole("button", { name: "Make cloze" }).click();
-  await expect(page.getByRole("button", { name: /Cloze 2/ })).toContainText(
-    "行きます",
-  );
+  expect((await lastRequest(page, "make_cloze"))?.args).toMatchObject({
+    request: {
+      segment_id: "segment-fixture",
+      selection_start_utf16: 4,
+      selection_end_utf16: 7,
+    },
+  });
 
   await page.getByRole("button", { name: "Optional cloze details" }).click();
-  await page.getByLabel("Accepted answers").fill("ゆきます\n行く");
-  await page.getByLabel("Hint").fill("polite present");
+  await page.getByLabel("Accepted answers").fill("ライブラリ");
+  await page.getByLabel("Hint").fill("place for books");
   await page.getByLabel("Answer matching").selectOption("forgiving");
-  await page.getByLabel("Explanation").fill("**Use** the polite present form.");
+  await page.getByLabel("Explanation").fill("**Use** the fixture explanation.");
   await page.getByRole("button", { name: "Add annotation" }).click();
   await page.getByLabel("Annotation 1 label").fill("Reading");
-  await page.getByLabel("Annotation 1 value").fill("いきます");
+  await page.getByLabel("Annotation 1 value").fill("としょかん");
 
   await page.getByRole("button", { name: "Preview" }).click();
   const dialog = page.getByRole("dialog", { name: "Card preview" });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("日曜日は図書館に[…]")).toBeVisible();
+  await expect(dialog.getByText("日曜日は[…]に行きます")).toBeVisible();
   await expect(dialog.getByText("Use", { exact: true })).toHaveCSS(
     "font-weight",
     /^(700|bold)$/,
   );
-  await dialog.getByRole("tab", { name: "Card 1" }).click();
-  await expect(dialog.getByText("日曜日は[…]に行きます")).toBeVisible();
   await dialog.getByRole("button", { name: "Done" }).click();
 
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(
     page.getByText("Source note saved on this device."),
   ).toBeVisible();
+  expect((await lastRequest(page, "save_authoring_draft"))?.args).toMatchObject(
+    {
+      draft: {
+        clozes: [
+          {
+            accepted_answers: ["ライブラリ"],
+            hint: "place for books",
+            matching_policy: "forgiving",
+          },
+        ],
+      },
+    },
+  );
 });
 
-test("authors directly into a selected deck", async ({ page }) => {
+test("maps the selected authoring deck into the save request", async ({
+  page,
+}) => {
+  await openEditor(page, "listening");
   await page.getByLabel("Author in deck").selectOption("travel-deck");
   const source = await sourceTextarea(page);
   await source.fill("Listen carefully");
   await selectRange(page, 0, 6);
   await page.getByRole("button", { name: "Make cloze" }).click();
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(
-    page.getByText("Source note saved on this device."),
-  ).toBeVisible();
-
-  expect(
-    await page.evaluate(() => {
-      const saved = JSON.parse(
-        localStorage.getItem("meiki-e2e-authoring") ?? "{}",
-      );
-      return saved.deck_id;
-    }),
-  ).toBe("travel-deck");
+  expect((await lastRequest(page, "save_authoring_draft"))?.args).toMatchObject(
+    {
+      draft: { deck_id: "travel-deck" },
+    },
+  );
 });
 
-test("attaches role-specific local media, labels it, and saves references", async ({
+test("maps role-specific file picks and retains edited media metadata", async ({
   page,
 }) => {
+  await openEditor(page, "media");
   const source = await sourceTextarea(page);
   await source.fill("図書館");
   await selectRange(page, 0, 3);
@@ -114,34 +133,63 @@ test("attaches role-specific local media, labels it, and saves references", asyn
   await page
     .getByLabel("Reveal image alternative text")
     .fill("Library shelves with study tables");
-
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  const media = await page.evaluate(() => {
-    const saved = JSON.parse(
-      localStorage.getItem("meiki-e2e-authoring") ?? "{}",
-    );
-    return saved.clozes[0].media;
-  });
-  expect(media.map((item: { role: string }) => item.role)).toEqual([
+
+  const saved = (await lastRequest(page, "save_authoring_draft"))?.args as {
+    draft: {
+      clozes: Array<{
+        media: Array<{ role: string; alt_text: string | null }>;
+      }>;
+    };
+  };
+  expect(saved.draft.clozes[0].media.map((item) => item.role)).toEqual([
     "prompt_audio",
     "answer_audio",
     "reveal_image",
   ]);
-  expect(media[2].alt_text).toBe("Library shelves with study tables");
+  expect(saved.draft.clozes[0].media[2].alt_text).toBe(
+    "Library shelves with study tables",
+  );
 });
 
 const multilingualCases = [
-  { text: "أنا أقرأ كتابًا", answer: "كتابًا", direction: "rtl" },
-  { text: "मैं पुस्तक पढ़ता हूँ", answer: "पुस्तक", direction: "ltr" },
-  { text: "Réviser le café", answer: "café", direction: "ltr" },
-  { text: "学习漢字", answer: "漢字", direction: "auto" },
-  { text: "Meetingは الساعة 三時", answer: "三時", direction: "auto" },
+  {
+    scenario: "rtl",
+    text: "أنا أقرأ كتابًا",
+    answer: "كتابًا",
+    direction: "rtl",
+  },
+  {
+    scenario: "devanagari",
+    text: "मैं पुस्तक पढ़ता हूँ",
+    answer: "पुस्तक",
+    direction: "ltr",
+  },
+  {
+    scenario: "ltr",
+    text: "Réviser le café",
+    answer: "café",
+    direction: "ltr",
+  },
+  {
+    scenario: "han",
+    text: "学习漢字",
+    answer: "漢字",
+    direction: "auto",
+  },
+  {
+    scenario: "mixed",
+    text: "Meetingは الساعة 三時",
+    answer: "三時",
+    direction: "auto",
+  },
 ] as const;
 
 for (const example of multilingualCases) {
-  test(`authors a grapheme-safe ${example.direction} cloze: ${example.answer}`, async ({
+  test(`renders a ${example.direction} fixture after mapping its selection: ${example.answer}`, async ({
     page,
   }) => {
+    await openEditor(page, example.scenario);
     const source = await sourceTextarea(page);
     await source.fill(example.text);
     await page.getByLabel("Direction").last().selectOption(example.direction);
@@ -152,17 +200,16 @@ for (const example of multilingualCases) {
       example.answer,
     );
     await page.getByRole("button", { name: "Preview" }).click();
-    const prompt = page.getByRole("dialog").locator(".dialog-prompt");
-    await expect(prompt).toHaveAttribute("dir", example.direction);
     await expect(
-      page.getByRole("dialog").locator(".preview-shell"),
-    ).toHaveAttribute("dir", "ltr");
+      page.getByRole("dialog").locator(".dialog-prompt"),
+    ).toHaveAttribute("dir", example.direction);
   });
 }
 
-test("rejects a UTF-16 range that splits a combining grapheme", async ({
+test("renders application validation errors without implementing them in the browser", async ({
   page,
 }) => {
+  await openEditor(page, "boundary-error");
   const source = await sourceTextarea(page);
   await source.fill("e\u0301clair");
   await selectRange(page, 0, 1);
@@ -170,12 +217,10 @@ test("rejects a UTF-16 range that splits a combining grapheme", async ({
   await expect(page.getByRole("alert")).toContainText(
     "splits an extended grapheme cluster",
   );
-  await expect(page.getByRole("button", { name: /Cloze/ })).toHaveCount(0);
-});
 
-test("raw executable HTML is not saved", async ({ page }) => {
-  const source = await sourceTextarea(page);
-  await source.fill("Remember café");
+  await openEditor(page, "save-error");
+  const nextSource = await sourceTextarea(page);
+  await nextSource.fill("Remember café");
   await selectRange(page, 9, 13);
   await page.getByRole("button", { name: "Make cloze" }).click();
   await page.getByRole("button", { name: "Optional cloze details" }).click();
@@ -189,6 +234,7 @@ test("raw executable HTML is not saved", async ({ page }) => {
 test("unsaved navigation never interrupts active IME composition", async ({
   page,
 }) => {
+  await openEditor(page);
   const source = await sourceTextarea(page);
   await source.fill("入力中");
   await source.dispatchEvent("compositionstart", { data: "中" });

@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use chrono::Utc;
+use crate::{
+    ApplicationError, ApplicationService, DirectionDto, MediaAvailabilityDto, StudyMediaDto,
+    ensure_role_matches_kind, media_type_matches_kind,
+};
 use meiki_domain::{
     Annotation, Card, Cloze, Direction, LocalizedText, MatchingPolicy, MediaReference,
     SegmentContent, SemanticSegment, SourceItem,
@@ -13,12 +16,6 @@ use meiki_storage::{
 use meiki_text::GraphemeIndex;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
-
-use crate::{
-    ApplicationError, ApplicationService, DirectionDto, MediaAvailabilityDto, StudyMediaDto,
-    ensure_role_matches_kind, media_type_matches_kind,
-};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -126,11 +123,11 @@ impl ApplicationService {
     ///
     /// Returns an error when the default deck cannot be loaded.
     pub fn new_authoring_draft(&self) -> Result<AuthoringDraftDto, ApplicationError> {
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = self.now_ms();
         let storage = self.open_storage()?;
         let deck = storage.get_deck(DEFAULT_DECK_ID)?;
         Ok(AuthoringDraftDto {
-            source_id: new_id(),
+            source_id: self.next_id("source"),
             deck_id: DEFAULT_DECK_ID.to_owned(),
             persisted: false,
             created_at_ms: now_ms,
@@ -140,7 +137,7 @@ impl ApplicationService {
             language_tag: None,
             direction: DirectionDto::Auto,
             segments: vec![AuthoringSegmentDto {
-                id: new_id(),
+                id: self.next_id("segment"),
                 ordinal: 0,
                 kind: AuthoringSegmentKindDto::Text,
                 text: String::new(),
@@ -267,27 +264,31 @@ impl ApplicationService {
             return Err(invalid("select at least one complete grapheme"));
         }
 
-        let cloze_id = new_id();
+        let cloze_id = self.next_id("cloze");
         let has_before = !split.before.is_empty();
         let mut replacement = Vec::with_capacity(3);
         if has_before {
             replacement.push(text_segment(segment.id.clone(), split.before));
         }
         replacement.push(AuthoringSegmentDto {
-            id: new_id(),
+            id: self.next_id("segment"),
             ordinal: 0,
             kind: AuthoringSegmentKindDto::Cloze,
             text: split.selected.clone(),
             cloze_id: Some(cloze_id.clone()),
         });
         if !split.after.is_empty() {
-            let id = if has_before { new_id() } else { segment.id };
+            let id = if has_before {
+                self.next_id("segment")
+            } else {
+                segment.id
+            };
             replacement.push(text_segment(id, split.after));
         }
         draft.segments.splice(index..index, replacement);
         draft.clozes.push(AuthoringClozeDto {
             id: cloze_id.clone(),
-            card_id: new_id(),
+            card_id: self.next_id("card"),
             answer: split.selected,
             accepted_answers: Vec::new(),
             hint: String::new(),
@@ -425,7 +426,7 @@ impl ApplicationService {
         draft: &AuthoringDraftDto,
     ) -> Result<AuthoringDraftDto, ApplicationError> {
         validate_for_save(draft)?;
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = self.now_ms();
         let mut storage = self.open_storage()?;
         storage.get_deck(&draft.deck_id)?;
         self.validate_media_for_save(&storage, draft)?;
@@ -524,8 +525,9 @@ impl ApplicationService {
         storage: &Storage,
         draft: &AuthoringDraftDto,
     ) -> Result<(), ApplicationError> {
+        let now_ms = self.now_ms();
         for attachment in draft.clozes.iter().flat_map(|cloze| &cloze.media) {
-            let media = media_reference(attachment, Utc::now().timestamp_millis())?;
+            let media = media_reference(attachment, now_ms)?;
             match storage.get_media_reference(&media.id) {
                 Ok(existing) => {
                     if !same_media_object(&existing, &media) {
@@ -858,10 +860,6 @@ fn renumber(segments: &mut [AuthoringSegmentDto]) -> Result<(), ApplicationError
             u32::try_from(index).map_err(|_| invalid("too many semantic segments"))?;
     }
     Ok(())
-}
-
-fn new_id() -> String {
-    Uuid::new_v4().to_string()
 }
 
 fn invalid(message: &str) -> ApplicationError {

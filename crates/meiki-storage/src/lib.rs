@@ -81,6 +81,9 @@ pub enum StorageError {
     },
     #[error("numeric value for {0} is outside the supported range")]
     NumericRange(&'static str),
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[error("injected local test failure at {0}")]
+    InjectedTestFailure(&'static str),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

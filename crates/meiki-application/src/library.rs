@@ -1,13 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::{ApplicationError, ApplicationService, DirectionDto, timestamp_string};
 use meiki_domain::{CardLifecycle, Cloze, Deck, SegmentContent, SourceItem, Tag};
 use meiki_storage::{DeckRepository, StoredLibraryNote, TagRepository};
 use meiki_text::normalize_for_search;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
-
-use crate::{ApplicationError, ApplicationService, DirectionDto, timestamp_string};
 
 const DEFAULT_PAGE_SIZE: usize = 50;
 const MAX_PAGE_SIZE: usize = 200;
@@ -292,7 +290,7 @@ impl ApplicationService {
                     .into_iter()
                     .find(|tag| normalize_for_search(&tag.name) == normalize_for_search(name))
                     .unwrap_or_else(|| Tag {
-                        id: Uuid::new_v4().to_string(),
+                        id: self.next_id("tag"),
                         name: name.to_owned(),
                         created_at_ms: request.now_ms,
                         updated_at_ms: request.now_ms,

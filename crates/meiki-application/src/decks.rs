@@ -1,11 +1,9 @@
+use crate::{ApplicationError, ApplicationService, DirectionDto, MatchingPolicyDto, desktop_u32};
 use meiki_domain::{Deck, Direction, MatchingPolicy, StudySettingsOverride};
 use meiki_storage::{DEFAULT_DECK_ID, DeckRepository, SchedulerProfileRepository, Storage};
 use meiki_text::normalize_for_search;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
-
-use crate::{ApplicationError, ApplicationService, DirectionDto, MatchingPolicyDto, desktop_u32};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct DeckDto {
@@ -75,7 +73,7 @@ impl ApplicationService {
         let mut storage = self.open_storage()?;
         ensure_unique_name(&storage, name, None)?;
         let deck = Deck {
-            id: Uuid::new_v4().to_string(),
+            id: self.next_id("deck"),
             name: name.to_owned(),
             description: None,
             language_tag: None,

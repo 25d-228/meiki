@@ -26,6 +26,26 @@ impl Storage {
         Ok(committed)
     }
 
+    /// Exercises rollback after all review writes but before transaction commit.
+    ///
+    /// This bounded fault is available only to local tests and fixture builds.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`StorageError::InjectedTestFailure`] after issuing the
+    /// same writes as [`Self::commit_review`] inside an uncommitted transaction.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn commit_review_failing_before_commit(
+        &mut self,
+        event: &ReviewEvent,
+    ) -> Result<ScheduleState, StorageError> {
+        let transaction = self.connection.transaction()?;
+        persist_review_event(&transaction, event)?;
+        Err(StorageError::InjectedTestFailure(
+            "review transaction before commit",
+        ))
+    }
+
     /// Appends a compensating event for the latest review and restores the
     /// schedule values that existed immediately before that review.
     ///

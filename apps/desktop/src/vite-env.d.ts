@@ -9,6 +9,10 @@ declare global {
     __MEIKI_TEST_PICK_FILE__?: (role: MediaRoleDto) => Promise<string | null>;
     __MEIKI_TEST_PICK_ARCHIVE__?: () => Promise<string | null>;
     __MEIKI_TEST_PICK_SCHEDULER_PARAMETERS__?: () => Promise<string | null>;
+    __MEIKI_TEST_REQUESTS__?: Array<{
+      command: string;
+      args: Record<string, unknown>;
+    }>;
   }
 }
 
