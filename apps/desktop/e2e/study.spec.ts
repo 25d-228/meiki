@@ -98,6 +98,21 @@ test("renders ready and missing media DTOs without autoplay", async ({
   await expect(page.getByLabel("Your answer")).toBeEnabled();
 });
 
+test("accepts asset media and rejects remote or unsupported sources", async ({
+  page,
+}) => {
+  await openStudy(page, "/?media=asset");
+  await expect(page.locator("audio")).toHaveAttribute("src", /^asset:/);
+  await expect(page.getByLabel("Your answer")).toBeEnabled();
+
+  for (const media of ["remote-http", "remote-https", "unsupported"]) {
+    await openStudy(page, `/?media=${media}`);
+    await expect(page.locator("audio")).toHaveCount(0);
+    await expect(page.getByText("Media format is unsupported")).toBeVisible();
+    await expect(page.getByLabel("Your answer")).toBeEnabled();
+  }
+});
+
 test("does not submit Enter during IME composition", async ({ page }) => {
   await openStudy(page, "/");
   const input = page.getByLabel("Your answer");

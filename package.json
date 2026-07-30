@@ -20,7 +20,7 @@
     "lint": "eslint . && npm run cargo:lint",
     "performance": "./scripts/performance",
     "release:check": "python scripts/check-release.py",
-    "test": "npm run cargo:test",
+    "test": "npm run test:unit --workspace @meiki/desktop && npm run cargo:test",
     "typecheck": "npm run check --workspace @meiki/desktop",
     "verify": "npm run audit && npm run bindings && npm run boundaries && npm run release:check && npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test && npm run e2e"
   },
