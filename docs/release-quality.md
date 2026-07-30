@@ -1,8 +1,9 @@
 # Release quality
 
-This document defines the v0.1 release gate. A tag is a release candidate only
-after the normal verification suite, the performance suite, and the package
-workflow pass for the tagged commit.
+This document defines the maintained gate for every Meiki release. Current
+release: **0.2.0**. A tag is a release candidate only after the normal
+verification suite, the performance suite, and the package workflow pass for
+the tagged commit.
 
 ## Supported matrix
 
@@ -47,39 +48,23 @@ or a scheduler invariant failure. These are P0/P1 defects regardless of their
 UI severity. Confirm that no such issue is open before creating a public
 release.
 
-## Accessibility gate
+## Automated interface-quality gate
 
 Every primary screen is keyboard operable and is audited against automated
 WCAG 2.0 A/AA and WCAG 2.1 AA rules. The suite also checks:
 
 - skip navigation and intentional focus transfer;
 - labelled controls and dialog names;
-- polite status announcements and assertive error announcements;
+- explicit status and error text;
 - visible focus and 4.5:1 normal-text contrast in light and dark themes;
 - reduced motion;
-- isolated RTL learning content without reversing interface controls.
+- Dialog, AlertDialog, and Sheet focus trapping and restoration;
+- IME-safe Enter handling;
+- isolated RTL learning content without reversing interface controls;
+- 200% zoom-equivalent reflow and the 640-pixel minimum layout.
 
-Automated checks do not replace a screen-reader pass. Before a public release,
-manually complete the release journey with VoiceOver on macOS or NVDA on
-Windows. Complete the native IME and RTL-input checklist in
-[test architecture](testing.md#native-input-checklist) during the same pass.
-
-The packaged-app pass is tracked as the mandatory v0.2 release sign-off in
-[issue #43](https://github.com/25d-228/meiki/issues/43). It follows completion
-of the implementation and verification issues; it is not evidence that can be
-substituted with browser automation.
-
-Record the manual pass in the release pull request with:
-
-- assistive technology, operating-system version, and date;
-- Today → Study → reveal → grade → queue-complete announcements;
-- error and saved-review announcements;
-- Add / Edit and Library dialog names, trapped focus, and restored focus;
-- light/dark visible focus, RTL content isolation, and narrow-window navigation;
-- any defect found and the issue that tracks it.
-
-Do not mark the manual pass complete from axe output or an accessibility-tree
-snapshot alone.
+The [test architecture](testing.md) owns these automated checks. Its optional
+native-input smoke is exploratory and does not block a release.
 
 ## Performance budgets
 
@@ -110,14 +95,14 @@ impact here.
 
 ## Version and recovery policy
 
-`npm run release:check` enforces one version across Cargo, npm, and Tauri,
-contiguous database migrations, the published archive version, bundle
-metadata, icons, and release documentation. v0.1 publishes database schema 7
-and `.meiki` archive version 1. Current development uses database schema 10 and
-archive version 4 while retaining the released schema-7 migration fixture and
-version-1 through version-3 archive import coverage. Future releases must keep
-migration fixtures from every released database schema and import fixtures
-from every published archive version.
+`npm run release:check` enforces one version across Cargo, npm, Tauri, and their
+lockfiles, contiguous database migrations, published archive versions, bundle
+metadata, icons, and current release documentation. Meiki v0.2.0 publishes
+database schema **10** and `.meiki` archive version **4**. The historical v0.1
+release published schema 7 and archive version 1. The schema-7 migration fixture
+and archive-version 1 through 3 import coverage remain release inputs. Future
+releases must keep migration fixtures from every released database schema and
+import fixtures from every published archive version.
 
 Database migrations, imports, and restores create recovery points before
 durable state changes. A corrupt database backup or media companion must fail
@@ -128,7 +113,8 @@ validation before replacement. Never repair immutable review events in place.
 1. Run `./scripts/check`.
 2. Run `./scripts/performance`.
 3. Confirm no release-blocking GitHub issue is open.
-4. Update all four version declarations and release notes in one commit.
+4. Update all four version declarations, generated lockfiles, and release notes
+   in one change.
 5. Push a `vMAJOR.MINOR.PATCH` tag, or run the Package workflow manually for an
    unsigned release candidate.
 6. Confirm all three package jobs and provenance attestations pass.

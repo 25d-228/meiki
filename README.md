@@ -5,10 +5,11 @@ recall. Create structured clozes in any Unicode script, study entirely from the
 keyboard, and keep immutable review history, adaptive schedules, and
 checksum-addressed media on your device.
 
-This repository is implementing [the v0.1 epic](https://github.com/25d-228/meiki/issues/1).
-See the [user guide](docs/user-guide.md) for the learning and recovery
-workflows, and [release quality](docs/release-quality.md) for the supported
-test, accessibility, performance, and packaging matrix.
+Current release: **0.2.0**. See the
+[v0.2.0 release notes](docs/releases/v0.2.0.md), the accepted
+[architecture decisions](docs/adr/), and the [user guide](docs/user-guide.md)
+for the current product. [Release quality](docs/release-quality.md) defines the
+supported test, interface-quality, performance, and packaging matrix.
 
 ## Verify a clean checkout
 

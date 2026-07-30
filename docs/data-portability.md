@@ -18,14 +18,14 @@ oversized data, invalid relationships, inconsistent review projections,
 non-canonical checksums, and corrupt media. Archive paths are never used as
 filesystem extraction paths.
 
-Version 4 removes obsolete card-level scheduling overrides. Version 3 adds the
-collection-wide scheduling budget and preserves each deck's optional budget
-override and automatic-controller state. Version 2 records each card's
-explicit `unseen` or `introduced` lifecycle in
+Version 4 is the published v0.2 archive format. It removes obsolete card-level
+scheduling overrides. Version 3 adds the collection-wide scheduling budget and
+preserves each deck's optional budget override and automatic-controller state.
+Version 2 records each card's explicit `unseen` or `introduced` lifecycle in
 the baseline, current projection, and immutable event snapshots. Lifecycle is
 independent from the scheduler's resettable repetition counter.
 
-Version 1 is the published v0.1 schema. Its import path deterministically
+Version 1 is the published v0.1 archive format. Its import path deterministically
 derives lifecycle from immutable review history and initialized memory fields
 before validating the projection chain. Version-1 and version-2 fixtures stay
 in the test suite while the writer emits version 4; version-3 archives remain

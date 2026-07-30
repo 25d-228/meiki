@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "meiki-application"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "meiki-domain",
@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "meiki-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "meiki-application",
  "serde_json",
@@ -1794,14 +1794,14 @@ dependencies = [
 
 [[package]]
 name = "meiki-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "meiki-media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "infer",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "meiki-portable"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "meiki-domain",
@@ -1826,7 +1826,7 @@ dependencies = [
 
 [[package]]
 name = "meiki-scheduler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "meiki-domain",
  "serde",
@@ -1835,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "meiki-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "meiki-domain",
  "rusqlite",
@@ -1846,7 +1846,7 @@ dependencies = [
 
 [[package]]
 name = "meiki-text"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "meiki-domain",
  "proptest",
