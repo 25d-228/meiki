@@ -3,6 +3,7 @@
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -59,6 +60,10 @@ FORBIDDEN_FRONTEND_NETWORK_APIS = {
     "fetch(",
     "navigator.onLine",
 }
+REMOTE_MEDIA_SCHEME_LITERAL = re.compile(
+    r"""["'`]https?:(?://)?""",
+    flags=re.IGNORECASE,
+)
 REMOVED_DESKTOP_COMMANDS = {
     "export_library_selection",
     "export_scheduler_diagnostics",
@@ -290,6 +295,33 @@ def main() -> int:
             f"outside Meiki's product scope, found {network_permissions}"
         )
 
+    tauri_config_path = (
+        ROOT / "apps" / "desktop" / "src-tauri" / "tauri.conf.json"
+    )
+    tauri_config = json.loads(tauri_config_path.read_text(encoding="utf-8"))
+    security = tauri_config.get("app", {}).get("security", {})
+    asset_protocol = security.get("assetProtocol", {})
+    if asset_protocol != {"enable": True, "scope": ["$APPDATA/**"]}:
+        failures.append(
+            f"{tauri_config_path.relative_to(ROOT)}: asset protocol must be "
+            "limited to application-managed data"
+        )
+
+    csp = security.get("csp")
+    directives = {}
+    if isinstance(csp, str):
+        for declaration in csp.split(";"):
+            parts = declaration.strip().split()
+            if parts:
+                directives[parts[0]] = set(parts[1:])
+    managed_media_sources = {"'self'", "asset:", "http://asset.localhost"}
+    for directive in ("img-src", "media-src"):
+        if directives.get(directive) != managed_media_sources:
+            failures.append(
+                f"{tauri_config_path.relative_to(ROOT)}: {directive} must "
+                "allow only packaged content and the managed asset protocol"
+            )
+
     production_roots = [ROOT / "apps" / "desktop" / "src", ROOT / "crates"]
     for production_root in production_roots:
         for source_file in production_root.rglob("*"):
@@ -318,6 +350,11 @@ def main() -> int:
                             f"{relative_path}: production network API "
                             f"{network_api!r} is outside Meiki's scope"
                         )
+                if REMOTE_MEDIA_SCHEME_LITERAL.search(text):
+                    failures.append(
+                        f"{relative_path}: remote HTTP(S) media schemes are "
+                        "outside Meiki's product scope"
+                    )
 
     command_surfaces = [
         ROOT / "apps" / "desktop" / "src-tauri" / "src" / "lib.rs",

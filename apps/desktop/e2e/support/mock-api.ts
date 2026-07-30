@@ -88,6 +88,24 @@ export async function installMockApi(page: Page): Promise<void> {
             schedule_version: study.first.schedule_version + 1,
           };
         }
+        const mediaSources: Record<string, string> = {
+          asset: "asset://localhost/prompt.wav",
+          "remote-http": "http://example.invalid/prompt.wav",
+          "remote-https": "https://example.invalid/prompt.wav",
+          unsupported: "javascript:alert(1)",
+        };
+        const mediaSource = mediaSources[params.get("media") ?? ""];
+        if (mediaSource) {
+          return {
+            ...clone(dtos.readyMediaCard),
+            prompt_media: [
+              {
+                ...clone(dtos.media.prompt_audio),
+                asset_path: mediaSource,
+              },
+            ],
+          };
+        }
         if (params.get("media") === "ready") return clone(dtos.readyMediaCard);
         if (params.get("media") === "missing")
           return clone(dtos.missingMediaCard);

@@ -9,6 +9,7 @@
     "dev": "vite --port 1420 --strictPort",
     "e2e": "playwright test",
     "preview": "vite preview",
+    "test:unit": "node --test tests/media.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
