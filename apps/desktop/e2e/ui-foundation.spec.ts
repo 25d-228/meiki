@@ -124,7 +124,7 @@ test("light and dark themes preserve text contrast and focus visibility", async 
   ).not.toBe("none");
 });
 
-test("scheduler controls save, personalize, and rebuild explicitly", async ({
+test("scheduler controls save and personalize without retroactive rebuild", async ({
   page,
 }) => {
   await page.goto("/");
@@ -159,11 +159,9 @@ test("scheduler controls save, personalize, and rebuild explicitly", async ({
   await page.getByRole("button", { name: "Export diagnostics" }).click();
   await expect(page.getByText(/Diagnostics exported:/)).toBeVisible();
 
-  page.once("dialog", (dialog) => dialog.accept());
-  await page
-    .getByRole("button", { name: "Back up and rebuild schedules" })
-    .click();
-  await expect(page.getByText(/Rebuilt 1 cards/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Back up and rebuild schedules" }),
+  ).toHaveCount(0);
 });
 
 test("reduced motion and offline feedback are explicit", async ({

@@ -49,5 +49,6 @@ Local optimization starts after 64 useful reviews (reviews after a card's
 first grade). Candidate parameters are selected on the chronological first 80%
 of history and adopted only when they remain valid and reduce log loss on the
 held-out final 20%. Adoption is prospective: it changes the active parameter
-set without changing existing projections. A full replay is a separate,
-backup-first operation.
+set without changing existing projections. Projection repair restores the
+exact snapshots in immutable history and never reruns grades through an
+engine.

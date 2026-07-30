@@ -8,11 +8,12 @@ use rusqlite::Connection;
 use tempfile::tempdir;
 
 use super::{
-    AUTHORING_DEFAULTS_MIGRATION, AnnotationRepository, CORE_MODEL_MIGRATION, CardRepository,
-    ClozeRepository, DEFAULT_DECK_ID, DeckRepository, FOUNDATION_MIGRATION,
-    FSRS7_SCHEDULER_MIGRATION, MediaRepository, SAMPLE_CARD_ID, STUDY_SESSION_MIGRATION,
-    SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository, Storage,
-    StorageError, StoredSourceNote, TagRepository,
+    AUTHORING_DEFAULTS_MIGRATION, AnnotationRepository, CARD_LIFECYCLE_MIGRATION,
+    CORE_MODEL_MIGRATION, CardRepository, ClozeRepository, DEFAULT_DECK_ID, DeckRepository,
+    FOUNDATION_MIGRATION, FSRS7_SCHEDULER_MIGRATION, LIBRARY_MIGRATION, MEDIA_PIPELINE_MIGRATION,
+    MediaRepository, SAMPLE_CARD_ID, STUDY_SESSION_MIGRATION, SchedulerParameterSetRepository,
+    SchedulerProfileRepository, SourceNoteRepository, Storage, StorageError, StoredSourceNote,
+    TagRepository,
 };
 
 fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent {
@@ -73,6 +74,23 @@ fn migration_backup_schema_version(directory: &std::path::Path, prefix: &str) ->
             |row| row.get(0),
         )
         .unwrap()
+}
+
+fn open_version_eight_fixture(path: &std::path::Path) -> Storage {
+    let connection = Connection::open(path).unwrap();
+    for migration in [
+        FOUNDATION_MIGRATION,
+        CORE_MODEL_MIGRATION,
+        AUTHORING_DEFAULTS_MIGRATION,
+        FSRS7_SCHEDULER_MIGRATION,
+        STUDY_SESSION_MIGRATION,
+        MEDIA_PIPELINE_MIGRATION,
+        LIBRARY_MIGRATION,
+        CARD_LIFECYCLE_MIGRATION,
+    ] {
+        connection.execute_batch(migration).unwrap();
+    }
+    Storage { connection }
 }
 
 #[test]
@@ -380,7 +398,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     std::fs::write(&path, RELEASED_V0_1_SCHEMA).unwrap();
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 8);
+    assert_eq!(storage.schema_version().unwrap(), 9);
     assert_eq!(storage.get_deck(DEFAULT_DECK_ID).unwrap().name, "Default");
 }
 
@@ -548,10 +566,193 @@ fn schedule_projection_rebuilds_from_immutable_events() {
         )
         .unwrap();
 
+    let report = storage.check_collection_schedule_integrity().unwrap();
+    assert_eq!(report.checked_cards, 1);
+    assert_eq!(report.mismatched_card_ids, vec![SAMPLE_CARD_ID]);
+    assert_eq!(
+        storage
+            .check_deck_schedule_integrity(DEFAULT_DECK_ID)
+            .unwrap(),
+        report
+    );
     let rebuilt = storage.rebuild_schedule_projection(SAMPLE_CARD_ID).unwrap();
     assert_eq!(rebuilt, expected);
     assert_eq!(rebuilt.lifecycle, CardLifecycle::Introduced);
     assert_eq!(storage.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
+    assert!(
+        storage
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+    assert_eq!(
+        storage.rebuild_schedule_projection(SAMPLE_CARD_ID).unwrap(),
+        expected
+    );
+
+    let continued = sample_event(&storage, "review-after-repair", 20_000);
+    let reviewed = storage.commit_review(&continued).unwrap();
+    let undone = storage
+        .undo_last_review(
+            SAMPLE_CARD_ID,
+            "review-after-repair",
+            "undo-after-repair",
+            21_000,
+        )
+        .unwrap();
+    assert_eq!(reviewed.version + 1, undone.version);
+    assert!(
+        storage
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+}
+
+#[test]
+fn version_nine_migration_backs_up_and_repairs_only_from_recorded_snapshots() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("collection.db");
+    let mut storage = open_version_eight_fixture(&path);
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let event = sample_event(&storage, "review-before-migration", 10_000);
+    let expected = storage.commit_review(&event).unwrap();
+    let events_before = storage.review_events(SAMPLE_CARD_ID).unwrap();
+    storage
+        .connection
+        .execute(
+            "UPDATE schedule_states
+             SET due_at_ms = -1,
+                 ideal_due_at_ms = -2,
+                 stability_milliseconds = 1,
+                 difficulty_millipoints = 1000
+             WHERE card_id = ?1",
+            [SAMPLE_CARD_ID],
+        )
+        .unwrap();
+    drop(storage);
+
+    let repaired = Storage::open(&path).unwrap();
+    assert_eq!(repaired.schema_version().unwrap(), 9);
+    assert_eq!(repaired.projection_migration_repaired_cards().unwrap(), 1);
+    assert_eq!(repaired.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
+    assert_eq!(
+        repaired.review_events(SAMPLE_CARD_ID).unwrap(),
+        events_before
+    );
+    assert!(
+        repaired
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+    assert_eq!(
+        migration_backup_schema_version(directory.path(), "collection.db.migration-v8-"),
+        8
+    );
+}
+
+#[test]
+fn failed_projection_migration_keeps_the_version_eight_collection_unchanged() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("collection.db");
+    let mut storage = open_version_eight_fixture(&path);
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let event = sample_event(&storage, "review-before-failure", 10_000);
+    storage.commit_review(&event).unwrap();
+    storage
+        .connection
+        .execute(
+            "UPDATE schedule_states SET due_at_ms = -1 WHERE card_id = ?1",
+            [SAMPLE_CARD_ID],
+        )
+        .unwrap();
+    storage
+        .connection
+        .execute_batch(
+            "CREATE TRIGGER fail_projection_repair
+             BEFORE UPDATE ON schedule_states
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected projection repair failure');
+             END;",
+        )
+        .unwrap();
+    drop(storage);
+
+    let Err(error) = Storage::open(&path) else {
+        panic!("projection repair unexpectedly succeeded");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("injected projection repair failure")
+    );
+
+    let connection = Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                [],
+                |row| row.get::<_, u32>(0),
+            )
+            .unwrap(),
+        8
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT due_at_ms FROM schedule_states WHERE card_id = ?1",
+                [SAMPLE_CARD_ID],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        -1
+    );
+    assert_eq!(
+        migration_backup_schema_version(directory.path(), "collection.db.migration-v8-"),
+        8
+    );
+}
+
+#[test]
+fn commit_and_undo_reject_a_malformed_existing_event_chain() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let first = sample_event(&storage, "review-1", 10_000);
+    storage.commit_review(&first).unwrap();
+    let second = sample_event(&storage, "review-2", 20_000);
+    storage.commit_review(&second).unwrap();
+    storage
+        .connection
+        .execute_batch("DROP TRIGGER review_events_are_append_only_update;")
+        .unwrap();
+    storage
+        .connection
+        .execute(
+            "UPDATE review_events
+             SET previous_schedule_version = 7
+             WHERE id = 'review-2'",
+            [],
+        )
+        .unwrap();
+    let before = storage.load_schedule(SAMPLE_CARD_ID).unwrap();
+    let next = sample_event(&storage, "review-3", 30_000);
+
+    assert!(matches!(
+        storage.check_collection_schedule_integrity(),
+        Err(StorageError::ProjectionMismatch(_))
+    ));
+    assert!(matches!(
+        storage.commit_review(&next),
+        Err(StorageError::ProjectionMismatch(_))
+    ));
+    assert!(matches!(
+        storage.undo_last_review(SAMPLE_CARD_ID, "review-2", "undo-2", 31_000),
+        Err(StorageError::ProjectionMismatch(_))
+    ));
+    assert_eq!(storage.load_schedule(SAMPLE_CARD_ID).unwrap(), before);
+    assert_eq!(storage.review_events(SAMPLE_CARD_ID).unwrap().len(), 2);
 }
 
 #[test]
@@ -663,7 +864,7 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 8);
+    assert_eq!(storage.schema_version().unwrap(), 9);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "v1.db.migration-v1-"),
         1
@@ -740,7 +941,7 @@ fn version_five_media_migrates_to_roles_and_technical_metadata() {
     drop(connection);
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 8);
+    assert_eq!(storage.schema_version().unwrap(), 9);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "legacy-media.db.migration-v5-"),
         5

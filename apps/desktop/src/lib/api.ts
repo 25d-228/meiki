@@ -14,7 +14,6 @@ import type { UndoReviewResultDto } from "./generated/UndoReviewResultDto";
 import type { MakeClozeRequest } from "./generated/MakeClozeRequest";
 import type { RemoveClozeRequest } from "./generated/RemoveClozeRequest";
 import type { ReorderSegmentsRequest } from "./generated/ReorderSegmentsRequest";
-import type { RebuildSchedulerResultDto } from "./generated/RebuildSchedulerResultDto";
 import type { SchedulerSettingsDto } from "./generated/SchedulerSettingsDto";
 import type { SchedulerDiagnosticsExportDto } from "./generated/SchedulerDiagnosticsExportDto";
 import type { UpdateSchedulerSettingsRequest } from "./generated/UpdateSchedulerSettingsRequest";
@@ -160,10 +159,6 @@ export const api = {
 
   rollbackScheduler(deckId: string): Promise<SchedulerSettingsDto> {
     return invoke("rollback_scheduler", { deckId });
-  },
-
-  rebuildScheduler(deckId: string): Promise<RebuildSchedulerResultDto> {
-    return invoke("rebuild_scheduler", { deckId });
   },
 
   exportSchedulerDiagnostics(

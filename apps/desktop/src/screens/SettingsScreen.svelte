@@ -118,27 +118,6 @@
     );
   }
 
-  async function rebuild(): Promise<void> {
-    if (
-      !window.confirm(
-        "Create a backup and rebuild every schedule in this deck from review history?",
-      )
-    )
-      return;
-    busy = true;
-    notice = "";
-    error = "";
-    try {
-      const result = await api.rebuildScheduler(deckId);
-      notice = `Rebuilt ${result.rebuilt_cards} cards. Backup: ${result.backup_path}`;
-      await loadBackups();
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
-  }
-
   async function exportDiagnostics(): Promise<void> {
     busy = true;
     notice = "";
@@ -491,16 +470,9 @@
             <Button size="small" disabled={busy} onclick={exportDiagnostics}
               >Export diagnostics</Button
             >
-            <Button
-              variant="danger"
-              size="small"
-              disabled={busy}
-              onclick={rebuild}>Back up and rebuild schedules</Button
-            >
           </div>
           <p class="advanced-note">
-            Parameter changes affect future reviews only. A full rebuild is a
-            separate explicit action and always creates a backup first.
+            Parameter and policy changes affect future reviews only.
           </p>
         </div>
       </details>
@@ -543,8 +515,8 @@
         <div>
           <strong>Rolling backups</strong>
           <p>
-            The newest five backups are kept for each migration, import,
-            restore, and schedule-rebuild operation.
+            The newest five backups are kept for each migration, import, and
+            restore operation.
           </p>
         </div>
         {#if backups.length}
