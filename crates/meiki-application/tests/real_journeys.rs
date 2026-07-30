@@ -649,3 +649,59 @@ fn media_write_failure_after_backup_does_not_replace_the_database() {
     );
     assert!(target.get_study_card(&source.card_id).is_err());
 }
+
+#[test]
+fn released_schema_fixture_migrates_exports_restores_and_reopens_idempotently() {
+    const RELEASED_V0_1_SCHEMA: &[u8] =
+        include_bytes!("../../meiki-storage/fixtures/released/v0.1-schema-7.db");
+    let source_directory = tempdir().expect("create released-schema source");
+    let source_path = source_directory.path().join("released-v0.1.db");
+    fs::write(&source_path, RELEASED_V0_1_SCHEMA).expect("write the committed release fixture");
+    let clock = FixedClock::new(NOW_MS);
+    let ids = SequentialIds::default();
+    let source = service(&source_path, &clock, &ids);
+
+    assert_eq!(
+        source
+            .prepare_study(&today("__all_decks__", NOW_MS))
+            .expect("migrate and open the released fixture")
+            .availability,
+        StudyAvailabilityDto::EmptyCollection
+    );
+    let exported = source
+        .export_archive(&ArchiveExportRequest { now_ms: NOW_MS })
+        .expect("export the migrated release fixture");
+    let preview = source
+        .preview_archive(&exported.path)
+        .expect("validate the migrated release archive");
+    assert!(preview.can_import);
+    assert_eq!(preview.notes, 0);
+    assert_eq!(preview.cards, 0);
+
+    let target_directory = tempdir().expect("create released-schema restore target");
+    let target_path = target_directory.path().join("collection.db");
+    let target_clock = FixedClock::new(NOW_MS);
+    let target_ids = SequentialIds::default();
+    service(&target_path, &target_clock, &target_ids)
+        .import_archive(&ArchiveImportRequest {
+            path: exported.path,
+            confirmation: "REPLACE".into(),
+        })
+        .expect("restore the migrated fixture through the full archive boundary");
+    let restarted = service(&target_path, &target_clock, &target_ids);
+    assert_eq!(
+        restarted
+            .prepare_study(&today("__all_decks__", NOW_MS))
+            .expect("reopen the restored fixture")
+            .availability,
+        StudyAvailabilityDto::EmptyCollection
+    );
+    let storage = Storage::open(&target_path).expect("open the restored SQLite collection");
+    assert_eq!(storage.schema_version().unwrap(), 10);
+    assert!(
+        storage
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+}

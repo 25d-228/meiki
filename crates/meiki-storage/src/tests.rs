@@ -467,6 +467,62 @@ fn sample_data_survives_reopening_the_database() {
 }
 
 #[test]
+fn wal_writer_process() {
+    let Some(path) = std::env::var_os("MEIKI_TEST_WAL_WRITER_PATH") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    let mut storage = Storage::open(&path).unwrap();
+    storage
+        .connection
+        .execute_batch("PRAGMA wal_autocheckpoint = 0;")
+        .unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let event = sample_event(&storage, "wal-review", 10_000);
+    storage.commit_review(&event).unwrap();
+    std::process::exit(0);
+}
+
+#[test]
+fn committed_wal_recovers_after_the_writer_process_terminates() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("terminated-writer.db");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("tests::wal_writer_process")
+        .arg("--nocapture")
+        .env("MEIKI_TEST_WAL_WRITER_PATH", &path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let wal_path = path.with_file_name(format!(
+        "{}-wal",
+        path.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(
+        wal_path.is_file(),
+        "the terminated writer left a WAL to recover"
+    );
+
+    let recovered = Storage::open(&path).unwrap();
+    assert_eq!(
+        recovered
+            .review_events(SAMPLE_CARD_ID)
+            .unwrap()
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        ["wal-review"]
+    );
+    assert!(
+        recovered
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+}
+
+#[test]
 fn released_v0_1_schema_fixture_opens_and_migrates() {
     const RELEASED_V0_1_SCHEMA: &[u8] = include_bytes!("../fixtures/released/v0.1-schema-7.db");
     let directory = tempdir().unwrap();
@@ -476,6 +532,215 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     let storage = Storage::open(&path).unwrap();
     assert_eq!(storage.schema_version().unwrap(), 10);
     assert_eq!(storage.get_deck(DEFAULT_DECK_ID).unwrap().name, "Default");
+    assert_eq!(
+        storage
+            .connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert!(
+        storage
+            .connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    for (table, expected) in [
+        ("decks", 1_u64),
+        ("source_items", 0),
+        ("clozes", 0),
+        ("cards", 0),
+        ("review_events", 0),
+        ("media_references", 0),
+    ] {
+        assert_eq!(
+            storage
+                .connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap(),
+            expected,
+            "{table}"
+        );
+    }
+    assert!(
+        storage
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+    let migration_count = storage
+        .connection
+        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+            row.get::<_, u64>(0)
+        })
+        .unwrap();
+    let backup = directory.path().join("released-v0.1.backup.db");
+    storage.backup_to(&backup).unwrap();
+    drop(storage);
+
+    let reopened = Storage::open(&path).unwrap();
+    assert_eq!(reopened.schema_version().unwrap(), 10);
+    assert_eq!(
+        reopened
+            .connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap(),
+        migration_count
+    );
+    drop(reopened);
+
+    let restored_path = directory.path().join("released-v0.1-restored.db");
+    let restored = Storage::restore_from_backup(&backup, &restored_path).unwrap();
+    assert_eq!(restored.schema_version().unwrap(), 10);
+    assert!(!restored.has_learning_material().unwrap());
+    assert!(
+        restored
+            .check_collection_schedule_integrity()
+            .unwrap()
+            .is_valid()
+    );
+    assert_eq!(
+        migration_backup_schema_version(directory.path(), "released-v0.1.db.migration-v7-"),
+        7
+    );
+}
+
+#[test]
+fn newer_schema_fails_without_migration_or_backup_writes() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("future.db");
+    drop(Storage::open(&path).unwrap());
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_migrations(version, applied_at_ms) VALUES (999, 42)",
+            [],
+        )
+        .unwrap();
+    let migrations_before = connection
+        .query_row(
+            "SELECT COUNT(*), MAX(version) FROM schema_migrations",
+            [],
+            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u32>(1)?)),
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        Storage::open(&path),
+        Err(StorageError::UnsupportedSchema {
+            found: 999,
+            supported: 10
+        })
+    ));
+    let connection = Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*), MAX(version) FROM schema_migrations",
+                [],
+                |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u32>(1)?)),
+            )
+            .unwrap(),
+        migrations_before
+    );
+    assert!(!directory.path().join("backups").exists());
+}
+
+#[test]
+fn unique_check_and_foreign_key_failures_leave_the_collection_valid() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    assert!(
+        storage
+            .connection
+            .execute(
+                "INSERT INTO semantic_segments(
+                    id, source_item_id, ordinal, kind, text, cloze_id
+                 ) VALUES ('duplicate-ordinal', ?1, 0, 'text', 'duplicate', NULL)",
+                [SAMPLE_SOURCE_ID],
+            )
+            .is_err()
+    );
+    assert!(
+        storage
+            .connection
+            .execute(
+                "UPDATE cards SET suspended = 2 WHERE id = ?1",
+                [SAMPLE_CARD_ID],
+            )
+            .is_err()
+    );
+    assert!(
+        storage
+            .connection
+            .execute(
+                "INSERT INTO cards(
+                    id, cloze_id, content_version, created_at_ms, updated_at_ms,
+                    suspended, queue_updated_at_ms
+                 ) VALUES ('orphan-card', 'missing-cloze', 0, 1, 1, 0, 1)",
+                [],
+            )
+            .is_err()
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert!(
+        storage
+            .connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(!storage.get_card(SAMPLE_CARD_ID).unwrap().suspended);
+}
+
+#[test]
+fn two_connections_reject_a_stale_concurrent_review_without_partial_state() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("concurrent.db");
+    let mut first = Storage::open(&path).unwrap();
+    first.seed_walking_skeleton(1_000).unwrap();
+    let mut second = Storage::open(&path).unwrap();
+    let winner = sample_event(&first, "concurrent-winner", 10_000);
+    let mut stale = sample_event(&second, "concurrent-stale", 10_001);
+    stale.previous_schedule = winner.previous_schedule.clone();
+    stale.next_schedule.version = winner.next_schedule.version;
+
+    first.commit_review(&winner).unwrap();
+    assert!(matches!(
+        second.commit_review(&stale),
+        Err(StorageError::StaleReview)
+    ));
+    assert_eq!(
+        first
+            .review_events(SAMPLE_CARD_ID)
+            .unwrap()
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        ["concurrent-winner"]
+    );
+    assert_eq!(
+        first.load_schedule(SAMPLE_CARD_ID).unwrap(),
+        winner.next_schedule
+    );
 }
 
 #[test]
