@@ -390,12 +390,6 @@ pub struct UpdateSchedulerSettingsRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
-pub struct RebuildSchedulerResultDto {
-    pub backup_path: String,
-    pub rebuilt_cards: u32,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct SchedulerDiagnosticsExportDto {
     pub path: String,
 }
@@ -819,40 +813,6 @@ impl ApplicationService {
         scheduler_settings_dto(&storage, deck_id)
     }
 
-    /// Explicitly rebuilds all schedule projections in a deck from immutable
-    /// review events after creating a recovery backup.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApplicationError`] when backup, replay, or atomic replacement
-    /// fails.
-    pub fn rebuild_scheduler(
-        &self,
-        deck_id: &str,
-    ) -> Result<RebuildSchedulerResultDto, ApplicationError> {
-        let mut storage = self.open_storage()?;
-        let backup_path = self.create_recovery_backup(&storage, "scheduler-rebuild")?;
-
-        let cards = storage.study_cards_for_deck(deck_id)?;
-        let mut rebuilt = Vec::with_capacity(cards.len());
-        for card in cards {
-            let (engine, _, _) = scheduler_for_card(&storage, &card)?;
-            let mut state = engine.initial_schedule(&card.card.id, card.card.created_at_ms);
-            for event in storage.active_review_events(&card.card.id)? {
-                state = engine
-                    .review(&state, event.chosen_grade, event.reviewed_at_ms)?
-                    .next_state;
-                state.last_review_event_id = Some(event.id);
-            }
-            rebuilt.push(state);
-        }
-        storage.replace_schedule_projections(deck_id, &rebuilt)?;
-        Ok(RebuildSchedulerResultDto {
-            backup_path: backup_path.to_string_lossy().into_owned(),
-            rebuilt_cards: desktop_u32(rebuilt.len() as u64, "rebuilt card count")?,
-        })
-    }
-
     /// Exports a content-free scheduler diagnostic report beside the
     /// collection.
     ///
@@ -872,6 +832,8 @@ impl ApplicationService {
             "active_parameter_set_id": settings.active_parameter_set_id,
             "has_rollback_parameter_set": settings.previous_parameter_set_id.is_some(),
             "optimizer_status": optimizer_status_name(settings.optimizer_status),
+            "projection_migration_repaired_cards":
+                storage.projection_migration_repaired_cards()?,
             "optimizer_diagnostics": settings
                 .optimizer_diagnostics
                 .as_deref()
@@ -1507,7 +1469,6 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     UndoReviewResultDto::export_all_to(output)?;
     SchedulerSettingsDto::export_all_to(output)?;
     UpdateSchedulerSettingsRequest::export_all_to(output)?;
-    RebuildSchedulerResultDto::export_all_to(output)?;
     SchedulerDiagnosticsExportDto::export_all_to(output)?;
     AnnotationDraftDto::export_all_to(output)?;
     AuthoringSegmentKindDto::export_all_to(output)?;
@@ -1553,8 +1514,6 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use meiki_scheduler::DEFAULT_PARAMETERS;
     use meiki_storage::{
         DEFAULT_DECK_ID, SAMPLE_CARD_ID, SchedulerParameterSetRepository, Storage,
@@ -1721,7 +1680,8 @@ mod tests {
     }
 
     #[test]
-    fn settings_personalization_status_and_backup_first_rebuild_round_trip() {
+    #[allow(clippy::too_many_lines)]
+    fn settings_and_parameter_changes_leave_existing_projections_unchanged() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("collection.db");
         let service = ApplicationService::new(&path);
@@ -1777,6 +1737,25 @@ mod tests {
             })
             .unwrap();
 
+        let schedule_before = Storage::open(&path)
+            .unwrap()
+            .load_schedule(SAMPLE_CARD_ID)
+            .unwrap();
+        let history_before = Storage::open(&path)
+            .unwrap()
+            .review_events(SAMPLE_CARD_ID)
+            .unwrap();
+        service
+            .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
+                deck_id: DEFAULT_DECK_ID.into(),
+                intensity: StudyIntensityDto::Intensive,
+                target_retention_basis_points: 9_300,
+                new_cards_per_day: 40,
+                daily_time_budget_minutes: Some(90),
+                maximum_interval_days: 5_000,
+                day_boundary_minutes: 240,
+            })
+            .unwrap();
         let optimized = service.optimize_scheduler(DEFAULT_DECK_ID).unwrap();
         assert_eq!(
             optimized.optimizer_status,
@@ -1794,20 +1773,24 @@ mod tests {
             .unwrap();
         let diagnostic_json = std::fs::read_to_string(&diagnostic_export.path).unwrap();
         assert!(diagnostic_json.contains("\"engine_version\": \"fsrs-7\""));
+        assert!(diagnostic_json.contains("\"projection_migration_repaired_cards\": 0"));
         assert!(!diagnostic_json.contains("行きます"));
         assert!(!diagnostic_json.contains(SAMPLE_CARD_ID));
 
-        let history_before = Storage::open(&path)
-            .unwrap()
-            .review_events(SAMPLE_CARD_ID)
-            .unwrap();
-        let rebuilt = service.rebuild_scheduler(DEFAULT_DECK_ID).unwrap();
-        assert_eq!(rebuilt.rebuilt_cards, 1);
-        assert!(Path::new(&rebuilt.backup_path).is_file());
-        let history_after = Storage::open(&path)
-            .unwrap()
-            .review_events(SAMPLE_CARD_ID)
-            .unwrap();
-        assert_eq!(history_after, history_before);
+        let storage = Storage::open(&path).unwrap();
+        assert_eq!(
+            storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
+            schedule_before
+        );
+        assert_eq!(
+            storage.review_events(SAMPLE_CARD_ID).unwrap(),
+            history_before
+        );
+        assert!(
+            storage
+                .check_collection_schedule_integrity()
+                .unwrap()
+                .is_valid()
+        );
     }
 }

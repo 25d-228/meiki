@@ -4,7 +4,7 @@ use meiki_domain::{
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::{
-    Storage, StorageError,
+    ScheduleIntegrityReport, Storage, StorageError,
     repository::{card_lifecycle_from_database, card_lifecycle_to_database, load_schedule_row},
 };
 
@@ -46,11 +46,17 @@ impl Storage {
         let transaction = self.connection.transaction()?;
         let current = load_schedule_row(&transaction, "schedule_states", card_id)?
             .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))?;
-        let latest_id = current
+        let (_, events, expected, _) = load_recorded_projection(&transaction, card_id)?;
+        if current != expected {
+            return Err(StorageError::ProjectionMismatch(format!(
+                "card {card_id} current projection does not match immutable history"
+            )));
+        }
+        let latest_id = expected
             .last_review_event_id
             .as_deref()
             .ok_or_else(|| StorageError::NothingToUndo(card_id.to_owned()))?;
-        let target = load_review_events(&transaction, card_id)?
+        let target = events
             .into_iter()
             .find(|event| event.id == latest_id && event.kind == ReviewEventKind::Review)
             .ok_or_else(|| StorageError::NothingToUndo(card_id.to_owned()))?;
@@ -164,31 +170,15 @@ impl Storage {
             ));
         }
 
-        let mut projected = baseline.clone();
-        let mut event_ids = std::collections::HashSet::new();
-        let mut active_review_ids = Vec::<String>::new();
-        for event in events {
-            if event.card_id != card_id
-                || event.previous_schedule != projected
-                || event.next_schedule.card_id != card_id
-                || event.next_schedule.version != event.previous_schedule.version + 1
-                || event.next_schedule.last_review_event_id.as_deref() != Some(event.id.as_str())
-                || !event_ids.insert(event.id.as_str())
-            {
-                return Err(StorageError::ProjectionMismatch(
-                    "portable review history is not a continuous projection chain".into(),
-                ));
-            }
-            validate_restored_lifecycle(&mut active_review_ids, baseline.lifecycle, event)?;
-            insert_review_event(&transaction, event)?;
-            projected = event.next_schedule.clone();
-        }
+        let projected = project_history(card_id, baseline, events)?;
         if projected != *current {
             return Err(StorageError::ProjectionMismatch(
                 "portable current schedule does not match its history".into(),
             ));
         }
-        active_reviews(events.to_vec())?;
+        for event in events {
+            insert_review_event(&transaction, event)?;
+        }
 
         let changed = transaction.execute(
             "UPDATE schedule_states
@@ -311,78 +301,35 @@ impl Storage {
             .collect()
     }
 
-    /// Atomically replaces every schedule projection in a deck.
-    ///
-    /// This is used only by an explicit full rebuild. Immutable review events
-    /// and baselines are never changed.
+    /// Validates immutable history and current projections for every card.
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError`] when the supplied schedules do not exactly
-    /// cover the deck or the transaction cannot be committed.
-    pub fn replace_schedule_projections(
-        &mut self,
-        deck_id: &str,
-        schedules: &[ScheduleState],
-    ) -> Result<(), StorageError> {
-        let expected = self.card_ids_for_deck(deck_id)?;
-        let mut supplied = schedules
-            .iter()
-            .map(|schedule| schedule.card_id.as_str())
-            .collect::<Vec<_>>();
-        supplied.sort_unstable();
-        if expected.iter().map(String::as_str).collect::<Vec<_>>() != supplied {
-            return Err(StorageError::InvalidAggregate(
-                "a full rebuild must provide exactly one schedule for every deck card".into(),
-            ));
-        }
+    /// Returns [`StorageError::ProjectionMismatch`] when recorded history is
+    /// malformed, or another [`StorageError`] when collection data cannot be
+    /// loaded.
+    pub fn check_collection_schedule_integrity(
+        &self,
+    ) -> Result<ScheduleIntegrityReport, StorageError> {
+        let card_ids = all_card_ids(&self.connection)?;
+        check_schedule_integrity(&self.connection, &card_ids)
+    }
 
-        let transaction = self.connection.transaction()?;
-        for schedule in schedules {
-            let changed = transaction.execute(
-                "UPDATE schedule_states
-                 SET version = ?1,
-                     due_at_ms = ?2,
-                     ideal_due_at_ms = ?3,
-                     interval_milliseconds = ?4,
-                     interval_seconds = ?5,
-                     repetitions = ?6,
-                     stability_milliseconds = ?7,
-                     difficulty_millipoints = ?8,
-                     last_reviewed_at_ms = ?9,
-                     last_review_event_id = ?10,
-                     lifecycle = ?11
-                 WHERE card_id = ?12",
-                params![
-                    schedule.version,
-                    schedule.due_at_ms,
-                    schedule.ideal_due_at_ms,
-                    schedule.interval_milliseconds,
-                    schedule.interval_seconds,
-                    schedule.repetitions,
-                    schedule.stability_milliseconds,
-                    schedule.difficulty_millipoints,
-                    schedule.last_reviewed_at_ms,
-                    schedule.last_review_event_id,
-                    card_lifecycle_to_database(schedule.lifecycle),
-                    schedule.card_id,
-                ],
-            )?;
-            if changed != 1 {
-                return Err(StorageError::CardNotFound(schedule.card_id.clone()));
-            }
-            transaction.execute(
-                "UPDATE cards
-                 SET queue_updated_at_ms = ?1
-                 WHERE id = ?2",
-                params![
-                    schedule.last_reviewed_at_ms.unwrap_or(schedule.due_at_ms),
-                    schedule.card_id
-                ],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
+    /// Validates immutable history and current projections for one deck.
+    ///
+    /// Trashed notes remain part of integrity validation even though they are
+    /// not eligible for study.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::ProjectionMismatch`] when recorded history is
+    /// malformed, or another [`StorageError`] when the deck cannot be loaded.
+    pub fn check_deck_schedule_integrity(
+        &self,
+        deck_id: &str,
+    ) -> Result<ScheduleIntegrityReport, StorageError> {
+        let card_ids = integrity_card_ids_for_deck(&self.connection, deck_id)?;
+        check_schedule_integrity(&self.connection, &card_ids)
     }
 
     /// Rebuilds the current schedule projection from its baseline and immutable
@@ -397,63 +344,13 @@ impl Storage {
         card_id: &str,
     ) -> Result<ScheduleState, StorageError> {
         let transaction = self.connection.transaction()?;
-        let mut projected = load_schedule_row(&transaction, "schedule_baselines", card_id)?
+        let current = load_schedule_row(&transaction, "schedule_states", card_id)?
             .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))?;
-        let events = load_review_events(&transaction, card_id)?;
-        let mut queue_updated_at_ms = 0;
-
-        for event in events {
-            if event.previous_schedule != projected
-                || event.next_schedule.card_id != card_id
-                || event.next_schedule.version != projected.version + 1
-            {
-                return Err(StorageError::ProjectionMismatch(format!(
-                    "event {} does not continue version {}",
-                    event.id, projected.version
-                )));
-            }
-            queue_updated_at_ms = event.reviewed_at_ms;
-            projected = event.next_schedule;
+        let (_, _, projected, queue_updated_at_ms) =
+            load_recorded_projection(&transaction, card_id)?;
+        if current != projected {
+            write_schedule_projection(&transaction, &projected, queue_updated_at_ms)?;
         }
-
-        let changed = transaction.execute(
-            "UPDATE schedule_states
-             SET version = ?1,
-                 due_at_ms = ?2,
-                 ideal_due_at_ms = ?3,
-                 interval_milliseconds = ?4,
-                 interval_seconds = ?5,
-                 repetitions = ?6,
-                 stability_milliseconds = ?7,
-                 difficulty_millipoints = ?8,
-                 last_reviewed_at_ms = ?9,
-                 last_review_event_id = ?10,
-                 lifecycle = ?11
-             WHERE card_id = ?12",
-            params![
-                projected.version,
-                projected.due_at_ms,
-                projected.ideal_due_at_ms,
-                projected.interval_milliseconds,
-                projected.interval_seconds,
-                projected.repetitions,
-                projected.stability_milliseconds,
-                projected.difficulty_millipoints,
-                projected.last_reviewed_at_ms,
-                projected.last_review_event_id,
-                card_lifecycle_to_database(projected.lifecycle),
-                card_id,
-            ],
-        )?;
-        if changed != 1 {
-            return Err(StorageError::CardNotFound(card_id.to_owned()));
-        }
-        transaction.execute(
-            "UPDATE cards
-             SET queue_updated_at_ms = ?1
-             WHERE id = ?2",
-            params![queue_updated_at_ms, card_id],
-        )?;
         transaction.commit()?;
         Ok(projected)
     }
@@ -482,35 +379,218 @@ impl Storage {
     }
 }
 
+pub(crate) fn repair_all_schedule_projections(
+    transaction: &Transaction<'_>,
+) -> Result<usize, StorageError> {
+    let card_ids = all_card_ids(transaction)?;
+    let mut repaired = 0;
+    for card_id in card_ids {
+        let current = load_schedule_row(transaction, "schedule_states", &card_id)?
+            .ok_or_else(|| StorageError::CardNotFound(card_id.clone()))?;
+        let (_, _, projected, queue_updated_at_ms) =
+            load_recorded_projection(transaction, &card_id)?;
+        if current != projected {
+            write_schedule_projection(transaction, &projected, queue_updated_at_ms)?;
+            repaired += 1;
+        }
+    }
+    Ok(repaired)
+}
+
+fn check_schedule_integrity(
+    connection: &Connection,
+    card_ids: &[String],
+) -> Result<ScheduleIntegrityReport, StorageError> {
+    let mut mismatched_card_ids = Vec::new();
+    for card_id in card_ids {
+        let current = load_schedule_row(connection, "schedule_states", card_id)?
+            .ok_or_else(|| StorageError::CardNotFound(card_id.clone()))?;
+        let (_, _, projected, _) = load_recorded_projection(connection, card_id)?;
+        if current != projected {
+            mismatched_card_ids.push(card_id.clone());
+        }
+    }
+    Ok(ScheduleIntegrityReport {
+        checked_cards: card_ids.len(),
+        mismatched_card_ids,
+    })
+}
+
+fn all_card_ids(connection: &Connection) -> Result<Vec<String>, StorageError> {
+    let mut statement = connection.prepare("SELECT id FROM cards ORDER BY id")?;
+    Ok(statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn integrity_card_ids_for_deck(
+    connection: &Connection,
+    deck_id: &str,
+) -> Result<Vec<String>, StorageError> {
+    let exists = connection
+        .query_row("SELECT 1 FROM decks WHERE id = ?1", [deck_id], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if !exists {
+        return Err(crate::entity_not_found("deck", deck_id));
+    }
+    let mut statement = connection.prepare(
+        "SELECT cards.id
+         FROM cards
+         JOIN clozes ON clozes.id = cards.cloze_id
+         JOIN source_items ON source_items.id = clozes.source_item_id
+         WHERE source_items.deck_id = ?1
+         ORDER BY cards.id",
+    )?;
+    Ok(statement
+        .query_map([deck_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn load_recorded_projection(
+    connection: &Connection,
+    card_id: &str,
+) -> Result<(ScheduleState, Vec<ReviewEvent>, ScheduleState, i64), StorageError> {
+    let baseline = load_schedule_row(connection, "schedule_baselines", card_id)?
+        .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))?;
+    let events = load_review_events(connection, card_id)?;
+    let projected = project_history(card_id, &baseline, &events)?;
+    let queue_updated_at_ms = events
+        .last()
+        .map_or(baseline.due_at_ms, |event| event.reviewed_at_ms);
+    Ok((baseline, events, projected, queue_updated_at_ms))
+}
+
+fn project_history(
+    card_id: &str,
+    baseline: &ScheduleState,
+    events: &[ReviewEvent],
+) -> Result<ScheduleState, StorageError> {
+    if baseline.card_id != card_id
+        || baseline.version != 0
+        || baseline.last_review_event_id.is_some()
+    {
+        return Err(StorageError::ProjectionMismatch(format!(
+            "card {card_id} has an invalid schedule baseline"
+        )));
+    }
+
+    let mut projected = baseline.clone();
+    let mut active_reviews = Vec::<(String, ScheduleState)>::new();
+    let mut event_ids = std::collections::HashSet::new();
+    for event in events {
+        if event.id.trim().is_empty()
+            || event.card_id != card_id
+            || event.previous_schedule != projected
+            || event.next_schedule.card_id != card_id
+            || event.previous_schedule.version.checked_add(1) != Some(event.next_schedule.version)
+            || event.next_schedule.last_review_event_id.as_deref() != Some(event.id.as_str())
+            || !event_ids.insert(event.id.as_str())
+        {
+            return Err(StorageError::ProjectionMismatch(format!(
+                "event {} does not continue card {card_id} version {}",
+                event.id, projected.version
+            )));
+        }
+        validate_restored_lifecycle(&mut active_reviews, baseline.lifecycle, event)?;
+        projected = event.next_schedule.clone();
+    }
+    Ok(projected)
+}
+
+fn write_schedule_projection(
+    transaction: &Transaction<'_>,
+    schedule: &ScheduleState,
+    queue_updated_at_ms: i64,
+) -> Result<(), StorageError> {
+    let changed = transaction.execute(
+        "UPDATE schedule_states
+         SET version = ?1,
+             due_at_ms = ?2,
+             ideal_due_at_ms = ?3,
+             interval_milliseconds = ?4,
+             interval_seconds = ?5,
+             repetitions = ?6,
+             stability_milliseconds = ?7,
+             difficulty_millipoints = ?8,
+             last_reviewed_at_ms = ?9,
+             last_review_event_id = ?10,
+             lifecycle = ?11
+         WHERE card_id = ?12",
+        params![
+            schedule.version,
+            schedule.due_at_ms,
+            schedule.ideal_due_at_ms,
+            schedule.interval_milliseconds,
+            schedule.interval_seconds,
+            schedule.repetitions,
+            schedule.stability_milliseconds,
+            schedule.difficulty_millipoints,
+            schedule.last_reviewed_at_ms,
+            schedule.last_review_event_id,
+            card_lifecycle_to_database(schedule.lifecycle),
+            schedule.card_id,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(StorageError::CardNotFound(schedule.card_id.clone()));
+    }
+    let changed = transaction.execute(
+        "UPDATE cards
+         SET queue_updated_at_ms = ?1
+         WHERE id = ?2",
+        params![queue_updated_at_ms, schedule.card_id],
+    )?;
+    if changed != 1 {
+        return Err(StorageError::CardNotFound(schedule.card_id.clone()));
+    }
+    Ok(())
+}
+
 fn validate_restored_lifecycle(
-    active_review_ids: &mut Vec<String>,
+    active_reviews: &mut Vec<(String, ScheduleState)>,
     baseline_lifecycle: CardLifecycle,
     event: &ReviewEvent,
 ) -> Result<(), StorageError> {
     match event.kind {
         ReviewEventKind::Review if event.undoes_review_event_id.is_none() => {
-            active_review_ids.push(event.id.clone());
+            active_reviews.push((event.id.clone(), event.previous_schedule.clone()));
         }
-        ReviewEventKind::Undo
-            if active_review_ids.last().map(String::as_str)
-                == event.undoes_review_event_id.as_deref() =>
-        {
-            active_review_ids.pop();
+        ReviewEventKind::Undo => {
+            let Some((target_id, prior_schedule)) = active_reviews.last() else {
+                return Err(StorageError::ProjectionMismatch(
+                    "review history has an invalid compensation chain".into(),
+                ));
+            };
+            if Some(target_id.as_str()) != event.undoes_review_event_id.as_deref() {
+                return Err(StorageError::ProjectionMismatch(
+                    "review history has an invalid compensation chain".into(),
+                ));
+            }
+            let mut restored = prior_schedule.clone();
+            restored.version = event.next_schedule.version;
+            restored.last_review_event_id = Some(event.id.clone());
+            if event.next_schedule != restored {
+                return Err(StorageError::ProjectionMismatch(
+                    "undo event does not restore the compensated review snapshot".into(),
+                ));
+            }
+            active_reviews.pop();
         }
-        _ => {
+        ReviewEventKind::Review => {
             return Err(StorageError::ProjectionMismatch(
-                "portable review history has an invalid compensation chain".into(),
+                "review history has an invalid compensation chain".into(),
             ));
         }
     }
-    let expected = if active_review_ids.is_empty() {
+    let expected = if active_reviews.is_empty() {
         baseline_lifecycle
     } else {
         CardLifecycle::Introduced
     };
     if event.next_schedule.lifecycle != expected {
         return Err(StorageError::ProjectionMismatch(
-            "portable review history has an invalid lifecycle transition".into(),
+            "review history has an invalid lifecycle transition".into(),
         ));
     }
     Ok(())
@@ -530,6 +610,14 @@ fn validate_review_preconditions(
         .ok_or_else(|| StorageError::CardNotFound(event.card_id.clone()))?;
     let stored_schedule = load_schedule_row(transaction, "schedule_states", &event.card_id)?
         .ok_or_else(|| StorageError::CardNotFound(event.card_id.clone()))?;
+    let (baseline, mut events, projected, _) =
+        load_recorded_projection(transaction, &event.card_id)?;
+    if stored_schedule != projected {
+        return Err(StorageError::ProjectionMismatch(format!(
+            "card {} current projection does not match immutable history",
+            event.card_id
+        )));
+    }
 
     if event.previous_schedule.card_id != event.card_id
         || event.next_schedule.card_id != event.card_id
@@ -540,9 +628,16 @@ fn validate_review_preconditions(
         || (event.kind == ReviewEventKind::Undo && event.undoes_review_event_id.is_none())
         || card_version != event.card_content_version
         || stored_schedule != event.previous_schedule
-        || event.next_schedule.version != event.previous_schedule.version + 1
+        || event.previous_schedule.version.checked_add(1) != Some(event.next_schedule.version)
     {
         return Err(StorageError::StaleReview);
+    }
+    events.push(event.clone());
+    if project_history(&event.card_id, &baseline, &events)? != event.next_schedule {
+        return Err(StorageError::ProjectionMismatch(format!(
+            "event {} does not produce its recorded projection",
+            event.id
+        )));
     }
     Ok(())
 }

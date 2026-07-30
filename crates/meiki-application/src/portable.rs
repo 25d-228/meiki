@@ -768,13 +768,16 @@ impl From<ArchiveScope> for ArchiveScopeDto {
 
 #[cfg(test)]
 mod tests {
-    use meiki_storage::{DeckRepository, Storage};
+    use meiki_storage::{DeckRepository, SAMPLE_CARD_ID, Storage};
     use tempfile::tempdir;
 
     use super::{
         ArchiveExportRequest, ArchiveImportModeDto, ArchiveImportRequest, ArchiveScopeDto,
     };
-    use crate::ApplicationService;
+    use crate::{
+        ApplicationService, GradeDto, GradeReviewRequest, StudyIntensityDto,
+        UpdateSchedulerSettingsRequest,
+    };
 
     #[test]
     fn empty_collection_exports_previews_and_replaces_without_learning_data() {
@@ -816,6 +819,96 @@ mod tests {
                 .library_notes()
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn repaired_snapshot_history_exports_and_replaces_exactly() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let card = service.seed_test_collection(100_000).unwrap();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "review-before-repair".into(),
+                    card_id: card.card_id,
+                    card_content_version: card.card_content_version,
+                    schedule_version: card.schedule_version,
+                    raw_response: "行きます".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 1_000,
+                },
+                100_000,
+            )
+            .unwrap();
+        let expected = Storage::open(&collection_path)
+            .unwrap()
+            .load_schedule(SAMPLE_CARD_ID)
+            .unwrap();
+        let events = Storage::open(&collection_path)
+            .unwrap()
+            .review_events(SAMPLE_CARD_ID)
+            .unwrap();
+        service
+            .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
+                deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+                intensity: StudyIntensityDto::Intensive,
+                target_retention_basis_points: 9_500,
+                new_cards_per_day: 50,
+                daily_time_budget_minutes: Some(120),
+                maximum_interval_days: 20_000,
+                day_boundary_minutes: 240,
+            })
+            .unwrap();
+
+        let mut storage = Storage::open(&collection_path).unwrap();
+        assert!(
+            storage
+                .check_collection_schedule_integrity()
+                .unwrap()
+                .is_valid()
+        );
+        let backup = service
+            .create_recovery_backup(&storage, "projection-repair-test")
+            .unwrap();
+        assert!(backup.is_file());
+        assert_eq!(
+            storage.rebuild_schedule_projection(SAMPLE_CARD_ID).unwrap(),
+            expected
+        );
+        drop(storage);
+
+        let exported = service
+            .export_archive(&ArchiveExportRequest {
+                scope: ArchiveScopeDto::FullCollection,
+                selected_ids: Vec::new(),
+                now_ms: 200_000,
+            })
+            .unwrap();
+        let target_path = directory.path().join("restored.db");
+        let target = ApplicationService::new(&target_path);
+        assert!(
+            target
+                .preview_archive(&exported.path, ArchiveImportModeDto::Replace)
+                .unwrap()
+                .can_import
+        );
+        target
+            .import_archive(&ArchiveImportRequest {
+                path: exported.path,
+                mode: ArchiveImportModeDto::Replace,
+                confirmation: "REPLACE".into(),
+            })
+            .unwrap();
+        let restored = Storage::open(&target_path).unwrap();
+        assert_eq!(restored.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
+        assert_eq!(restored.review_events(SAMPLE_CARD_ID).unwrap(), events);
+        assert!(
+            restored
+                .check_collection_schedule_integrity()
+                .unwrap()
+                .is_valid()
         );
     }
 

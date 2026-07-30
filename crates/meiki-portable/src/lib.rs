@@ -542,12 +542,13 @@ fn validate_card_history(
         return invalid_collection("card schedule references the wrong card");
     }
     let mut projected = portable.baseline.clone();
-    let mut active_review_ids = Vec::<&str>::new();
+    let mut active_reviews = Vec::<(&str, &ScheduleState)>::new();
     for event in &portable.review_events {
-        if event.card_id != card_id
+        if event.id.trim().is_empty()
+            || event.card_id != card_id
             || event.previous_schedule != projected
             || event.next_schedule.card_id != card_id
-            || event.next_schedule.version != event.previous_schedule.version + 1
+            || event.previous_schedule.version.checked_add(1) != Some(event.next_schedule.version)
             || event.next_schedule.last_review_event_id.as_deref() != Some(event.id.as_str())
             || !review_ids.insert(event.id.clone())
             || event
@@ -559,22 +560,33 @@ fn validate_card_history(
         }
         match event.kind {
             ReviewEventKind::Review if event.undoes_review_event_id.is_none() => {
-                active_review_ids.push(event.id.as_str());
+                active_reviews.push((event.id.as_str(), &event.previous_schedule));
             }
             ReviewEventKind::Undo => {
                 let Some(target) = event.undoes_review_event_id.as_deref() else {
                     return invalid_collection("undo event has no review target");
                 };
-                if active_review_ids.last().copied() != Some(target) {
+                let Some((latest_id, prior_schedule)) = active_reviews.last() else {
+                    return invalid_collection("undo event has no active review target");
+                };
+                if *latest_id != target {
                     return invalid_collection("undo event target is not the latest active review");
                 }
-                active_review_ids.pop();
+                let mut restored = (*prior_schedule).clone();
+                restored.version = event.next_schedule.version;
+                restored.last_review_event_id = Some(event.id.clone());
+                if event.next_schedule != restored {
+                    return invalid_collection(
+                        "undo event does not restore the compensated review snapshot",
+                    );
+                }
+                active_reviews.pop();
             }
             ReviewEventKind::Review => {
                 return invalid_collection("review event cannot undo another review");
             }
         }
-        let expected_lifecycle = if active_review_ids.is_empty() {
+        let expected_lifecycle = if active_reviews.is_empty() {
             portable.baseline.lifecycle
         } else {
             CardLifecycle::Introduced
@@ -1032,7 +1044,7 @@ mod tests {
     use super::{
         ArchiveManifest, ArchiveMediaSource, ArchiveScope, COLLECTION_ENTRY, MANIFEST_ENTRY,
         PortableCard, PortableCollection, PortableError, PortableNote, content_hash,
-        namespace_collection, read_archive, write_archive,
+        namespace_collection, read_archive, validate_collection, write_archive,
     };
 
     #[test]
@@ -1190,6 +1202,49 @@ mod tests {
             first.notes[0].source_item.media[0].content_hash,
             collection.notes[0].source_item.media[0].content_hash
         );
+    }
+
+    #[test]
+    fn archive_validation_rejects_discontinuous_duplicated_reordered_and_malformed_history() {
+        let media_hash = content_hash(b"portable-history");
+        let valid = collection(&media_hash);
+
+        let mut discontinuous = valid.clone();
+        discontinuous.notes[0].cards[0].review_events[0]
+            .previous_schedule
+            .version = 7;
+        assert!(validate_collection(&discontinuous).is_err());
+
+        let mut duplicated = valid.clone();
+        let duplicated_event = duplicated.notes[0].cards[0].review_events[0].clone();
+        duplicated.notes[0].cards[0]
+            .review_events
+            .push(duplicated_event);
+        assert!(validate_collection(&duplicated).is_err());
+
+        let mut ordered = valid.clone();
+        let first = ordered.notes[0].cards[0].review_events[0].clone();
+        let mut second_schedule = first.next_schedule.clone();
+        second_schedule.version += 1;
+        second_schedule.due_at_ms += 86_400_000;
+        second_schedule.ideal_due_at_ms += 86_400_000;
+        second_schedule.last_review_event_id = Some("review-2".into());
+        let mut second = first;
+        second.id = "review-2".into();
+        second.reviewed_at_ms += 10_000;
+        second.previous_schedule = second.next_schedule;
+        second.next_schedule = second_schedule.clone();
+        ordered.notes[0].cards[0].schedule = second_schedule;
+        ordered.notes[0].cards[0].review_events.push(second);
+        assert!(validate_collection(&ordered).is_ok());
+        ordered.notes[0].cards[0].review_events.reverse();
+        assert!(validate_collection(&ordered).is_err());
+
+        let mut malformed = valid;
+        malformed.notes[0].cards[0].review_events[0].kind = ReviewEventKind::Undo;
+        malformed.notes[0].cards[0].review_events[0].undoes_review_event_id =
+            Some("missing-review".into());
+        assert!(validate_collection(&malformed).is_err());
     }
 
     #[allow(clippy::too_many_lines)]

@@ -6,11 +6,10 @@ use meiki_application::{
     GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest, LibraryBulkRequest,
     LibraryBulkResultDto, LibraryExportRequest, LibraryExportResultDto, LibraryOverviewDto,
     LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
-    RebuildSchedulerResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest,
-    ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto, SchedulerSettingsDto,
-    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
-    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
-    UpdateSchedulerSettingsRequest,
+    ReconcileStudyQueueRequest, RemoveClozeRequest, ReorderSegmentsRequest, RevealDto,
+    SchedulerDiagnosticsExportDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto,
+    StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest,
+    UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -274,18 +273,6 @@ fn rollback_scheduler(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn rebuild_scheduler(
-    deck_id: String,
-    state: State<'_, AppContext>,
-) -> Result<RebuildSchedulerResultDto, String> {
-    state
-        .service()
-        .rebuild_scheduler(&deck_id)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 fn export_scheduler_diagnostics(
     deck_id: String,
     state: State<'_, AppContext>,
@@ -414,7 +401,6 @@ pub fn run() {
             update_scheduler_settings,
             optimize_scheduler,
             rollback_scheduler,
-            rebuild_scheduler,
             export_scheduler_diagnostics,
             new_authoring_draft,
             import_media,

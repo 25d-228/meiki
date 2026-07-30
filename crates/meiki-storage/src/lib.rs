@@ -31,7 +31,9 @@ const STUDY_SESSION_MIGRATION: &str = include_str!("../migrations/0005_study_ses
 const MEDIA_PIPELINE_MIGRATION: &str = include_str!("../migrations/0006_media_pipeline.sql");
 const LIBRARY_MIGRATION: &str = include_str!("../migrations/0007_library.sql");
 const CARD_LIFECYCLE_MIGRATION: &str = include_str!("../migrations/0008_card_lifecycle.sql");
-const LATEST_SCHEMA_VERSION: u32 = 8;
+const PROJECTION_INTEGRITY_MIGRATION: &str =
+    include_str!("../migrations/0009_projection_integrity.sql");
+const LATEST_SCHEMA_VERSION: u32 = 9;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -104,6 +106,19 @@ pub struct StoredLibraryNote {
     pub note: StoredSourceNote,
     pub cards: Vec<StoredLibraryCard>,
     pub deleted_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScheduleIntegrityReport {
+    pub checked_cards: usize,
+    pub mismatched_card_ids: Vec<String>,
+}
+
+impl ScheduleIntegrityReport {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.mismatched_card_ids.is_empty()
+    }
 }
 
 pub struct Storage {
@@ -203,6 +218,17 @@ impl Storage {
         if current < 8 {
             transaction.execute_batch(CARD_LIFECYCLE_MIGRATION)?;
         }
+        if current < 9 {
+            let repaired_cards = review::repair_all_schedule_projections(&transaction)?;
+            transaction.execute_batch(PROJECTION_INTEGRITY_MIGRATION)?;
+            transaction.execute(
+                "INSERT INTO schedule_projection_repairs(
+                    schema_version, repaired_cards, repaired_at_ms
+                 ) VALUES (9, ?1, unixepoch('subsec') * 1000)",
+                [u64::try_from(repaired_cards)
+                    .map_err(|_| StorageError::NumericRange("repaired card count"))?],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -238,6 +264,21 @@ impl Storage {
     pub fn schema_version(&self) -> Result<u32, StorageError> {
         Ok(self.connection.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Returns the number of projections repaired by the integrity migration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the repair record cannot be queried.
+    pub fn projection_migration_repaired_cards(&self) -> Result<u64, StorageError> {
+        Ok(self.connection.query_row(
+            "SELECT repaired_cards
+             FROM schedule_projection_repairs
+             WHERE schema_version = 9",
             [],
             |row| row.get(0),
         )?)

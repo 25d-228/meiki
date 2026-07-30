@@ -1016,12 +1016,6 @@ export async function installMockApi(page: Page): Promise<void> {
         };
         return copy(schedulerSettings);
       }
-      if (command === "rebuild_scheduler") {
-        return {
-          backup_path: "/tmp/collection.scheduler-rebuild.bak",
-          rebuilt_cards: 1,
-        };
-      }
       if (command === "export_scheduler_diagnostics") {
         return {
           path: "/tmp/collection.scheduler-diagnostics.json",
