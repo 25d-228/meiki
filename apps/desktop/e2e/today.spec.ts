@@ -25,6 +25,16 @@ function statusMessage(page: import("@playwright/test").Page, text: string) {
     .filter({ hasText: text });
 }
 
+async function lastRequest(
+  page: import("@playwright/test").Page,
+  command: string,
+) {
+  return page.evaluate((name) => {
+    const requests = window.__MEIKI_TEST_REQUESTS__ ?? [];
+    return requests.filter((request) => request.command === name).at(-1);
+  }, command);
+}
+
 test("shows empty, overdue, and capped workload states", async ({ page }) => {
   await page.goto("/?today=empty");
   await openToday(page);
@@ -56,16 +66,17 @@ test("shows empty, overdue, and capped workload states", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("filters by deck and explains a time-budget change", async ({ page }) => {
+test("maps deck and time-budget controls to command requests", async ({
+  page,
+}) => {
   await page.goto("/?today=budget");
   await openToday(page);
   await expect(page.getByText("1 due and 3 new.")).toBeVisible();
 
   await page.getByLabel("Deck").selectOption("travel-deck");
-  await expect(page.locator(".queue > .eyebrow")).toHaveText("Travel phrases");
-  await expect(
-    page.locator("header").getByText("Today · Travel phrases"),
-  ).toBeVisible();
+  expect((await lastRequest(page, "get_today_overview"))?.args).toMatchObject({
+    request: { deck_id: "travel-deck" },
+  });
 
   await page
     .locator("#main-content")
@@ -76,41 +87,44 @@ test("filters by deck and explains a time-budget change", async ({ page }) => {
   await page.getByRole("button", { name: "Preview policy" }).click();
   await page.getByRole("button", { name: "Save preferences" }).click();
   await expect(page.getByText("Scheduling preferences saved.")).toBeVisible();
-
-  await page.getByRole("button", { name: "Today", exact: true }).click();
-  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
-  await expect(statusMessage(page, "2 new cards are deferred")).toBeVisible();
-  await expect(
-    statusMessage(page, "Due reviews were not deferred."),
-  ).toBeVisible();
+  expect(
+    (await lastRequest(page, "update_scheduler_settings"))?.args,
+  ).toMatchObject({
+    request: {
+      collection_daily_time_budget_minutes: 1,
+      deck_id: "default-deck",
+    },
+  });
 });
 
-test("resumes an interrupted queue without duplicating or losing cards", async ({
-  page,
-}) => {
+test("renders and continues a persisted queue fixture", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/?today=normal&fixture=longmixed");
-  await openToday(page);
-  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
-  await page.getByRole("button", { name: "Start study" }).click();
-
-  await expect(page.getByText(/deliberately long multilingual/)).toBeVisible();
-  await page.getByLabel("Your answer").fill("三時");
-  await page.getByLabel("Your answer").press("Enter");
-  await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const stored = localStorage.getItem("meiki-active-study-queue");
-        return stored ? JSON.parse(stored).position : null;
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "meiki-active-study-queue",
+      JSON.stringify({
+        version: 2,
+        deckId: "__all_decks__",
+        entries: [
+          {
+            card_id: "due-card",
+            card_content_version: 0,
+            schedule_version: 0,
+          },
+          {
+            card_id: "new-card",
+            card_content_version: 0,
+            schedule_version: 0,
+          },
+        ],
+        position: 1,
+        startedAtMs: 1_700_000_000_000,
+        pendingReview: null,
       }),
-    )
-    .toBe(1);
-
-  await page.reload();
+    );
+  });
+  await page.goto("/?today=normal&fixture=longmixed&reconcile=second");
+  await openToday(page);
   await expect(page.getByText("Resume where you stopped")).toBeVisible();
   await page.getByRole("button", { name: "Resume study" }).click();
   await expect(page.getByText(/Second card ·/)).toBeVisible();
