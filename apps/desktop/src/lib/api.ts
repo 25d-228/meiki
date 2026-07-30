@@ -39,6 +39,7 @@ import type { PortableArchivePreviewDto } from "./generated/PortableArchivePrevi
 import type { PortableExportResultDto } from "./generated/PortableExportResultDto";
 import type { ReconcileStudyQueueRequest } from "./generated/ReconcileStudyQueueRequest";
 import type { StudyQueueEntryDto } from "./generated/StudyQueueEntryDto";
+import type { StudyPlanDto } from "./generated/StudyPlanDto";
 
 function invoke<T>(
   command: string,
@@ -51,16 +52,16 @@ function invoke<T>(
 }
 
 export const api = {
-  initializeCollection(): Promise<StudyCardDto> {
-    return invoke("initialize_collection");
-  },
-
   getStudyCard(cardId: string): Promise<StudyCardDto> {
     return invoke("get_study_card", { cardId });
   },
 
   getTodayOverview(request: TodayRequest): Promise<TodayOverviewDto> {
     return invoke("get_today_overview", { request });
+  },
+
+  prepareStudy(request: TodayRequest): Promise<StudyPlanDto> {
+    return invoke("prepare_study", { request });
   },
 
   reconcileStudyQueue(

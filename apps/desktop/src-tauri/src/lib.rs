@@ -8,8 +8,9 @@ use meiki_application::{
     LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
     RebuildSchedulerResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest,
     ReorderSegmentsRequest, RevealDto, SchedulerDiagnosticsExportDto, SchedulerSettingsDto,
-    StudyCardDto, StudyMediaDto, StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto,
-    TodayRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
+    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
+    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
 
@@ -21,15 +22,6 @@ impl AppContext {
     fn service(&self) -> ApplicationService {
         ApplicationService::new(&self.collection_path)
     }
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn initialize_collection(state: State<'_, AppContext>) -> Result<StudyCardDto, String> {
-    state
-        .service()
-        .initialize_collection()
-        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -50,6 +42,18 @@ fn get_today_overview(
     state
         .service()
         .get_today_overview(&request)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn prepare_study(
+    request: TodayRequest,
+    state: State<'_, AppContext>,
+) -> Result<StudyPlanDto, String> {
+    state
+        .service()
+        .prepare_study(&request)
         .map_err(|error| error.to_string())
 }
 
@@ -389,9 +393,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            initialize_collection,
             get_study_card,
             get_today_overview,
+            prepare_study,
             reconcile_study_queue,
             get_library,
             apply_library_bulk_action,

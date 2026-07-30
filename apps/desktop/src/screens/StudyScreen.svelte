@@ -16,6 +16,7 @@
   import type { GradeReviewResultDto } from "../lib/generated/GradeReviewResultDto";
   import type { RevealDto } from "../lib/generated/RevealDto";
   import type { StudyCardDto } from "../lib/generated/StudyCardDto";
+  import type { StudyAvailabilityDto } from "../lib/generated/StudyAvailabilityDto";
   import { mediaAssetSource } from "../lib/media";
   import { messages } from "../lib/messages";
   import {
@@ -29,12 +30,14 @@
   } from "../lib/study-queue";
 
   type Props = {
+    onCreate: () => void;
     onEdit?: (cardId: string) => void;
     onQueueComplete?: () => void;
   };
 
   type ViewState =
     | "loading"
+    | "empty"
     | "prompt"
     | "checking"
     | "revealed"
@@ -61,7 +64,7 @@
   const defaultDeckId = "default-deck";
   const grades: GradeDto[] = ["again", "hard", "good", "easy"];
 
-  let { onEdit, onQueueComplete }: Props = $props();
+  let { onCreate, onEdit, onQueueComplete }: Props = $props();
   let view = $state<ViewState>("loading");
   let recoveryView = $state<StableView>("prompt");
   let retryAction = $state<RetryAction>("load");
@@ -84,6 +87,8 @@
   let promptStartedAt = $state(0);
   let autoplayPromptAudio = $state(false);
   let queueSession = $state<StudyQueueSession | null>(null);
+  let studyAvailability = $state<StudyAvailabilityDto | null>(null);
+  let nextDueAt = $state<string | null>(null);
 
   onMount(() => {
     autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
@@ -96,14 +101,16 @@
     try {
       queueSession = readStudyQueue();
       if (!queueSession) {
-        await api.initializeCollection();
         const deckId = localStorage.getItem(selectedDeckKey) ?? defaultDeckId;
-        const overview = await currentOverview(deckId);
-        if (!overview.queue.length) {
-          finishQueue();
+        const plan = await currentStudyPlan(deckId);
+        if (plan.availability !== "ready") {
+          studyAvailability = plan.availability;
+          nextDueAt = plan.overview.next_due_at;
+          card = null;
+          view = "empty";
           return;
         }
-        queueSession = startStudyQueue(overview);
+        queueSession = startStudyQueue(plan.overview);
       }
       await recoverPendingReview();
       if (!queueSession) return;
@@ -115,11 +122,11 @@
     }
   }
 
-  async function currentOverview(deckId: string) {
+  async function currentStudyPlan(deckId: string) {
     const settings = await api.getSchedulerSettings(deckId);
     const now = new Date();
     const { start, end } = localDayBounds(now, settings.day_boundary_minutes);
-    return api.getTodayOverview({
+    return api.prepareStudy({
       deck_id: deckId,
       now_ms: now.getTime(),
       day_start_ms: start.getTime(),
@@ -652,6 +659,34 @@
       <div class="state-card" aria-live="polite" aria-busy="true">
         <span class="spinner" aria-hidden="true"></span>
         <p>{messages.loading}</p>
+      </div>
+    </SurfaceCard>
+  {:else if view === "empty"}
+    <SurfaceCard>
+      <div class="state-card" aria-live="polite">
+        {#if studyAvailability === "empty_collection"}
+          <span class="eyebrow">Start your collection</span>
+          <h2>Your collection is empty</h2>
+          <p>Create a typed cloze from any language or script to begin.</p>
+          <Button variant="primary" data-primary-action onclick={onCreate}
+            >Create a cloze</Button
+          >
+        {:else}
+          <span class="eyebrow">Study complete</span>
+          <h2>Nothing is due</h2>
+          <p>
+            {#if nextDueAt}
+              Your next review is due {formatDueDate(nextDueAt)}.
+            {:else}
+              There are no eligible cards in this deck.
+            {/if}
+          </p>
+          <Button
+            variant="primary"
+            data-primary-action
+            onclick={onQueueComplete}>Return to Today</Button
+          >
+        {/if}
       </div>
     </SurfaceCard>
   {:else if view === "error"}

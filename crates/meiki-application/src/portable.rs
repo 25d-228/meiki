@@ -777,11 +777,54 @@ mod tests {
     use crate::ApplicationService;
 
     #[test]
+    fn empty_collection_exports_previews_and_replaces_without_learning_data() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+
+        let exported = service
+            .export_archive(&ArchiveExportRequest {
+                scope: ArchiveScopeDto::FullCollection,
+                selected_ids: Vec::new(),
+                now_ms: 10_000,
+            })
+            .unwrap();
+        assert_eq!(exported.decks, 1);
+        assert_eq!(exported.notes, 0);
+        assert_eq!(exported.cards, 0);
+        assert_eq!(exported.review_events, 0);
+        assert_eq!(exported.media_objects, 0);
+
+        let preview = service
+            .preview_archive(&exported.path, ArchiveImportModeDto::Replace)
+            .unwrap();
+        assert!(preview.can_import);
+        assert_eq!(preview.notes, 0);
+        assert_eq!(preview.cards, 0);
+        assert_eq!(preview.review_events, 0);
+        let imported = service
+            .import_archive(&ArchiveImportRequest {
+                path: exported.path,
+                mode: ArchiveImportModeDto::Replace,
+                confirmation: "REPLACE".into(),
+            })
+            .unwrap();
+        assert!(std::path::Path::new(&imported.backup_path).is_file());
+        assert!(
+            Storage::open(&collection_path)
+                .unwrap()
+                .library_notes()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn full_archive_merges_once_and_replacement_restores_exact_content() {
         let directory = tempdir().unwrap();
         let collection_path = directory.path().join("collection.db");
         let service = ApplicationService::new(&collection_path);
-        service.initialize_collection().unwrap();
+        service.seed_test_collection(1_000).unwrap();
         let media_source = directory.path().join("recovery.png");
         std::fs::write(
             &media_source,

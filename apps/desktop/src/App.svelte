@@ -187,6 +187,7 @@
         />
       {:else if activeScreen === "study"}
         <StudyScreen
+          onCreate={() => void navigate("editor")}
           onEdit={editStudyCard}
           onQueueComplete={finishStudyQueue}
         />

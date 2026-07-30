@@ -18,8 +18,8 @@ use meiki_scheduler::{
     OptimizationResult, ReviewHistoryEntry, SchedulerConfig, SchedulerEngine, SchedulerError,
 };
 use meiki_storage::{
-    CardRepository, DeckRepository, SAMPLE_CARD_ID, SchedulerParameterSetRepository,
-    SchedulerProfileRepository, Storage, StorageError, StoredStudyCard,
+    CardRepository, DeckRepository, SchedulerParameterSetRepository, SchedulerProfileRepository,
+    Storage, StorageError, StoredStudyCard,
 };
 use meiki_text::{
     CaseSensitivity, ComparisonOptions, DiacriticSensitivity, DiffKind, DiffSegment,
@@ -50,7 +50,10 @@ pub use portable::{
     ArchiveExportRequest, ArchiveImportModeDto, ArchiveImportRequest, ArchiveImportResultDto,
     ArchiveScopeDto, BackupDto, PortableArchivePreviewDto, PortableExportResultDto,
 };
-pub use today::{TodayDeckDto, TodayOverviewDto, TodayQueueCardDto, TodayRequest};
+pub use today::{
+    StudyAvailabilityDto, StudyPlanDto, TodayDeckDto, TodayOverviewDto, TodayQueueCardDto,
+    TodayRequest,
+};
 
 #[derive(Debug, Error)]
 pub enum ApplicationError {
@@ -410,6 +413,13 @@ impl ApplicationService {
         }
     }
 
+    #[cfg(test)]
+    fn seed_test_collection(&self, now_ms: i64) -> Result<StudyCardDto, ApplicationError> {
+        let mut storage = self.open_storage()?;
+        storage.seed_walking_skeleton(now_ms)?;
+        self.study_card_dto(&storage, meiki_storage::SAMPLE_CARD_ID)
+    }
+
     /// Imports one local audio or image into the collection's content-addressed store.
     ///
     /// # Errors
@@ -450,18 +460,6 @@ impl ApplicationService {
             created_at_ms: Utc::now().timestamp_millis(),
         };
         Ok(self.study_media_dto(&media))
-    }
-
-    /// Ensures the walking-skeleton collection exists and returns its card.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApplicationError`] when the collection directory or database
-    /// cannot be prepared.
-    pub fn initialize_collection(&self) -> Result<StudyCardDto, ApplicationError> {
-        let mut storage = self.open_storage()?;
-        storage.seed_walking_skeleton(Utc::now().timestamp_millis())?;
-        self.study_card_dto(&storage, SAMPLE_CARD_ID)
     }
 
     /// Restores a study card from the collection.
@@ -1522,6 +1520,8 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     RemoveClozeRequest::export_all_to(output)?;
     ReorderSegmentsRequest::export_all_to(output)?;
     TodayRequest::export_all_to(output)?;
+    StudyAvailabilityDto::export_all_to(output)?;
+    StudyPlanDto::export_all_to(output)?;
     TodayDeckDto::export_all_to(output)?;
     TodayQueueCardDto::export_all_to(output)?;
     TodayOverviewDto::export_all_to(output)?;
@@ -1572,7 +1572,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("collection.db");
         let service = ApplicationService::new(&path);
-        let card = service.initialize_collection().unwrap();
+        let card = service.seed_test_collection(1_000).unwrap();
         assert_eq!(card.prompt, "日曜日は図書館に[…]");
 
         let reveal = service
@@ -1725,7 +1725,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("collection.db");
         let service = ApplicationService::new(&path);
-        let card = service.initialize_collection().unwrap();
+        let card = service.seed_test_collection(1_000).unwrap();
         let defaults = service.get_scheduler_settings(DEFAULT_DECK_ID).unwrap();
         assert_eq!(defaults.intensity, StudyIntensityDto::Balanced);
         assert_eq!(defaults.engine_version, "fsrs-7");
