@@ -67,7 +67,7 @@ test("previews generated cards, returns from editing, and confirms cloze deletio
   const preview = page.getByRole("dialog", { name: "Generated cards" });
   await expect(preview.getByText("日曜日は図書館に[…]")).toBeVisible();
   await expect(preview.getByText("行きます", { exact: true })).toBeVisible();
-  await preview.getByRole("button", { name: "Close dialog" }).click();
+  await preview.getByRole("button", { name: "Close" }).click();
 
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   await expect(
@@ -80,40 +80,47 @@ test("previews generated cards, returns from editing, and confirms cloze deletio
 
   await search(page, "図書館", "日曜日は図書館に行きます");
   await page.getByRole("button", { name: "Edit", exact: true }).click();
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Saving will remove its card");
-    await dialog.dismiss();
+  await page
+    .getByTestId("app-shell")
+    .getByRole("button", { name: "Convert to text" })
+    .click();
+  let confirmation = page.getByRole("alertdialog", {
+    name: "Convert this cloze to text?",
   });
-  await page.getByRole("button", { name: "Convert to text" }).click();
+  await expect(confirmation).toContainText("Saving will remove this card");
+  await confirmation.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByRole("button", { name: /Cloze 1/ })).toBeVisible();
 
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Saving will remove its card");
-    await dialog.accept();
+  await page
+    .getByTestId("app-shell")
+    .getByRole("button", { name: "Convert to text" })
+    .click();
+  confirmation = page.getByRole("alertdialog", {
+    name: "Convert this cloze to text?",
   });
-  await page.getByRole("button", { name: "Convert to text" }).click();
+  await confirmation.getByRole("button", { name: "Convert to text" }).click();
   await expect(page.getByRole("button", { name: /Cloze 1/ })).toHaveCount(0);
 });
 
 test("bulk actions report exact counts, support undo, trash, and restore", async ({
   page,
 }) => {
+  const statusMessage = (text: string) =>
+    page.getByTestId("app-shell").getByRole("status").filter({ hasText: text });
   const reviewStateBefore = await page.evaluate(() =>
     localStorage.getItem("meiki-e2e-state"),
   );
   await page.getByText("Select this page").click();
   await expect(page.getByText("4 notes selected")).toBeVisible();
   await page.getByRole("button", { name: "Suspend", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText(
-    "Suspended cards in 4 notes.",
-  );
+  await expect(statusMessage("Suspended cards in 4 notes.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
 
   await page.getByLabel("Select 日曜日は図書館に行きます").check();
   await page.getByLabel("Select أنا أقرأ كتابًا في المكتبة").check();
   await page.getByLabel("Tag name").fill("Priority");
   await page.getByRole("button", { name: "Add tag" }).click();
-  await expect(page.getByRole("status")).toContainText("Tagged 2 notes.");
+  await expect(statusMessage("Tagged 2 notes.")).toBeVisible();
   await search(page, "priority", "日曜日は図書館に行きます", 2);
   await expect(page.getByText("أنا أقرأ كتابًا في المكتبة")).toBeVisible();
 
@@ -123,32 +130,32 @@ test("bulk actions report exact counts, support undo, trash, and restore", async
     page.getByRole("button", { name: "Create .meiki archive" }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Move", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("Moved 2 notes.");
+  await expect(statusMessage("Moved 2 notes.")).toBeVisible();
   await search(page, "priority", "日曜日は図書館に行きます", 2);
   await page.getByText("Select this page").click();
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Move 2 selected notes to Trash?");
-    expect(dialog.message()).toContain("Review history and media stay intact");
-    await dialog.accept();
-  });
   await page.getByRole("button", { name: "Move to Trash" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    "Moved 2 notes to Trash.",
+  let confirmation = page.getByRole("alertdialog", {
+    name: "Move selected notes to Trash?",
+  });
+  await expect(confirmation).toContainText("Move 2 selected notes to Trash?");
+  await expect(confirmation).toContainText(
+    "Review history and media stay intact",
   );
+  await confirmation.getByRole("button", { name: "Move to Trash" }).click();
+  await expect(statusMessage("Moved 2 notes to Trash.")).toBeVisible();
   await page.getByRole("button", { name: "Undo" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    "Undid the last action for 2 notes.",
-  );
+  await expect(
+    statusMessage("Undid the last action for 2 notes."),
+  ).toBeVisible();
 
   await page.getByText("Select this page").click();
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Move 2 selected notes to Trash?");
-    await dialog.accept();
-  });
   await page.getByRole("button", { name: "Move to Trash" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    "Moved 2 notes to Trash.",
-  );
+  confirmation = page.getByRole("alertdialog", {
+    name: "Move selected notes to Trash?",
+  });
+  await expect(confirmation).toContainText("Move 2 selected notes to Trash?");
+  await confirmation.getByRole("button", { name: "Move to Trash" }).click();
+  await expect(statusMessage("Moved 2 notes to Trash.")).toBeVisible();
 
   await page.getByRole("searchbox", { name: "Search library" }).fill("");
   await page.getByRole("button", { name: "Filters" }).click();
@@ -157,7 +164,7 @@ test("bulk actions report exact counts, support undo, trash, and restore", async
   await expect(page.getByText("1 media")).toBeVisible();
   await page.getByText("Select this page").click();
   await page.getByRole("button", { name: "Restore" }).click();
-  await expect(page.getByRole("status")).toContainText("Restored 2 notes.");
+  await expect(statusMessage("Restored 2 notes.")).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Your library is ready" }),
   ).toBeVisible();

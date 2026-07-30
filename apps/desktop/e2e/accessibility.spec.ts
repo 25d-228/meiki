@@ -75,6 +75,6 @@ test("RTL learning content does not reverse application controls", async ({
   await page.goto("/?fixture=rtl");
   await page.getByRole("button", { name: "Study", exact: true }).click();
   await expect(page.locator("#study-prompt")).toHaveAttribute("dir", "rtl");
-  await expect(page.locator(".app-frame")).toHaveAttribute("dir", "ltr");
+  await expect(page.getByTestId("app-shell")).toHaveAttribute("dir", "ltr");
   await expectNoAccessibilityViolations(page);
 });

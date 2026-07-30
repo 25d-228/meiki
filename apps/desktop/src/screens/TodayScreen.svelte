@@ -3,9 +3,9 @@
   import { SvelteDate } from "svelte/reactivity";
 
   import { api } from "../lib/api";
-  import Button from "../lib/components/Button.svelte";
-  import Feedback from "../lib/components/Feedback.svelte";
-  import SurfaceCard from "../lib/components/SurfaceCard.svelte";
+  import * as Alert from "$lib/components/ui/alert/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import * as Card from "$lib/components/ui/card/index.js";
   import type { TodayOverviewDto } from "../lib/generated/TodayOverviewDto";
   import {
     clearStudyQueue,
@@ -18,13 +18,14 @@
   type Props = {
     onStart: () => void;
     onSettings: () => void;
+    onDeckContextChange: (value: string) => void;
   };
 
   const selectedDeckKey = "meiki-today-deck";
   const defaultDeckId = "default-deck";
   const allDecksId = "__all_decks__";
 
-  let { onStart, onSettings }: Props = $props();
+  let { onStart, onSettings, onDeckContextChange }: Props = $props();
   let overview = $state<TodayOverviewDto | null>(null);
   let activeQueue = $state<StudyQueueSession | null>(null);
   let selectedDeckId = $state(allDecksId);
@@ -58,6 +59,7 @@
         day_start_ms: start.getTime(),
         day_end_ms: end.getTime(),
       });
+      onDeckContextChange(overview.deck_name);
       localStorage.setItem(selectedDeckKey, overview.deck_id);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -135,19 +137,24 @@
           </select>
         </label>
       {/if}
-      <Button variant="quiet" onclick={onSettings}>Settings</Button>
+      <Button variant="ghost" onclick={onSettings}>Settings</Button>
     </div>
   </header>
 
   {#if error}
-    <Feedback tone="error" title="Today’s queue could not be planned">
-      <p>{error}</p>
-      <Button variant="secondary" onclick={loadOverview}>Try again</Button>
-    </Feedback>
+    <Alert.Root variant="destructive" role="alert">
+      <Alert.Title>Today’s queue could not be planned</Alert.Title>
+      <Alert.Description>
+        <p>{error}</p>
+        <Button class="mt-3" variant="outline" onclick={loadOverview}
+          >Try again</Button
+        >
+      </Alert.Description>
+    </Alert.Root>
   {/if}
 
   <div class="today-grid" aria-busy={loading}>
-    <SurfaceCard>
+    <Card.Root class="p-6">
       <div class="queue">
         <span class="eyebrow">{overview?.deck_name ?? "Review queue"}</span>
         {#if loading && !overview}
@@ -182,8 +189,18 @@
             {/if}
           </p>
         {/if}
+        {#if overview}
+          <p class="policy-summary">
+            {overview.budget_source === "deck_override"
+              ? "Deck budget"
+              : "Collection budget"}
+            · automatic
+            {(overview.target_retention_basis_points / 100).toFixed(0)}%
+            retention target
+          </p>
+        {/if}
         <Button
-          variant="primary"
+          variant="default"
           data-primary-action
           disabled={loading ||
             (!activeQueue && (overview?.queue.length ?? 0) === 0)}
@@ -194,11 +211,19 @@
             : "Start study"}
         </Button>
       </div>
-    </SurfaceCard>
+    </Card.Root>
 
     <div class="stack">
-      <SurfaceCard padding="compact" tone="quiet">
+      <Card.Root class="bg-muted/40 p-4 shadow-none">
         <dl>
+          <div>
+            <dt>Daily budget</dt>
+            <dd>
+              {overview?.daily_time_budget_minutes == null
+                ? "—"
+                : `${overview.daily_time_budget_minutes} min`}
+            </dd>
+          </div>
           <div>
             <dt>Due</dt>
             <dd>{overview?.due_reviews ?? "—"}</dd>
@@ -212,41 +237,47 @@
             <dd>{overview ? estimate(overview.estimated_seconds) : "—"}</dd>
           </div>
         </dl>
-      </SurfaceCard>
+      </Card.Root>
 
       {#if overview?.backlog_exceeds_budget}
-        <Feedback tone="warning" title="Due work exceeds today’s budget">
-          <p>
+        <Alert.Root role="status" class="bg-muted/40">
+          <Alert.Title>Due work exceeds today’s budget</Alert.Title>
+          <Alert.Description>
             Every due review remains available. New intake is paused before
             automatic retention changes.
-          </p>
-          <p class="policy-explanation">{overview.policy_explanation}</p>
-        </Feedback>
+            <span class="policy-explanation mt-2 block"
+              >{overview.policy_explanation}</span
+            >
+          </Alert.Description>
+        </Alert.Root>
       {:else if overview?.overdue_reviews}
-        <Feedback
-          tone="warning"
-          title={`${overview.overdue_reviews} overdue ${
-            overview.overdue_reviews === 1 ? "review" : "reviews"
-          }`}
-        >
-          <p>Overdue cards remain first in the queue.</p>
-        </Feedback>
+        <Alert.Root role="status" class="bg-muted/40">
+          <Alert.Title>
+            {overview.overdue_reviews} overdue
+            {overview.overdue_reviews === 1 ? "review" : "reviews"}
+          </Alert.Title>
+          <Alert.Description>
+            Overdue cards remain first in the queue.
+          </Alert.Description>
+        </Alert.Root>
       {:else if overview?.deferred_new_cards}
-        <Feedback tone="info" title="New-card intake capped">
-          <p>
+        <Alert.Root role="status">
+          <Alert.Title>New-card intake capped</Alert.Title>
+          <Alert.Description>
             {overview.deferred_new_cards} new
             {overview.deferred_new_cards === 1 ? "card is" : "cards are"}
             deferred by today’s limit or time budget. Due reviews were not deferred.
-          </p>
-        </Feedback>
+          </Alert.Description>
+        </Alert.Root>
       {:else if overview}
-        <Feedback tone="info" title="Estimated from local history">
-          <p>
+        <Alert.Root role="status">
+          <Alert.Title>Estimated from local history</Alert.Title>
+          <Alert.Description>
             {overview.estimate_uses_history
               ? `${overview.response_time_samples} local response-time samples inform this estimate.`
               : "A conservative default is used until local response-time history is available."}
-          </p>
-        </Feedback>
+          </Alert.Description>
+        </Alert.Root>
       {/if}
     </div>
   </div>
@@ -263,24 +294,24 @@
 
   .today-actions {
     display: flex;
-    gap: var(--space-2);
+    gap: 0.5rem;
     align-items: center;
   }
 
   .today-actions select {
-    min-height: var(--control-height);
-    padding-inline: var(--space-3);
-    border: var(--border-width) solid var(--color-border-strong);
-    border-radius: var(--radius-control);
-    color: var(--color-text);
-    background: var(--color-surface);
+    min-height: 2.75rem;
+    padding-inline: 0.75rem;
+    border: 1px solid var(--input);
+    border-radius: var(--radius-lg);
+    color: var(--foreground);
+    background: var(--card);
     font: inherit;
   }
 
   .today-grid {
     display: grid;
     grid-template-columns: minmax(0, 1.6fr) minmax(16rem, 0.8fr);
-    gap: var(--space-5);
+    gap: 1.25rem;
   }
 
   .queue {
@@ -291,39 +322,44 @@
   }
 
   .queue strong {
-    font-family: var(--font-display);
+    font-family: var(--font-sans);
     font-size: clamp(1.7rem, 4vw, 2.5rem);
   }
 
   .queue p {
     max-width: 34rem;
-    margin: var(--space-3) 0 var(--space-6);
-    color: var(--color-text-muted);
+    margin: 0.75rem 0 1.5rem;
+    color: var(--muted-foreground);
     line-height: 1.6;
+  }
+
+  .queue .policy-summary {
+    margin-top: -0.75rem;
+    font-size: var(--text-sm);
   }
 
   dl {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     margin: 0;
   }
 
   dl div {
-    padding: var(--space-3);
+    padding: 0.75rem;
     text-align: center;
   }
 
   dl div + div {
-    border-left: var(--border-width) solid var(--color-border);
+    border-left: 1px solid var(--border);
   }
 
   dt {
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
   }
 
   dd {
-    margin: var(--space-2) 0 0;
+    margin: 0.5rem 0 0;
     font-size: var(--text-lg);
     font-weight: 750;
   }

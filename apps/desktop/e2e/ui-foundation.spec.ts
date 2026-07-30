@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
@@ -17,9 +18,10 @@ test("all primary screens have labelled responsive shells", async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
 
-  await expect(
-    page.getByRole("navigation", { name: "Primary navigation" }),
-  ).toBeVisible();
+  const openNavigation = page.getByRole("button", {
+    name: "Open navigation",
+  });
+  await expect(openNavigation).toBeVisible();
   const screens = [
     ["Today", "Today"],
     ["Study", "Study"],
@@ -29,7 +31,9 @@ test("all primary screens have labelled responsive shells", async ({
   ] as const;
 
   for (const [navigationName, headingName] of screens) {
+    await openNavigation.click();
     await page
+      .getByRole("navigation", { name: "Primary navigation" })
       .getByRole("button", { name: navigationName, exact: true })
       .click();
     await expect(
@@ -49,7 +53,7 @@ test("dialog, toolbar, fields, and empty state are keyboard operable", async ({
   await page.goto("/");
   await page.getByRole("button", { name: "Library" }).click();
   await expect(
-    page.getByRole("toolbar", { name: "Library tools" }),
+    page.getByRole("search", { name: "Library tools" }),
   ).toBeVisible();
   await page.getByRole("searchbox", { name: "Search library" }).fill("不存在");
   await expect(
@@ -80,48 +84,34 @@ test("light and dark themes preserve text contrast and focus visibility", async 
   await page.goto("/");
 
   for (const theme of ["light", "dark"]) {
-    await page.getByLabel("Theme").selectOption(theme);
+    await page.getByRole("button", { name: "Theme" }).click();
+    await page
+      .getByRole("option", {
+        name: new RegExp(`^${theme}$`, "i"),
+      })
+      .click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-    const contrast = await page.evaluate(() => {
-      const style = getComputedStyle(document.documentElement);
-      const parse = (value: string) => {
-        const hex = value.trim().replace("#", "");
-        return [0, 2, 4].map((offset) =>
-          Number.parseInt(hex.slice(offset, offset + 2), 16),
-        );
-      };
-      const luminance = (color: number[]) => {
-        const channels = color.map((channel) => {
-          const normalized = channel / 255;
-          return normalized <= 0.03928
-            ? normalized / 12.92
-            : ((normalized + 0.055) / 1.055) ** 2.4;
-        });
-        return (
-          0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
-        );
-      };
-      const text = luminance(parse(style.getPropertyValue("--color-text")));
-      const surface = luminance(
-        parse(style.getPropertyValue("--color-surface")),
-      );
-      return (
-        (Math.max(text, surface) + 0.05) / (Math.min(text, surface) + 0.05)
-      );
-    });
-    expect(contrast).toBeGreaterThanOrEqual(4.5);
+    await expect(page.getByRole("listbox")).toBeHidden();
+    const contrast = await new AxeBuilder({ page })
+      .withRules(["color-contrast"])
+      .analyze();
+    expect(contrast.violations).toEqual([]);
   }
 
   const studyButton = page.getByRole("button", {
     name: "Study",
     exact: true,
   });
-  await studyButton.focus();
+  await page.getByRole("button", { name: "Today", exact: true }).focus();
+  await page.keyboard.press("Tab");
+  await expect(studyButton).toBeFocused();
+  const focusStyle = await studyButton.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { boxShadow: style.boxShadow, outlineStyle: style.outlineStyle };
+  });
   expect(
-    await studyButton.evaluate(
-      (element) => getComputedStyle(element).boxShadow,
-    ),
-  ).not.toBe("none");
+    focusStyle.boxShadow !== "none" || focusStyle.outlineStyle !== "none",
+  ).toBe(true);
 });
 
 test("budget-first scheduler previews before save and keeps expert controls explicit", async ({
@@ -150,7 +140,7 @@ test("budget-first scheduler previews before save and keeps expert controls expl
   await page.getByRole("button", { name: "Save preferences" }).click();
   await expect(page.getByText("Scheduling preferences saved.")).toBeVisible();
 
-  await page.getByLabel("Enable").check();
+  await page.getByRole("switch", { name: "Enable" }).click();
   await page
     .getByRole("group", { name: "Scheduling mode" })
     .getByRole("button", { name: "Expert", exact: true })
@@ -207,7 +197,7 @@ for (const fixture of ["ltr", "rtl", "cjk", "mixed"] as const) {
     await expect(prompt).toBeVisible();
     if (fixture === "rtl") {
       await expect(prompt).toHaveAttribute("dir", "rtl");
-      await expect(page.locator(".app-frame")).toHaveAttribute("dir", "ltr");
+      await expect(page.getByTestId("app-shell")).toHaveAttribute("dir", "ltr");
     }
     await expect(page).toHaveScreenshot(`${fixture}.png`, {
       animations: "disabled",

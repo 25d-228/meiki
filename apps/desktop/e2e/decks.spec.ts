@@ -28,11 +28,12 @@ test("creates, renames, and safely deletes an empty flat deck", async ({
   await page.getByRole("button", { name: "Rename deck" }).click();
   await expect(page.getByText("Renamed deck to “Audio”.")).toBeVisible();
 
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toBe("Delete deck “Audio”?");
-    await dialog.accept();
-  });
   await page.getByRole("button", { name: "Delete deck" }).click();
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete this deck?",
+  });
+  await expect(confirmation).toContainText("Delete deck “Audio”");
+  await confirmation.getByRole("button", { name: "Delete deck" }).click();
   await expect(page.getByText("Deleted empty deck “Audio”.")).toBeVisible();
   await expect(
     page.getByLabel("Deck to configure").getByRole("option", { name: /Audio/ }),
@@ -48,12 +49,13 @@ test("moves notes before deleting a non-empty deck", async ({ page }) => {
     .getByLabel("Move notes before deletion")
     .selectOption("default-deck");
 
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Delete deck “Travel phrases”?");
-    expect(dialog.message()).toContain("Move 2 notes");
-    await dialog.accept();
-  });
   await page.getByRole("button", { name: "Delete deck" }).click();
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete this deck?",
+  });
+  await expect(confirmation).toContainText("Delete deck “Travel phrases”");
+  await expect(confirmation).toContainText("Move 2 notes");
+  await confirmation.getByRole("button", { name: "Delete deck" }).click();
   await expect(
     page.getByText("Deleted “Travel phrases” and moved 2 notes."),
   ).toBeVisible();

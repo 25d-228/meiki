@@ -60,6 +60,23 @@ Automated checks do not replace a screen-reader pass. Before a public release,
 manually complete the release journey with VoiceOver on macOS or NVDA on
 Windows.
 
+The packaged-app pass is tracked as the mandatory v0.2 release sign-off in
+[issue #43](https://github.com/25d-228/meiki/issues/43). It follows completion
+of the implementation and verification issues; it is not evidence that can be
+substituted with browser automation.
+
+Record the manual pass in the release pull request with:
+
+- assistive technology, operating-system version, and date;
+- Today → Study → reveal → grade → queue-complete announcements;
+- error and saved-review announcements;
+- Add / Edit and Library dialog names, trapped focus, and restored focus;
+- light/dark visible focus, RTL content isolation, and narrow-window navigation;
+- any defect found and the issue that tracks it.
+
+Do not mark the manual pass complete from axe output or an accessibility-tree
+snapshot alone.
+
 ## Performance budgets
 
 Run `./scripts/performance` on a release build. The budgets are deliberately
