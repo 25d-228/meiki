@@ -112,8 +112,13 @@ export async function installMockApi(page: Page): Promise<void> {
         };
       }
       if (command === "suspend_card") return clone(dtos.suspendedCard);
-      if (command === "get_scheduler_settings")
-        return clone(dtos.schedulerSettings);
+      if (command === "get_scheduler_settings") {
+        return clone(
+          params.get("boundary") === "midnight"
+            ? dtos.midnightSchedulerSettings
+            : dtos.schedulerSettings,
+        );
+      }
       if (command === "preview_scheduler_policy") {
         return clone(
           (

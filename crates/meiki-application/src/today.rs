@@ -884,6 +884,30 @@ mod tests {
     }
 
     #[test]
+    fn exact_due_matrix_excludes_only_the_future_millisecond() {
+        let plan = plan_today(
+            &[
+                candidate("one-ms-before", 99_999, CardLifecycle::Introduced),
+                candidate("exactly-now", 100_000, CardLifecycle::Introduced),
+                candidate("one-ms-after", 100_001, CardLifecycle::Introduced),
+            ],
+            &[],
+            &request(),
+            20,
+            None,
+            false,
+        );
+        assert_eq!(
+            plan.cards
+                .iter()
+                .map(|entry| entry.card_id.as_str())
+                .collect::<Vec<_>>(),
+            ["one-ms-before", "exactly-now"]
+        );
+        assert_eq!(plan.next_due_at_ms, Some(100_001));
+    }
+
+    #[test]
     fn resumed_queue_reconciles_against_current_persisted_state() {
         let (_directory, _path, service, request, entry) = seeded_session();
         let unknown = StudyQueueEntryDto {
