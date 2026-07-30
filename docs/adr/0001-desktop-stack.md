@@ -14,7 +14,7 @@ committed so the frontend and CI compile against the same versioned boundary.
 
 ## Rationale
 
-The stack provides a small offline desktop package, native filesystem access,
+The stack provides a small network-free desktop package, native filesystem access,
 strong domain and transaction tests, and a direct typed boundary without placing
 SQL or scheduling behavior in the UI.
 

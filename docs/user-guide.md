@@ -1,7 +1,7 @@
 # Meiki user guide
 
-Meiki is a local-first desktop application for typed-cloze recall. It does not
-require an account or network connection.
+Meiki is a personal, network-free desktop application for typed-cloze recall.
+It does not require an account or network connection.
 
 ## Create a card
 
@@ -17,8 +17,9 @@ matching policy.
 
 ## Study
 
-Open **Today** and choose **Start study**. Type the missing text and press
-Enter. After the answer is revealed, Enter accepts the suggested grade.
+Open **Today** and choose **Start study**. Today starts with **All decks** and
+can optionally filter to one deck. Type the missing text and press Enter.
+After the answer is revealed, Enter accepts the suggested grade.
 Scheduled reviews appear only when their exact due time has arrived. The local
 day boundary controls daily limits; it does not make a later review available
 early. Today shows the next scheduled time when no review is currently due.
@@ -54,14 +55,13 @@ future scheduling decisions and never rewrite history.
 
 ## Back up and restore
 
-Open **Settings → Archives and recovery** to export a complete collection or a
-deck. Library can export selected notes. A `.meiki` archive preserves review
-history, schedule metadata, Unicode text, and checksum-addressed media.
+Open **Settings → Archives and recovery** to export the complete collection.
+A `.meiki` archive preserves review history, schedule metadata, Unicode text,
+and checksum-addressed media.
 
-Always preview an import. **Merge** keeps the current collection and
-deterministically remaps colliding identities. **Replace** is available only
-for a complete collection and requires typing `REPLACE`. Meiki creates a
-recovery backup before either mode changes the collection.
+Always preview an import. Meiki accepts only a complete collection, requires
+typing `REPLACE`, and creates a recovery backup immediately before replacing
+the current collection.
 
 Settings lists rolling backups. Restoring one requires its exact filename and
 creates another recovery point for the collection being replaced.

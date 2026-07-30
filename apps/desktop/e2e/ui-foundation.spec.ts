@@ -155,7 +155,10 @@ test("budget-first scheduler previews before save and keeps expert controls expl
     .getByRole("group", { name: "Scheduling mode" })
     .getByRole("button", { name: "Expert", exact: true })
     .click();
-  await expect(page.getByText("fsrs-7", { exact: true })).toBeVisible();
+  await expect(
+    page.getByLabel("Target retention (basis points)"),
+  ).toBeVisible();
+  await expect(page.getByText("fsrs-7", { exact: true })).toHaveCount(0);
   await page.getByLabel("Target retention (basis points)").fill("8750");
   await page.getByLabel("Maximum new cards per day").fill("12");
   await page.getByRole("button", { name: "Preview policy" }).click();
@@ -172,18 +175,13 @@ test("budget-first scheduler previews before save and keeps expert controls expl
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Export parameters" }).click();
   await expect(page.getByText(/Scheduler parameters exported:/)).toBeVisible();
-  await page.getByRole("button", { name: "Export diagnostics" }).click();
-  await expect(page.getByText(/Diagnostics exported:/)).toBeVisible();
 
   await expect(
     page.getByRole("button", { name: "Back up and rebuild schedules" }),
   ).toHaveCount(0);
 });
 
-test("reduced motion and offline feedback are explicit", async ({
-  context,
-  page,
-}) => {
+test("reduced motion is explicit", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openStudy(page, "/?fixture=loading");
   await expect(page.getByText("Opening your local collection…")).toBeVisible();
@@ -191,10 +189,6 @@ test("reduced motion and offline feedback are explicit", async ({
     .locator(".spinner")
     .evaluate((element) => getComputedStyle(element).animationDuration);
   expect(Number.parseFloat(animationDuration)).toBeLessThanOrEqual(0.001);
-
-  await context.setOffline(true);
-  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
-  await expect(page.getByText("You are offline")).toBeVisible();
 });
 
 test("collection errors expose a labelled retry state", async ({ page }) => {

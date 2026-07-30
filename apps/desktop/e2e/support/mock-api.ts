@@ -234,7 +234,7 @@ export async function installMockApi(page: Page): Promise<void> {
         search_values: ["meeting", "الساعة", "三時"],
       },
     ];
-    const libraryDecks = [
+    let libraryDecks = [
       { id: "default-deck", name: "Default" },
       { id: "travel-deck", name: "Travel phrases" },
       { id: "european-deck", name: "European languages" },
@@ -289,15 +289,9 @@ export async function installMockApi(page: Page): Promise<void> {
       new_cards_per_day: 20,
       maximum_interval_days: 36500,
       day_boundary_minutes: 240,
-      controller_version: "time-budget-v1",
-      controller_last_evaluated_at: null as string | null,
-      controller_forecast_review_seconds_per_day: 80,
       controller_backlog_exceeds_budget: false,
       controller_explanation:
         "30 min/day\nTarget retention: 90%\nNew cards today: 20\nReason: due work fits the budget.",
-      engine_version: "fsrs-7",
-      active_parameter_set_id: "fsrs7-default-v1",
-      previous_parameter_set_id: null as string | null,
     };
     let failedCheck = false;
     let failedGrade = false;
@@ -494,30 +488,11 @@ export async function installMockApi(page: Page): Promise<void> {
           undo_action: undo,
         };
       }
-      if (command === "export_library_selection") {
-        const request = (args as { request: { source_ids: string[] } }).request;
-        localStorage.setItem(
-          "meiki-e2e-library-export",
-          JSON.stringify(request.source_ids),
-        );
-        return {
-          path: "/tmp/exports/library-selection-e2e.json",
-          exported_notes: request.source_ids.length,
-        };
-      }
       if (command === "export_archive") {
-        const request = (
-          args as {
-            request: { scope: string; selected_ids: string[] };
-          }
-        ).request;
-        const notes =
-          request.scope === "selected_notes"
-            ? request.selected_ids.length
-            : readLibraryNotes().length;
+        const notes = readLibraryNotes().length;
         return {
           path: "/tmp/exports/meiki-e2e.meiki",
-          decks: request.scope === "selected_notes" ? 1 : libraryDecks.length,
+          decks: libraryDecks.length,
           notes,
           cards: notes,
           review_events: 1,
@@ -527,20 +502,15 @@ export async function installMockApi(page: Page): Promise<void> {
       if (command === "preview_archive") {
         return {
           path: (args as { path: string }).path,
-          format_version: 1,
-          scope: "full_collection",
+          format_version: 4,
           decks: 2,
           notes: 2,
           cards: 2,
           review_events: 1,
           media_objects: 1,
           duplicate_media_objects: 1,
-          identity_collisions: 0,
           can_import: true,
-          confirmation:
-            (args as { mode: string }).mode === "replace"
-              ? "REPLACE"
-              : "IMPORT",
+          confirmation: "REPLACE",
           summary: "Validated 2 note(s), 2 card(s), and 1 media object(s).",
         };
       }
@@ -624,8 +594,10 @@ export async function installMockApi(page: Page): Promise<void> {
           return {
             deck_id: request.deck_id,
             deck_name:
-              decks.find((deck) => deck.id === request.deck_id)?.name ??
-              "Japanese",
+              request.deck_id === "__all_decks__"
+                ? "All decks"
+                : (decks.find((deck) => deck.id === request.deck_id)?.name ??
+                  "Japanese"),
             decks,
             due_reviews: 0,
             overdue_reviews: 0,
@@ -685,8 +657,10 @@ export async function installMockApi(page: Page): Promise<void> {
         return {
           deck_id: request.deck_id,
           deck_name:
-            decks.find((deck) => deck.id === request.deck_id)?.name ??
-            "Japanese",
+            request.deck_id === "__all_decks__"
+              ? "All decks"
+              : (decks.find((deck) => deck.id === request.deck_id)?.name ??
+                "Japanese"),
           decks,
           due_reviews: due.length,
           overdue_reviews: due.filter((card) => card.overdue).length,
@@ -1005,7 +979,10 @@ export async function installMockApi(page: Page): Promise<void> {
         };
       }
       if (command === "get_scheduler_settings") {
-        return copy(schedulerSettings);
+        return {
+          ...copy(schedulerSettings),
+          deck_id: (args as { deckId: string }).deckId,
+        };
       }
       if (command === "update_scheduler_settings") {
         const request = (
@@ -1079,20 +1056,7 @@ export async function installMockApi(page: Page): Promise<void> {
           explanation: `${effectiveBudget} min/day\nTarget retention: ${target / 100}%\nNew cards today: ${newCards}\nReason: ${automatic ? "due work fits the budget." : "Expert mode keeps these manual policy values."}`,
         };
       }
-      if (command === "rollback_scheduler") {
-        schedulerSettings = {
-          ...schedulerSettings,
-          active_parameter_set_id: "fsrs7-default-v1",
-          previous_parameter_set_id: "fsrs7-import-e2e",
-        };
-        return copy(schedulerSettings);
-      }
       if (command === "import_scheduler_parameters") {
-        schedulerSettings = {
-          ...schedulerSettings,
-          active_parameter_set_id: "fsrs7-import-e2e",
-          previous_parameter_set_id: schedulerSettings.active_parameter_set_id,
-        };
         return copy(schedulerSettings);
       }
       if (command === "export_scheduler_parameters") {
@@ -1100,9 +1064,95 @@ export async function installMockApi(page: Page): Promise<void> {
           path: "/tmp/collection.scheduler-parameters.json",
         };
       }
-      if (command === "export_scheduler_diagnostics") {
+      if (command === "list_decks") {
+        const notes = readLibraryNotes();
+        return libraryDecks.map((deck) => ({
+          ...deck,
+          is_default: deck.id === "default-deck",
+          note_count: notes.filter((note) => note.deck_id === deck.id).length,
+          daily_time_budget_override_minutes: null,
+          language_tag: null,
+          direction: "auto",
+          matching_policy: "strict",
+        }));
+      }
+      if (command === "create_deck") {
+        const request = (args as { request: { name: string; now_ms: number } })
+          .request;
+        const deck = {
+          id: `deck-e2e-${libraryDecks.length + 1}`,
+          name: request.name.trim(),
+        };
+        libraryDecks = [...libraryDecks, deck];
         return {
-          path: "/tmp/collection.scheduler-diagnostics.json",
+          ...deck,
+          is_default: false,
+          note_count: 0,
+          daily_time_budget_override_minutes: null,
+          language_tag: null,
+          direction: "auto",
+          matching_policy: "strict",
+        };
+      }
+      if (command === "rename_deck") {
+        const request = (args as { request: { deck_id: string; name: string } })
+          .request;
+        const deck = libraryDecks.find(
+          (candidate) => candidate.id === request.deck_id,
+        );
+        if (!deck) throw new Error("The deck no longer exists.");
+        deck.name = request.name.trim();
+        const notes = readLibraryNotes();
+        for (const note of notes) {
+          if (note.deck_id === deck.id) note.deck_name = deck.name;
+        }
+        writeLibraryNotes(notes);
+        return {
+          ...deck,
+          is_default: deck.id === "default-deck",
+          note_count: notes.filter((note) => note.deck_id === deck.id).length,
+          daily_time_budget_override_minutes: null,
+          language_tag: null,
+          direction: "auto",
+          matching_policy: "strict",
+        };
+      }
+      if (command === "delete_deck") {
+        const request = (
+          args as {
+            request: {
+              deck_id: string;
+              move_notes_to_deck_id: string | null;
+              confirmation: string;
+            };
+          }
+        ).request;
+        const deck = libraryDecks.find(
+          (candidate) => candidate.id === request.deck_id,
+        );
+        if (!deck || request.confirmation !== deck.name) {
+          throw new Error("The deck deletion confirmation is invalid.");
+        }
+        const notes = readLibraryNotes();
+        const owned = notes.filter((note) => note.deck_id === deck.id);
+        if (owned.length && !request.move_notes_to_deck_id) {
+          throw new Error("Choose another deck for these notes.");
+        }
+        const destination = libraryDecks.find(
+          (candidate) => candidate.id === request.move_notes_to_deck_id,
+        );
+        for (const note of owned) {
+          if (!destination) throw new Error("The destination deck is invalid.");
+          note.deck_id = destination.id;
+          note.deck_name = destination.name;
+        }
+        writeLibraryNotes(notes);
+        libraryDecks = libraryDecks.filter(
+          (candidate) => candidate.id !== deck.id,
+        );
+        return {
+          deleted_deck_id: deck.id,
+          moved_notes: owned.length,
         };
       }
       if (command === "new_authoring_draft") {

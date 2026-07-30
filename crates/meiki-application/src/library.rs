@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-};
+use std::collections::{HashMap, HashSet};
 
 use meiki_domain::{CardLifecycle, Cloze, Deck, SegmentContent, SourceItem, Tag};
 use meiki_storage::{DeckRepository, StoredLibraryNote, TagRepository};
@@ -161,30 +158,10 @@ pub struct LibraryBulkResultDto {
     pub undo_action: Option<LibraryBulkActionDto>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
-pub struct LibraryExportRequest {
-    pub source_ids: Vec<String>,
-    #[ts(type = "number")]
-    pub now_ms: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
-pub struct LibraryExportResultDto {
-    pub path: String,
-    pub exported_notes: u32,
-}
-
 #[derive(Clone)]
 struct LibraryRecord {
     stored: StoredLibraryNote,
     deck: Deck,
-}
-
-#[derive(Serialize)]
-struct LibrarySelectionExport {
-    schema_version: u32,
-    exported_at_ms: i64,
-    notes: Vec<LibraryNoteDto>,
 }
 
 impl ApplicationService {
@@ -333,71 +310,6 @@ impl ApplicationService {
             affected_notes: desktop_count(request.source_ids.len(), "affected library note count")?,
             action: request.action,
             undo_action,
-        })
-    }
-
-    /// Writes a selected-note JSON interchange snapshot without modifying data.
-    ///
-    /// This lightweight selection export is intentionally distinct from the
-    /// complete versioned archive implemented by the portability boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when selection data cannot be loaded, serialized, or
-    /// written to the local exports directory.
-    pub fn export_library_selection(
-        &self,
-        request: &LibraryExportRequest,
-    ) -> Result<LibraryExportResultDto, ApplicationError> {
-        validate_source_ids(&request.source_ids)?;
-        let selected = request.source_ids.iter().collect::<HashSet<_>>();
-        let storage = self.open_storage()?;
-        let decks = storage
-            .list_decks()?
-            .into_iter()
-            .map(|deck| (deck.id.clone(), deck))
-            .collect::<HashMap<_, _>>();
-        let notes = storage
-            .library_notes()?
-            .into_iter()
-            .filter(|stored| selected.contains(&stored.note.source_item.id))
-            .map(|stored| {
-                let deck = decks
-                    .get(&stored.note.source_item.deck_id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        ApplicationError::InvalidLibrary(
-                            "a source note references a missing deck".to_owned(),
-                        )
-                    })?;
-                library_note_dto(&LibraryRecord { stored, deck }, request.now_ms)
-            })
-            .collect::<Result<Vec<_>, ApplicationError>>()?;
-        if notes.len() != selected.len() {
-            return Err(ApplicationError::InvalidLibrary(
-                "one or more selected source notes no longer exist".to_owned(),
-            ));
-        }
-        let export = LibrarySelectionExport {
-            schema_version: 1,
-            exported_at_ms: request.now_ms,
-            notes,
-        };
-        let directory = self
-            .collection_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("exports");
-        fs::create_dir_all(&directory).map_err(ApplicationError::LibraryExport)?;
-        let path = directory.join(format!("library-selection-{}.json", Uuid::new_v4()));
-        fs::write(
-            &path,
-            serde_json::to_vec_pretty(&export).map_err(ApplicationError::LibrarySerialization)?,
-        )
-        .map_err(ApplicationError::LibraryExport)?;
-        Ok(LibraryExportResultDto {
-            path: path.display().to_string(),
-            exported_notes: desktop_count(export.notes.len(), "exported library note count")?,
         })
     }
 }
@@ -707,8 +619,8 @@ mod tests {
 
     use super::{
         ApplicationService, LibraryBulkActionDto, LibraryBulkRequest, LibraryDueFilterDto,
-        LibraryExportRequest, LibraryMediaFilterDto, LibraryRecord, LibraryRequest,
-        LibrarySuspendedFilterDto, LibraryTrashFilterDto, library_matches,
+        LibraryMediaFilterDto, LibraryRecord, LibraryRequest, LibrarySuspendedFilterDto,
+        LibraryTrashFilterDto, library_matches,
     };
     use crate::{GradeDto, GradeReviewRequest};
 
@@ -886,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn bulk_actions_and_export_do_not_change_review_history() {
+    fn bulk_actions_do_not_change_review_history() {
         let (directory, service, source_id) = service_with_search_fixture();
         let storage = Storage::open(&directory.path().join("collection.db")).unwrap();
         let history_before = storage.review_count(SAMPLE_CARD_ID).unwrap();
@@ -922,18 +834,6 @@ mod tests {
             service.get_library(&request("旅行")).unwrap().notes.len(),
             1
         );
-
-        let exported = service
-            .export_library_selection(&LibraryExportRequest {
-                source_ids: vec![source_id.clone()],
-                now_ms: 22_000,
-            })
-            .unwrap();
-        assert_eq!(exported.exported_notes, 1);
-        let export: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&exported.path).unwrap()).unwrap();
-        assert_eq!(export["schema_version"], 1);
-        assert_eq!(export["notes"][0]["source_id"], source_id);
 
         let deleted = service
             .apply_library_bulk_action(&LibraryBulkRequest {

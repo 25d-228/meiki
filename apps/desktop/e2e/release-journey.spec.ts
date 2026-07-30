@@ -38,15 +38,11 @@ test("desktop shell reaches its primary action within the startup budget", async
   expect(navigation).toBeLessThanOrEqual(2_000);
 });
 
-test("offline first-release journey creates, studies, undoes, restarts, exports, and restores", async ({
-  context,
+test("personal first-release journey creates, studies, undoes, restarts, exports, and restores", async ({
   page,
 }) => {
   await installMockApi(page);
   await page.goto("/");
-  await context.setOffline(true);
-  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
-  await expect(page.getByText("You are offline")).toBeVisible();
 
   await page.getByRole("button", { name: "Add / Edit" }).click();
   const source = page.locator(".segment-text").last();
@@ -70,11 +66,7 @@ test("offline first-release journey creates, studies, undoes, restarts, exports,
   await page.keyboard.press("ControlOrMeta+z");
   await expect(page.getByText("Last review undone.")).toBeVisible();
 
-  await context.setOffline(false);
   await page.reload();
-  await context.setOffline(true);
-  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
-  await expect(page.getByText("You are offline")).toBeVisible();
   await page.getByRole("button", { name: "Study", exact: true }).click();
   await expect(page.getByLabel("Your answer")).toBeFocused();
   await expect(page.getByText("2 cards remaining")).toBeVisible();
@@ -93,7 +85,6 @@ test("offline first-release journey creates, studies, undoes, restarts, exports,
   const dialog = page.getByRole("dialog", {
     name: "Preview archive import",
   });
-  await dialog.getByLabel("Import mode").selectOption("replace");
   await dialog.getByLabel("Type REPLACE to confirm").fill("REPLACE");
   await dialog.getByRole("button", { name: "Import archive" }).click();
   await expect(page.getByText(/Imported 2 notes/)).toBeVisible();

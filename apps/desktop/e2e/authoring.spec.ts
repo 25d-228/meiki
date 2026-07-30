@@ -75,6 +75,27 @@ test("authors multiple stable Japanese clozes, previews each, and saves", async 
   ).toBeVisible();
 });
 
+test("authors directly into a selected deck", async ({ page }) => {
+  await page.getByLabel("Author in deck").selectOption("travel-deck");
+  const source = await sourceTextarea(page);
+  await source.fill("Listen carefully");
+  await selectRange(page, 0, 6);
+  await page.getByRole("button", { name: "Make cloze" }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(
+    page.getByText("Source note saved on this device."),
+  ).toBeVisible();
+
+  expect(
+    await page.evaluate(() => {
+      const saved = JSON.parse(
+        localStorage.getItem("meiki-e2e-authoring") ?? "{}",
+      );
+      return saved.deck_id;
+    }),
+  ).toBe("travel-deck");
+});
+
 test("attaches role-specific local media, labels it, and saves references", async ({
   page,
 }) => {

@@ -15,6 +15,7 @@
   import type { AuthoringDraftDto } from "../lib/generated/AuthoringDraftDto";
   import type { AuthoringPreviewDto } from "../lib/generated/AuthoringPreviewDto";
   import type { DirectionDto } from "../lib/generated/DirectionDto";
+  import type { DeckDto } from "../lib/generated/DeckDto";
   import type { MatchingPolicyDto } from "../lib/generated/MatchingPolicyDto";
   import type { MediaRoleDto } from "../lib/generated/MediaRoleDto";
   import { mediaAssetSource } from "../lib/media";
@@ -38,6 +39,7 @@
   };
 
   let draft = $state<AuthoringDraftDto | null>(null);
+  let decks = $state<DeckDto[]>([]);
   let selection = $state<Selection | null>(null);
   let previews = $state<AuthoringPreviewDto[]>([]);
   let previewIndex = $state(0);
@@ -51,12 +53,21 @@
   const shortcut = navigator.platform.includes("Mac") ? "⌘" : "Ctrl";
 
   onMount(() => {
-    if (cardId) {
-      void loadCardDraft(cardId);
-    } else {
-      void startNew(false);
-    }
+    void initialize();
   });
+
+  async function initialize(): Promise<void> {
+    try {
+      decks = await api.listDecks();
+      if (cardId) {
+        await loadCardDraft(cardId);
+      } else {
+        await startNew(false);
+      }
+    } catch (reason) {
+      reportFailure(reason);
+    }
+  }
 
   onDestroy(() => {
     publishAuthoringState(false, false);
@@ -95,6 +106,19 @@
     dirty = true;
     error = "";
     savedMessage = "";
+  }
+
+  function chooseDeck(deckId: string): void {
+    const deck = decks.find((candidate) => candidate.id === deckId);
+    if (!draft || !deck) return;
+    draft = {
+      ...draft,
+      deck_id: deck.id,
+      deck_language_tag: deck.language_tag,
+      deck_direction: deck.direction,
+      deck_matching_policy: deck.matching_policy,
+    };
+    changed();
   }
 
   async function startNew(protect = true): Promise<void> {
@@ -789,6 +813,19 @@
         <SurfaceCard padding="compact" tone="quiet">
           <div class="stack compact-stack">
             <span class="eyebrow">Deck defaults / source overrides</span>
+            <Field id="authoring-deck" label="Deck">
+              <select
+                id="authoring-deck"
+                aria-label="Author in deck"
+                value={draft.deck_id}
+                disabled={busy || decks.length === 0}
+                onchange={(event) => chooseDeck(event.currentTarget.value)}
+              >
+                {#each decks as deck (deck.id)}
+                  <option value={deck.id}>{deck.name}</option>
+                {/each}
+              </select>
+            </Field>
             <dl class="deck-defaults">
               <div>
                 <dt>Language</dt>

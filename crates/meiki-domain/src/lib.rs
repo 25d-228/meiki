@@ -56,25 +56,15 @@ pub struct StudySettingsOverride {
 }
 
 impl StudySettings {
-    /// Resolves collection defaults, deck overrides, and card overrides in
-    /// increasing order of specificity.
-    pub fn resolve(
-        defaults: &Self,
-        deck: &StudySettingsOverride,
-        card: &StudySettingsOverride,
-    ) -> Self {
+    /// Resolves collection defaults and an optional deck override.
+    pub fn resolve(defaults: &Self, deck: &StudySettingsOverride) -> Self {
         Self {
-            target_retention_basis_points: card
+            target_retention_basis_points: deck
                 .target_retention_basis_points
-                .or(deck.target_retention_basis_points)
                 .unwrap_or(defaults.target_retention_basis_points),
-            new_cards_per_day: card
-                .new_cards_per_day
-                .or(deck.new_cards_per_day)
-                .unwrap_or(defaults.new_cards_per_day),
-            maximum_interval_days: card
+            new_cards_per_day: deck.new_cards_per_day.unwrap_or(defaults.new_cards_per_day),
+            maximum_interval_days: deck
                 .maximum_interval_days
-                .or(deck.maximum_interval_days)
                 .unwrap_or(defaults.maximum_interval_days),
         }
     }
@@ -198,7 +188,6 @@ pub struct Card {
     pub cloze_id: String,
     pub content_version: u64,
     pub suspended: bool,
-    pub settings: StudySettingsOverride,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -213,31 +202,20 @@ pub struct SchedulerParameterSet {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum StudyIntensity {
-    Light,
-    #[default]
-    Balanced,
-    Intensive,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum SchedulingMode {
     #[default]
     Automatic,
     Expert,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+/// Reader-only compatibility for scheduler profiles in archive versions 1–2.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum OptimizerStatus {
+pub enum LegacyStudyIntensity {
+    Light,
     #[default]
-    NeverRun,
-    InsufficientData,
-    Adopted,
-    Rejected,
-    Failed,
-    RolledBack,
+    Balanced,
+    Intensive,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -260,7 +238,6 @@ pub struct SchedulerProfile {
     pub deck_id: String,
     pub engine_version: String,
     pub active_parameter_set_id: String,
-    pub previous_parameter_set_id: Option<String>,
     #[serde(default)]
     pub scheduling_mode: SchedulingMode,
     #[serde(default, alias = "daily_time_budget_minutes")]
@@ -283,16 +260,9 @@ pub struct SchedulerProfile {
     pub controller_backlog_exceeds_budget: bool,
     #[serde(default)]
     pub controller_explanation: String,
-    // Kept for version-2 archive compatibility. Product policy no longer uses
-    // intensity presets or the fixed-candidate optimizer.
-    #[serde(default)]
-    pub intensity: StudyIntensity,
+    #[serde(default, rename = "intensity", skip_serializing)]
+    pub legacy_intensity: LegacyStudyIntensity,
     pub day_boundary_minutes: u16,
-    #[serde(default)]
-    pub optimizer_status: OptimizerStatus,
-    /// Deterministic diagnostic JSON that never includes learning content.
-    #[serde(default)]
-    pub optimizer_diagnostics: Option<String>,
     pub updated_at_ms: i64,
 }
 
@@ -435,21 +405,17 @@ mod tests {
     }
 
     #[test]
-    fn card_settings_override_deck_settings() {
+    fn deck_settings_override_collection_settings() {
         let defaults = StudySettings::default();
         let deck = StudySettingsOverride {
             new_cards_per_day: Some(12),
             maximum_interval_days: Some(2_000),
             ..StudySettingsOverride::default()
         };
-        let card = StudySettingsOverride {
-            new_cards_per_day: Some(5),
-            ..StudySettingsOverride::default()
-        };
 
-        let resolved = StudySettings::resolve(&defaults, &deck, &card);
+        let resolved = StudySettings::resolve(&defaults, &deck);
         assert_eq!(resolved.target_retention_basis_points, 9_000);
-        assert_eq!(resolved.new_cards_per_day, 5);
+        assert_eq!(resolved.new_cards_per_day, 12);
         assert_eq!(resolved.maximum_interval_days, 2_000);
     }
 }

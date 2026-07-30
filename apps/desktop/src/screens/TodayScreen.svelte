@@ -22,11 +22,12 @@
 
   const selectedDeckKey = "meiki-today-deck";
   const defaultDeckId = "default-deck";
+  const allDecksId = "__all_decks__";
 
   let { onStart, onSettings }: Props = $props();
   let overview = $state<TodayOverviewDto | null>(null);
   let activeQueue = $state<StudyQueueSession | null>(null);
-  let selectedDeckId = $state(defaultDeckId);
+  let selectedDeckId = $state(allDecksId);
   let loading = $state(true);
   let error = $state("");
 
@@ -37,7 +38,7 @@
       selectedDeckId = storedQueue.deckId;
     } else {
       if (storedQueue) clearStudyQueue();
-      selectedDeckId = localStorage.getItem(selectedDeckKey) ?? defaultDeckId;
+      selectedDeckId = localStorage.getItem(selectedDeckKey) ?? allDecksId;
     }
     void loadOverview();
   });
@@ -46,7 +47,9 @@
     loading = true;
     error = "";
     try {
-      const settings = await api.getSchedulerSettings(selectedDeckId);
+      const settings = await api.getSchedulerSettings(
+        selectedDeckId === allDecksId ? defaultDeckId : selectedDeckId,
+      );
       const now = new SvelteDate();
       const { start, end } = localDayBounds(now, settings.day_boundary_minutes);
       overview = await api.getTodayOverview({
@@ -116,7 +119,7 @@
       </p>
     </div>
     <div class="today-actions">
-      {#if overview && overview.decks.length > 1}
+      {#if overview && overview.decks.length > 0}
         <label>
           <span class="visually-hidden">Deck</span>
           <select
@@ -125,6 +128,7 @@
             disabled={loading || Boolean(activeQueue)}
             onchange={(event) => changeDeck(event.currentTarget.value)}
           >
+            <option value={allDecksId}>All decks</option>
             {#each overview.decks as deck (deck.id)}
               <option value={deck.id}>{deck.name}</option>
             {/each}
@@ -174,7 +178,7 @@
             {#if overview?.next_due_at}
               Next review: {nextDue(overview.next_due_at)}.
             {:else}
-              No cards are currently available in this deck.
+              No cards are currently available in this selection.
             {/if}
           </p>
         {/if}

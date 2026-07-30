@@ -20,8 +20,8 @@ from surrounding controls with Unicode bidi isolation. An RTL card therefore
 does not reverse navigation, labels, shortcuts, or grading controls.
 
 Primary screens expose one emphasized action and use progressive disclosure for
-advanced settings. Empty, loading, error, and offline states use the same
-feedback primitives. Motion is reduced when the operating system requests it.
+advanced settings. Empty, loading, and error states use the same feedback
+primitives. Motion is reduced when the operating system requests it.
 
 ## Verification
 

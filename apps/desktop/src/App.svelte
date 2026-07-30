@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
-  import Feedback from "./lib/components/Feedback.svelte";
   import Menu, { type MenuItem } from "./lib/components/Menu.svelte";
   import { messages } from "./lib/messages";
   import { screens, type Screen, type ThemeMode } from "./lib/ui";
@@ -21,7 +20,6 @@
 
   let activeScreen: Screen = "today";
   let theme: ThemeMode = "system";
-  let online = true;
   let authoringDirty = false;
   let authoringComposing = false;
   let editingStudyCardId: string | null = null;
@@ -32,10 +30,7 @@
     const savedTheme = localStorage.getItem("meiki-theme");
     if (isTheme(savedTheme)) theme = savedTheme;
     applyTheme(theme);
-    online = navigator.onLine;
 
-    const markOnline = () => (online = true);
-    const markOffline = () => (online = false);
     const trackAuthoring = (event: Event) => {
       const detail = (
         event as CustomEvent<{ dirty: boolean; composing: boolean }>
@@ -43,12 +38,8 @@
       authoringDirty = detail.dirty;
       authoringComposing = detail.composing;
     };
-    window.addEventListener("online", markOnline);
-    window.addEventListener("offline", markOffline);
     window.addEventListener("meiki-authoring-state", trackAuthoring);
     return () => {
-      window.removeEventListener("online", markOnline);
-      window.removeEventListener("offline", markOffline);
       window.removeEventListener("meiki-authoring-state", trackAuthoring);
     };
   });
@@ -143,10 +134,6 @@
     </button>
 
     <div class="header-actions">
-      <span class="local-status">
-        <span aria-hidden="true" class="status-dot"></span>
-        {messages.localOnly}
-      </span>
       <label class="theme-select">
         <span class="visually-hidden">Theme</span>
         <select
@@ -172,14 +159,6 @@
     />
 
     <main id="main-content" bind:this={mainElement} tabindex="-1">
-      {#if !online}
-        <div class="offline-state">
-          <Feedback tone="warning" title="You are offline" compact>
-            <p>Local creation and study remain available.</p>
-          </Feedback>
-        </div>
-      {/if}
-
       {#if activeScreen === "today"}
         <TodayScreen
           onStart={() => void navigate("study")}
@@ -252,14 +231,12 @@
     letter-spacing: 0.08em;
   }
 
-  .tagline,
-  .local-status {
+  .tagline {
     color: var(--color-text-muted);
     font-size: var(--text-xs);
   }
 
-  .header-actions,
-  .local-status {
+  .header-actions {
     display: flex;
     gap: var(--space-2);
     align-items: center;
@@ -267,14 +244,6 @@
 
   .header-actions {
     gap: var(--space-4);
-  }
-
-  .status-dot {
-    width: 0.45rem;
-    height: 0.45rem;
-    border-radius: 50%;
-    background: var(--color-success);
-    box-shadow: 0 0 0 3px var(--color-success-soft);
   }
 
   .shell-body {
@@ -292,18 +261,12 @@
     outline: 0;
   }
 
-  .offline-state {
-    width: min(100%, var(--content-width));
-    margin-bottom: var(--space-5);
-  }
-
   @media (max-width: 760px) {
     .app-header {
       padding-inline: var(--space-3);
     }
 
-    .tagline,
-    .local-status {
+    .tagline {
       display: none;
     }
 

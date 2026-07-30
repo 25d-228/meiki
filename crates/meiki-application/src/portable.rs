@@ -6,12 +6,12 @@ use std::{
 
 use meiki_portable::{
     ArchiveMediaSource, ArchiveScope, PortableCard, PortableCollection, PortableNote,
-    ValidatedArchive, namespace_collection, read_archive, write_archive,
+    ValidatedArchive, read_archive, write_archive,
 };
 use meiki_storage::{
     CardRepository, DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckRepository,
     SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository, Storage,
-    StorageError, StoredSourceNote,
+    StoredSourceNote,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -20,22 +20,10 @@ use uuid::Uuid;
 use crate::{ApplicationError, ApplicationService};
 
 const BACKUP_RETENTION: usize = 5;
-const IMPORT_CONFIRMATION: &str = "IMPORT";
 const REPLACE_CONFIRMATION: &str = "REPLACE";
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
-pub enum ArchiveScopeDto {
-    FullCollection,
-    SelectedDecks,
-    SelectedNotes,
-}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct ArchiveExportRequest {
-    pub scope: ArchiveScopeDto,
-    pub selected_ids: Vec<String>,
     #[ts(type = "number")]
     pub now_ms: i64,
 }
@@ -55,18 +43,9 @@ pub struct PortableExportResultDto {
     pub media_objects: u64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
-pub enum ArchiveImportModeDto {
-    Merge,
-    Replace,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct ArchiveImportRequest {
     pub path: String,
-    pub mode: ArchiveImportModeDto,
     pub confirmation: String,
 }
 
@@ -74,7 +53,6 @@ pub struct ArchiveImportRequest {
 pub struct PortableArchivePreviewDto {
     pub path: String,
     pub format_version: u32,
-    pub scope: ArchiveScopeDto,
     #[ts(type = "number")]
     pub decks: u64,
     #[ts(type = "number")]
@@ -87,8 +65,6 @@ pub struct PortableArchivePreviewDto {
     pub media_objects: u64,
     #[ts(type = "number")]
     pub duplicate_media_objects: u64,
-    #[ts(type = "number")]
-    pub identity_collisions: u64,
     pub can_import: bool,
     pub confirmation: String,
     pub summary: String,
@@ -116,30 +92,23 @@ pub struct BackupDto {
 }
 
 impl ApplicationService {
-    /// Exports a full collection, selected decks, or selected notes as a
-    /// versioned `.meiki` archive.
+    /// Exports the complete collection as a versioned `.meiki` archive.
     ///
     /// # Errors
     ///
-    /// Returns an error when selection references are invalid, stored
-    /// aggregates are inconsistent, media is unavailable, or writing fails.
+    /// Returns an error when stored aggregates are inconsistent, media is
+    /// unavailable, the timestamp is invalid, or writing fails.
     pub fn export_archive(
         &self,
         request: &ArchiveExportRequest,
     ) -> Result<PortableExportResultDto, ApplicationError> {
         validate_export_request(request)?;
         let storage = self.open_storage()?;
-        let collection = build_collection(&storage, request)?;
+        let collection = build_collection(&storage)?;
         let media = media_sources(&collection, &self.media_store())?;
         let directory = self.export_directory()?;
         let path = directory.join(format!("meiki-{}-{}.meiki", request.now_ms, Uuid::new_v4()));
-        let manifest = write_archive(
-            &path,
-            &collection,
-            &media,
-            request.scope.into(),
-            request.now_ms,
-        )?;
+        let manifest = write_archive(&path, &collection, &media, request.now_ms)?;
         Ok(PortableExportResultDto {
             path: path.to_string_lossy().into_owned(),
             decks: manifest.counts.decks,
@@ -150,8 +119,8 @@ impl ApplicationService {
         })
     }
 
-    /// Validates an archive and reports exactly what a merge or replacement
-    /// would do without changing the collection.
+    /// Validates a complete archive and reports what replacement would do
+    /// without changing the collection.
     ///
     /// # Errors
     ///
@@ -159,10 +128,9 @@ impl ApplicationService {
     pub fn preview_archive(
         &self,
         path: &str,
-        mode: ArchiveImportModeDto,
     ) -> Result<PortableArchivePreviewDto, ApplicationError> {
         let archive = read_archive(Path::new(path))?;
-        preview_validated_archive(self, path, mode, &archive)
+        preview_validated_archive(self, path, &archive)
     }
 
     /// Imports a previously previewable archive through a staging database.
@@ -173,49 +141,29 @@ impl ApplicationService {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid confirmation, archive validation,
-    /// deterministic identity collisions, staging, media, backup, or restore.
+    /// Returns an error for invalid confirmation, a non-full archive, archive
+    /// validation, staging, media, backup, or restore.
     pub fn import_archive(
         &self,
         request: &ArchiveImportRequest,
     ) -> Result<ArchiveImportResultDto, ApplicationError> {
-        let expected_confirmation = match request.mode {
-            ArchiveImportModeDto::Merge => IMPORT_CONFIRMATION,
-            ArchiveImportModeDto::Replace => REPLACE_CONFIRMATION,
-        };
-        if request.confirmation != expected_confirmation {
+        if request.confirmation != REPLACE_CONFIRMATION {
             return Err(ApplicationError::InvalidPortable(format!(
-                "type {expected_confirmation} to confirm this import"
+                "type {REPLACE_CONFIRMATION} to confirm this replacement"
             )));
         }
 
         let archive = read_archive(Path::new(&request.path))?;
-        let preview = preview_validated_archive(self, &request.path, request.mode, &archive)?;
+        let preview = preview_validated_archive(self, &request.path, &archive)?;
         if !preview.can_import {
             return Err(ApplicationError::InvalidPortable(preview.summary));
         }
-        let collection = match request.mode {
-            ArchiveImportModeDto::Merge => {
-                namespace_collection(&archive.collection, &archive.manifest.collection_sha256)?
-            }
-            ArchiveImportModeDto::Replace => archive.collection.clone(),
-        };
 
         let temporary = tempfile::tempdir().map_err(ApplicationError::PortableIo)?;
         let staging_path = temporary.path().join("collection.db");
         let current = self.open_storage()?;
-        let mut staging = match request.mode {
-            ArchiveImportModeDto::Merge => {
-                current.backup_to(&staging_path)?;
-                Storage::open(&staging_path)?
-            }
-            ArchiveImportModeDto::Replace => Storage::open(&staging_path)?,
-        };
-        populate_staging(
-            &mut staging,
-            &collection,
-            request.mode == ArchiveImportModeDto::Replace,
-        )?;
+        let mut staging = Storage::open(&staging_path)?;
+        populate_staging(&mut staging, &archive.collection)?;
 
         let backup_path = self.create_recovery_backup(&current, "pre-import")?;
         let (imported_media_objects, deduplicated_media_objects) =
@@ -410,59 +358,17 @@ fn prune_orphan_media_backups(directory: &Path) -> Result<(), ApplicationError> 
 }
 
 fn validate_export_request(request: &ArchiveExportRequest) -> Result<(), ApplicationError> {
-    let unique = request.selected_ids.iter().collect::<HashSet<_>>();
-    let requires_selection = request.scope != ArchiveScopeDto::FullCollection;
-    if request.now_ms < 0
-        || unique.len() != request.selected_ids.len()
-        || request.selected_ids.iter().any(|id| id.trim().is_empty())
-        || (requires_selection && request.selected_ids.is_empty())
-        || (!requires_selection && !request.selected_ids.is_empty())
-    {
+    if request.now_ms < 0 {
         return Err(ApplicationError::InvalidPortable(
-            "archive export scope, selection, or timestamp is invalid".into(),
+            "archive export timestamp is invalid".into(),
         ));
     }
     Ok(())
 }
 
-fn build_collection(
-    storage: &Storage,
-    request: &ArchiveExportRequest,
-) -> Result<PortableCollection, ApplicationError> {
-    let selected = request.selected_ids.iter().collect::<HashSet<_>>();
+fn build_collection(storage: &Storage) -> Result<PortableCollection, ApplicationError> {
     let mut decks = storage.list_decks()?;
     let mut notes = storage.library_notes()?;
-
-    match request.scope {
-        ArchiveScopeDto::FullCollection => {}
-        ArchiveScopeDto::SelectedDecks => {
-            let existing = decks.iter().map(|deck| &deck.id).collect::<HashSet<_>>();
-            if !selected.is_subset(&existing) {
-                return Err(ApplicationError::InvalidPortable(
-                    "one or more selected decks no longer exist".into(),
-                ));
-            }
-            decks.retain(|deck| selected.contains(&deck.id));
-            notes.retain(|note| selected.contains(&note.note.source_item.deck_id));
-        }
-        ArchiveScopeDto::SelectedNotes => {
-            let existing = notes
-                .iter()
-                .map(|note| &note.note.source_item.id)
-                .collect::<HashSet<_>>();
-            if !selected.is_subset(&existing) {
-                return Err(ApplicationError::InvalidPortable(
-                    "one or more selected notes no longer exist".into(),
-                ));
-            }
-            notes.retain(|note| selected.contains(&note.note.source_item.id));
-            let deck_ids = notes
-                .iter()
-                .map(|note| note.note.source_item.deck_id.as_str())
-                .collect::<HashSet<_>>();
-            decks.retain(|deck| deck_ids.contains(deck.id.as_str()));
-        }
-    }
 
     decks.sort_by(|left, right| left.id.cmp(&right.id));
     notes.sort_by(|left, right| left.note.source_item.id.cmp(&right.note.source_item.id));
@@ -508,9 +414,6 @@ fn build_collection(
     scheduler_profiles.sort_by(|left, right| left.deck_id.cmp(&right.deck_id));
     for profile in &scheduler_profiles {
         parameter_ids.insert(profile.active_parameter_set_id.clone());
-        if let Some(previous) = &profile.previous_parameter_set_id {
-            parameter_ids.insert(previous.clone());
-        }
     }
     let mut scheduler_parameter_sets = parameter_ids
         .iter()
@@ -554,22 +457,9 @@ fn media_sources(
 fn preview_validated_archive(
     service: &ApplicationService,
     path: &str,
-    mode: ArchiveImportModeDto,
     archive: &ValidatedArchive,
 ) -> Result<PortableArchivePreviewDto, ApplicationError> {
     let replacement_is_full = archive.manifest.scope == ArchiveScope::FullCollection;
-    let collection = match mode {
-        ArchiveImportModeDto::Merge => {
-            namespace_collection(&archive.collection, &archive.manifest.collection_sha256)?
-        }
-        ArchiveImportModeDto::Replace => archive.collection.clone(),
-    };
-    let identity_collisions = if mode == ArchiveImportModeDto::Merge {
-        let storage = service.open_storage()?;
-        identity_collision_count(&storage, &collection)?
-    } else {
-        0
-    };
     let store = service.media_store();
     let duplicate_media_objects = archive
         .media_objects
@@ -583,88 +473,39 @@ fn preview_validated_archive(
         .len();
     let duplicate_media_objects = u64::try_from(duplicate_media_objects)
         .map_err(|_| ApplicationError::NumericRange("duplicate media object count"))?;
-    let can_import =
-        identity_collisions == 0 && (mode == ArchiveImportModeDto::Merge || replacement_is_full);
-    let confirmation = match mode {
-        ArchiveImportModeDto::Merge => IMPORT_CONFIRMATION,
-        ArchiveImportModeDto::Replace => REPLACE_CONFIRMATION,
-    };
-    let summary = if mode == ArchiveImportModeDto::Replace && !replacement_is_full {
-        "Only a full-collection archive can replace the current collection.".into()
-    } else if identity_collisions > 0 {
-        format!(
-            "{identity_collisions} deterministic identity collision(s) prevent this import; this archive may already be imported."
-        )
-    } else {
+    let can_import = replacement_is_full;
+    let summary = if replacement_is_full {
         format!(
             "Validated {} note(s), {} card(s), and {} media object(s).",
             archive.manifest.counts.notes,
             archive.manifest.counts.cards,
             archive.manifest.counts.media_objects
         )
+    } else {
+        "Only a full-collection archive can replace the current collection.".into()
     };
     Ok(PortableArchivePreviewDto {
         path: path.to_owned(),
         format_version: archive.manifest.version,
-        scope: archive.manifest.scope.clone().into(),
         decks: archive.manifest.counts.decks,
         notes: archive.manifest.counts.notes,
         cards: archive.manifest.counts.cards,
         review_events: archive.manifest.counts.review_events,
         media_objects: archive.manifest.counts.media_objects,
         duplicate_media_objects,
-        identity_collisions,
         can_import,
-        confirmation: confirmation.into(),
+        confirmation: REPLACE_CONFIRMATION.into(),
         summary,
     })
-}
-
-fn identity_collision_count(
-    storage: &Storage,
-    collection: &PortableCollection,
-) -> Result<u64, ApplicationError> {
-    let mut collisions = 0_u64;
-    for deck in &collection.decks {
-        collisions += u64::from(entity_exists(storage.get_deck(&deck.id))?);
-    }
-    for parameter_set in &collection.scheduler_parameter_sets {
-        collisions += u64::from(entity_exists(
-            storage.get_scheduler_parameter_set(&parameter_set.id),
-        )?);
-    }
-    for note in &collection.notes {
-        collisions += u64::from(entity_exists(
-            storage.get_source_note(&note.source_item.id),
-        )?);
-        for card in &note.cards {
-            collisions += u64::from(entity_exists(storage.get_card(&card.card.id))?);
-        }
-    }
-    Ok(collisions)
-}
-
-fn entity_exists<T>(result: Result<T, StorageError>) -> Result<bool, ApplicationError> {
-    match result {
-        Ok(_) => Ok(true),
-        Err(StorageError::EntityNotFound { .. } | StorageError::CardNotFound(_)) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
 }
 
 fn populate_staging(
     storage: &mut Storage,
     collection: &PortableCollection,
-    replace: bool,
 ) -> Result<(), ApplicationError> {
-    if replace {
-        storage
-            .update_collection_scheduling_settings(&collection.collection_scheduling_settings)?;
-    }
-    if replace {
-        storage.delete_deck(DEFAULT_DECK_ID)?;
-        storage.delete_scheduler_parameter_set(DEFAULT_SCHEDULER_PARAMETER_SET_ID)?;
-    }
+    storage.update_collection_scheduling_settings(&collection.collection_scheduling_settings)?;
+    storage.delete_deck(DEFAULT_DECK_ID)?;
+    storage.delete_scheduler_parameter_set(DEFAULT_SCHEDULER_PARAMETER_SET_ID)?;
     for parameter_set in &collection.scheduler_parameter_sets {
         storage.create_scheduler_parameter_set(parameter_set)?;
     }
@@ -751,34 +592,12 @@ fn import_archive_media(
     Ok((imported, deduplicated))
 }
 
-impl From<ArchiveScopeDto> for ArchiveScope {
-    fn from(value: ArchiveScopeDto) -> Self {
-        match value {
-            ArchiveScopeDto::FullCollection => Self::FullCollection,
-            ArchiveScopeDto::SelectedDecks => Self::SelectedDecks,
-            ArchiveScopeDto::SelectedNotes => Self::SelectedNotes,
-        }
-    }
-}
-
-impl From<ArchiveScope> for ArchiveScopeDto {
-    fn from(value: ArchiveScope) -> Self {
-        match value {
-            ArchiveScope::FullCollection => Self::FullCollection,
-            ArchiveScope::SelectedDecks => Self::SelectedDecks,
-            ArchiveScope::SelectedNotes => Self::SelectedNotes,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use meiki_storage::{DeckRepository, SAMPLE_CARD_ID, Storage};
     use tempfile::tempdir;
 
-    use super::{
-        ArchiveExportRequest, ArchiveImportModeDto, ArchiveImportRequest, ArchiveScopeDto,
-    };
+    use super::{ArchiveExportRequest, ArchiveImportRequest};
     use crate::{
         ApplicationService, GradeDto, GradeReviewRequest, SchedulingModeDto,
         UpdateSchedulerSettingsRequest,
@@ -791,11 +610,7 @@ mod tests {
         let service = ApplicationService::new(&collection_path);
 
         let exported = service
-            .export_archive(&ArchiveExportRequest {
-                scope: ArchiveScopeDto::FullCollection,
-                selected_ids: Vec::new(),
-                now_ms: 10_000,
-            })
+            .export_archive(&ArchiveExportRequest { now_ms: 10_000 })
             .unwrap();
         assert_eq!(exported.decks, 1);
         assert_eq!(exported.notes, 0);
@@ -803,9 +618,7 @@ mod tests {
         assert_eq!(exported.review_events, 0);
         assert_eq!(exported.media_objects, 0);
 
-        let preview = service
-            .preview_archive(&exported.path, ArchiveImportModeDto::Replace)
-            .unwrap();
+        let preview = service.preview_archive(&exported.path).unwrap();
         assert!(preview.can_import);
         assert_eq!(preview.notes, 0);
         assert_eq!(preview.cards, 0);
@@ -813,7 +626,6 @@ mod tests {
         let imported = service
             .import_archive(&ArchiveImportRequest {
                 path: exported.path,
-                mode: ArchiveImportModeDto::Replace,
                 confirmation: "REPLACE".into(),
             })
             .unwrap();
@@ -828,6 +640,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn repaired_snapshot_history_exports_and_replaces_exactly() {
         let directory = tempdir().unwrap();
         let collection_path = directory.path().join("collection.db");
@@ -837,7 +650,7 @@ mod tests {
             .grade_review_at(
                 &GradeReviewRequest {
                     review_event_id: "review-before-repair".into(),
-                    card_id: card.card_id,
+                    card_id: card.card_id.clone(),
                     card_content_version: card.card_content_version,
                     schedule_version: card.schedule_version,
                     raw_response: "行きます".into(),
@@ -888,24 +701,14 @@ mod tests {
         drop(storage);
 
         let exported = service
-            .export_archive(&ArchiveExportRequest {
-                scope: ArchiveScopeDto::FullCollection,
-                selected_ids: Vec::new(),
-                now_ms: 200_000,
-            })
+            .export_archive(&ArchiveExportRequest { now_ms: 200_000 })
             .unwrap();
         let target_path = directory.path().join("restored.db");
         let target = ApplicationService::new(&target_path);
-        assert!(
-            target
-                .preview_archive(&exported.path, ArchiveImportModeDto::Replace)
-                .unwrap()
-                .can_import
-        );
+        assert!(target.preview_archive(&exported.path).unwrap().can_import);
         target
             .import_archive(&ArchiveImportRequest {
                 path: exported.path,
-                mode: ArchiveImportModeDto::Replace,
                 confirmation: "REPLACE".into(),
             })
             .unwrap();
@@ -918,10 +721,38 @@ mod tests {
                 .unwrap()
                 .is_valid()
         );
+        drop(restored);
+
+        let continued = target
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "review-after-replacement".into(),
+                    card_id: card.card_id,
+                    card_content_version: card.card_content_version,
+                    schedule_version: u32::try_from(expected.version).unwrap(),
+                    raw_response: "行きます".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 900,
+                },
+                expected.due_at_ms,
+            )
+            .unwrap();
+        assert_eq!(
+            continued.schedule_version,
+            u32::try_from(expected.version + 1).unwrap()
+        );
+        assert_eq!(
+            Storage::open(&target_path)
+                .unwrap()
+                .review_events(SAMPLE_CARD_ID)
+                .unwrap()
+                .len(),
+            events.len() + 1
+        );
     }
 
     #[test]
-    fn full_archive_merges_once_and_replacement_restores_exact_content() {
+    fn full_archive_replacement_creates_recovery_and_restores_exact_content() {
         let directory = tempdir().unwrap();
         let collection_path = directory.path().join("collection.db");
         let service = ApplicationService::new(&collection_path);
@@ -937,49 +768,8 @@ mod tests {
         .unwrap();
         let media = service.media_store().import_file(&media_source).unwrap();
         let exported = service
-            .export_archive(&ArchiveExportRequest {
-                scope: ArchiveScopeDto::FullCollection,
-                selected_ids: Vec::new(),
-                now_ms: 10_000,
-            })
+            .export_archive(&ArchiveExportRequest { now_ms: 10_000 })
             .unwrap();
-
-        let merge_preview = service
-            .preview_archive(&exported.path, ArchiveImportModeDto::Merge)
-            .unwrap();
-        assert!(merge_preview.can_import);
-        let merged = service
-            .import_archive(&ArchiveImportRequest {
-                path: exported.path.clone(),
-                mode: ArchiveImportModeDto::Merge,
-                confirmation: "IMPORT".into(),
-            })
-            .unwrap();
-        assert!(std::path::Path::new(&merged.backup_path).is_file());
-        assert!(std::path::Path::new(&format!("{}.media", merged.backup_path)).is_dir());
-        assert_eq!(
-            Storage::open(&collection_path)
-                .unwrap()
-                .library_notes()
-                .unwrap()
-                .len(),
-            2
-        );
-        let repeated = service
-            .preview_archive(&exported.path, ArchiveImportModeDto::Merge)
-            .unwrap();
-        assert!(!repeated.can_import);
-        assert!(repeated.identity_collisions > 0);
-        service.media_store().remove(&media.content_hash).unwrap();
-        let backup_name = std::path::Path::new(&merged.backup_path)
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap();
-        service
-            .restore_backup(&merged.backup_path, backup_name)
-            .unwrap();
-        service.media_store().resolve(&media.content_hash).unwrap();
 
         {
             let mut storage = Storage::open(&collection_path).unwrap();
@@ -987,16 +777,62 @@ mod tests {
             deck.name = "Changed".into();
             storage.update_deck(&deck).unwrap();
         }
-        let replace_preview = service
-            .preview_archive(&exported.path, ArchiveImportModeDto::Replace)
-            .unwrap();
+        let replace_preview = service.preview_archive(&exported.path).unwrap();
         assert!(replace_preview.can_import);
-        service
+        let replaced = service
             .import_archive(&ArchiveImportRequest {
                 path: exported.path,
-                mode: ArchiveImportModeDto::Replace,
                 confirmation: "REPLACE".into(),
             })
+            .unwrap();
+        assert!(std::path::Path::new(&replaced.backup_path).is_file());
+        assert!(std::path::Path::new(&format!("{}.media", replaced.backup_path)).is_dir());
+        service.media_store().resolve(&media.content_hash).unwrap();
+        let restored = Storage::open(&collection_path).unwrap();
+        assert_eq!(restored.get_deck("default-deck").unwrap().name, "Default");
+        assert_eq!(restored.library_notes().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn managed_backup_restores_after_a_rejected_replacement() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        service.seed_test_collection(1_000).unwrap();
+        let storage = Storage::open(&collection_path).unwrap();
+        let backup = service
+            .create_recovery_backup(&storage, "before-rejected-import")
+            .unwrap();
+        drop(storage);
+
+        {
+            let mut storage = Storage::open(&collection_path).unwrap();
+            let mut deck = storage.get_deck("default-deck").unwrap();
+            deck.name = "Changed after backup".into();
+            storage.update_deck(&deck).unwrap();
+        }
+        let invalid_archive = directory.path().join("invalid.meiki");
+        std::fs::write(&invalid_archive, b"not a portable archive").unwrap();
+        assert!(
+            service
+                .import_archive(&ArchiveImportRequest {
+                    path: invalid_archive.to_string_lossy().into_owned(),
+                    confirmation: "REPLACE".into(),
+                })
+                .is_err()
+        );
+        assert_eq!(
+            Storage::open(&collection_path)
+                .unwrap()
+                .get_deck("default-deck")
+                .unwrap()
+                .name,
+            "Changed after backup"
+        );
+
+        let backup_name = backup.file_name().unwrap().to_str().unwrap();
+        service
+            .restore_backup(&backup.to_string_lossy(), backup_name)
             .unwrap();
         let restored = Storage::open(&collection_path).unwrap();
         assert_eq!(restored.get_deck("default-deck").unwrap().name, "Default");

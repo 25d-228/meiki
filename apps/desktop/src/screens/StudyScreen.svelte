@@ -62,6 +62,7 @@
   const autoplayKey = "meiki-autoplay-prompt-audio";
   const selectedDeckKey = "meiki-today-deck";
   const defaultDeckId = "default-deck";
+  const allDecksId = "__all_decks__";
   const grades: GradeDto[] = ["again", "hard", "good", "easy"];
 
   let { onCreate, onEdit, onQueueComplete }: Props = $props();
@@ -101,7 +102,7 @@
     try {
       queueSession = readStudyQueue();
       if (!queueSession) {
-        const deckId = localStorage.getItem(selectedDeckKey) ?? defaultDeckId;
+        const deckId = localStorage.getItem(selectedDeckKey) ?? allDecksId;
         const plan = await currentStudyPlan(deckId);
         if (plan.availability !== "ready") {
           studyAvailability = plan.availability;
@@ -123,7 +124,9 @@
   }
 
   async function currentStudyPlan(deckId: string) {
-    const settings = await api.getSchedulerSettings(deckId);
+    const settings = await api.getSchedulerSettings(
+      deckId === allDecksId ? defaultDeckId : deckId,
+    );
     const now = new Date();
     const { start, end } = localDayBounds(now, settings.day_boundary_minutes);
     return api.prepareStudy({
@@ -150,7 +153,9 @@
       finishQueue();
       return;
     }
-    const settings = await api.getSchedulerSettings(queueSession.deckId);
+    const settings = await api.getSchedulerSettings(
+      queueSession.deckId === allDecksId ? defaultDeckId : queueSession.deckId,
+    );
     const now = new Date();
     const { start, end } = localDayBounds(now, settings.day_boundary_minutes);
     const entries = await api.reconcileStudyQueue({

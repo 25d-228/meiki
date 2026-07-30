@@ -92,10 +92,10 @@ if released_version != 7:
 portable_source = (ROOT / "crates/meiki-portable/src/lib.rs").read_text(
     encoding="utf-8"
 )
-if "pub const ARCHIVE_VERSION: u32 = 3;" not in portable_source:
-    fail("current .meiki archive version 3 is not declared")
-if "const PREVIOUS_ARCHIVE_VERSION: u32 = 2;" not in portable_source:
-    fail("published .meiki archive version 2 import support is not declared")
+if "pub const ARCHIVE_VERSION: u32 = 4;" not in portable_source:
+    fail("current .meiki archive version 4 is not declared")
+if "const POLICY_ARCHIVE_VERSION: u32 = 3;" not in portable_source:
+    fail("published .meiki archive version 3 policy compatibility is not declared")
 if "const LEGACY_ARCHIVE_VERSION: u32 = 1;" not in portable_source:
     fail("published .meiki archive version 1 import support is not declared")
 
@@ -110,5 +110,5 @@ for relative in [
 
 print(
     "release metadata valid: "
-    f"version={version} schema={migration_versions[-1]} archive=3"
+    f"version={version} schema={migration_versions[-1]} archive=4"
 )

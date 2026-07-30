@@ -1,10 +1,10 @@
 # Data portability
 
-## `.meiki` archive version 3
+## `.meiki` archive version 4
 
 A `.meiki` file is a ZIP container with these exact entries:
 
-- `manifest.json`: format name, schema version, scope, counts, collection
+- `manifest.json`: format name, schema version, full-collection scope, counts, collection
   checksum, and the expected media paths, sizes, and checksums.
 - `collection.json`: canonical compact UTF-8 JSON containing decks, source
   notes, clozes, cards, immutable review events, current and baseline schedule
@@ -18,43 +18,35 @@ oversized data, invalid relationships, inconsistent review projections,
 non-canonical checksums, and corrupt media. Archive paths are never used as
 filesystem extraction paths.
 
-Version 3 adds the collection-wide scheduling budget and preserves each
-deck's optional budget override and automatic-controller state. Version 2
-records each card's explicit `unseen` or `introduced` lifecycle in
+Version 4 removes obsolete card-level scheduling overrides. Version 3 adds the
+collection-wide scheduling budget and preserves each deck's optional budget
+override and automatic-controller state. Version 2 records each card's
+explicit `unseen` or `introduced` lifecycle in
 the baseline, current projection, and immutable event snapshots. Lifecycle is
 independent from the scheduler's resettable repetition counter.
 
 Version 1 is the published v0.1 schema. Its import path deterministically
 derives lifecycle from immutable review history and initialized memory fields
 before validating the projection chain. Version-1 and version-2 fixtures stay
-in the test suite while the writer emits version 3.
+in the test suite while the writer emits version 4; version-3 archives remain
+readable through the same bounded reader.
 
 ## Export and import behavior
 
-Exports support a full collection, selected decks, and selected notes. The
-selection includes the owning decks, scheduler profiles, parameter sets used
-by profiles or history, and all referenced media.
+Export always includes the complete collection: every deck, note, scheduler
+profile, parameter set used by profiles or history, and referenced media.
 
-Import always re-reads and validates the archive after preview. Merge mode
-derives a stable namespace from the collection checksum and applies it to
-every database identity. Repeating the same merge is detected as a collision.
-Media identities remain content hashes, so equal bytes deduplicate. Replace
-mode accepts only a full collection and preserves its original identities.
-
-Both modes populate a temporary SQLite database first. The live database is
-unchanged if validation or staging fails, and the same archive can be retried.
-Immediately before replacement, Meiki creates a managed recovery backup.
-Media objects are immutable additions; checksum validation happens both before
-and during import.
-
-The Library JSON export is the lightweight interchange format. It is intended
-for external tooling and does not claim to preserve review history, schedule
-projections, or scheduler parameters.
+Import always re-reads and validates the archive after preview and accepts
+only a full collection. It populates a temporary SQLite database first. The
+live database is unchanged if validation or staging fails, and the same
+archive can be retried. Immediately before replacement, Meiki creates a
+managed recovery backup. Media identities remain content hashes, so equal
+bytes deduplicate. Checksum validation happens both before and during import.
 
 ## Rolling backup policy
 
-Meiki creates managed database backups before schema migrations, archive
-imports, and restores. Application-level recovery
+Meiki creates managed database backups before schema migrations, collection
+replacement imports, and restores. Application-level recovery
 points pair the SQLite backup with a checksum-verified `.media` directory;
 media objects are merged back before database restore and are never
 overwritten. Migration backups need no media copy because migrations do not
