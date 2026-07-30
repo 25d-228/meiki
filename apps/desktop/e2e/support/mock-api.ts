@@ -82,6 +82,12 @@ export async function installMockApi(page: Page): Promise<void> {
         );
       }
       if (command === "get_study_card") {
+        if (fixtureName === "stale") {
+          return {
+            ...clone(study.first),
+            schedule_version: study.first.schedule_version + 1,
+          };
+        }
         if (params.get("media") === "ready") return clone(dtos.readyMediaCard);
         if (params.get("media") === "missing")
           return clone(dtos.missingMediaCard);

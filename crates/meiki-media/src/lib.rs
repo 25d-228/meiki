@@ -108,6 +108,7 @@ impl MediaStore {
 
         let detected = infer::get(&bytes).ok_or(MediaError::UnsupportedFormat)?;
         let (kind, media_type) = supported_media_type(detected.mime_type())?;
+        validate_media_structure(media_type, &bytes)?;
         let content_hash = content_hash(&bytes);
         let destination = self.object_path(&content_hash)?;
         let deduplicated = if destination.exists() {
@@ -395,6 +396,26 @@ fn supported_media_type(media_type: &str) -> Result<(DetectedMediaKind, &'static
     }
 }
 
+fn validate_media_structure(media_type: &str, bytes: &[u8]) -> Result<(), MediaError> {
+    let valid = match media_type {
+        "image/png" => {
+            bytes.get(12..16) == Some(b"IHDR")
+                && image_dimensions(media_type, bytes)
+                    .is_some_and(|(width, height)| width != Some(0) && height != Some(0))
+        }
+        "image/gif" | "image/jpeg" => image_dimensions(media_type, bytes)
+            .is_some_and(|(width, height)| width != Some(0) && height != Some(0)),
+        "image/webp" => bytes.len() >= 16 && bytes.get(8..12) == Some(b"WEBP"),
+        "audio/wav" => audio_duration_ms(media_type, bytes).is_some(),
+        _ => !bytes.is_empty(),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(MediaError::UnsupportedFormat)
+    }
+}
+
 fn content_hash(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("{HASH_PREFIX}{}", hex::encode(digest))
@@ -527,6 +548,12 @@ fn audio_duration_ms(media_type: &str, bytes: &[u8]) -> Option<u64> {
         ))
         .ok()?;
         if chunk == b"data" {
+            if cursor
+                .checked_add(8 + size)
+                .is_none_or(|data_end| data_end > bytes.len())
+            {
+                return None;
+            }
             return u64::try_from(size)
                 .ok()?
                 .checked_mul(1_000)?
@@ -669,6 +696,66 @@ mod tests {
             Err(MediaError::ChecksumMismatch(_))
         ));
         assert!(!export.exists());
+    }
+
+    #[test]
+    fn hostile_imports_and_remote_references_leave_the_store_unchanged() {
+        let directory = tempdir().unwrap();
+        let store = MediaStore::new(directory.path().join("media"));
+        let safe = directory.path().join("safe.txt");
+        fs::write(&safe, png(2, 2)).unwrap();
+        let imported = store.import_file(&safe).unwrap();
+        let inventory = vec![imported.content_hash.clone()];
+
+        for (name, bytes) in [
+            ("empty.png", &b""[..]),
+            ("truncated.png", &b"\x89PNG\r\n"[..]),
+            (
+                "vector.svg",
+                &b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"[..],
+            ),
+            (
+                "html.wav",
+                &b"<audio src=\"https://example.invalid/a.wav\">"[..],
+            ),
+        ] {
+            let hostile = directory.path().join(name);
+            fs::write(&hostile, bytes).unwrap();
+            assert!(matches!(
+                store.import_file(&hostile),
+                Err(MediaError::UnsupportedFormat)
+            ));
+            assert_eq!(store.verify_all().unwrap(), inventory);
+        }
+
+        for remote in [
+            "http://example.invalid/image.png",
+            "https://example.invalid/audio.wav",
+            "file:///tmp/image.png",
+        ] {
+            assert!(matches!(
+                store.resolve(remote),
+                Err(MediaError::InvalidHash(_))
+            ));
+        }
+        assert!(matches!(
+            store.import_file(&directory.path().join("missing.png")),
+            Err(MediaError::Io { .. })
+        ));
+        assert_eq!(store.verify_all().unwrap(), inventory);
+
+        let blocked_root = directory.path().join("blocked-media");
+        fs::create_dir_all(&blocked_root).unwrap();
+        fs::write(blocked_root.join("objects"), b"not a directory").unwrap();
+        let blocked_store = MediaStore::new(&blocked_root);
+        assert!(matches!(
+            blocked_store.import_file(&safe),
+            Err(MediaError::Io { .. })
+        ));
+        assert_eq!(
+            fs::read(blocked_root.join("objects")).unwrap(),
+            b"not a directory"
+        );
     }
 
     #[test]

@@ -205,6 +205,40 @@ test("visual regression: study-loading-medium-light", async ({ page }) => {
   });
 });
 
+test("visual regression: study-loading-medium-dark", async ({ page }) => {
+  await prepare(page, {
+    route: "/?fixture=loading",
+    screen: "Study",
+    theme: "dark",
+    viewport: "medium",
+  });
+  await expect(page.getByText("Opening your local collection…")).toBeVisible();
+  await expect(page).toHaveScreenshot("study-loading-medium-dark.png", {
+    animations: "disabled",
+    caret: "hide",
+    maxDiffPixelRatio: 0.12,
+  });
+});
+
+for (const theme of ["light", "dark"] as const) {
+  test(`visual regression: study-empty-medium-${theme}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/?collection=empty",
+      screen: "Study",
+      theme,
+      viewport: "medium",
+    });
+    await expect(
+      page.getByRole("heading", { name: "Your collection is empty" }),
+    ).toBeVisible();
+    await expect(page).toHaveScreenshot(`study-empty-medium-${theme}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 test("visual regression: study-error-narrow-dark", async ({ page }) => {
   await prepare(page, {
     route: "/?fixture=error",
@@ -221,6 +255,42 @@ test("visual regression: study-error-narrow-dark", async ({ page }) => {
     maxDiffPixelRatio: 0.12,
   });
 });
+
+test("visual regression: study-error-narrow-light", async ({ page }) => {
+  await prepare(page, {
+    route: "/?fixture=error",
+    screen: "Study",
+    theme: "light",
+    viewport: "narrow",
+  });
+  await expect(
+    page.getByRole("alert").getByText("The collection could not be opened"),
+  ).toBeVisible();
+  await expect(page).toHaveScreenshot("study-error-narrow-light.png", {
+    animations: "disabled",
+    caret: "hide",
+    maxDiffPixelRatio: 0.12,
+  });
+});
+
+for (const theme of ["light", "dark"] as const) {
+  test(`visual regression: study-stale-medium-${theme}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/?fixture=stale",
+      screen: "Study",
+      theme,
+      viewport: "medium",
+    });
+    await expect(page.getByRole("alert")).toContainText(
+      "The study queue changed while it was loading.",
+    );
+    await expect(page).toHaveScreenshot(`study-stale-medium-${theme}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
 
 test("visual regression: destructive-confirmation-medium-dark", async ({
   page,
@@ -247,6 +317,56 @@ test("visual regression: destructive-confirmation-medium-dark", async ({
     },
   );
 });
+
+test("visual regression: destructive-confirmation-medium-light", async ({
+  page,
+}) => {
+  await prepare(page, {
+    route: "/",
+    screen: "Library",
+    theme: "light",
+    viewport: "medium",
+  });
+  await page.getByText("Select this page").click();
+  await page.getByRole("button", { name: "Move to Trash" }).click();
+  await expect(
+    page.getByRole("alertdialog", {
+      name: "Move selected notes to Trash?",
+    }),
+  ).toBeVisible();
+  await expect(page).toHaveScreenshot(
+    "destructive-confirmation-medium-light.png",
+    {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    },
+  );
+});
+
+for (const theme of ["light", "dark"] as const) {
+  test(`visual regression: study-success-medium-${theme}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/",
+      screen: "Study",
+      theme,
+      viewport: "medium",
+    });
+    const answer = page.getByLabel("Your answer");
+    await answer.fill("行きます");
+    await answer.press("Enter");
+    await expect(page.getByText("Expected answer")).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(
+      page.locator(".complete-state[aria-live='polite']"),
+    ).toContainText("Review saved");
+    await expect(page).toHaveScreenshot(`study-success-medium-${theme}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
 
 test("dialogs trap focus and restore it to their launch control", async ({
   page,

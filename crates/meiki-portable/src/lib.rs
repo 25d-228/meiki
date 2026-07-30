@@ -6,7 +6,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{self, Read, Seek, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -27,9 +27,12 @@ const LEGACY_ARCHIVE_VERSION: u32 = 1;
 const MANIFEST_ENTRY: &str = "manifest.json";
 const COLLECTION_ENTRY: &str = "collection.json";
 const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = MAX_ARCHIVE_BYTES;
 const MAX_COLLECTION_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ENTRIES: usize = 100_002;
+const MAX_COMPRESSION_RATIO: u64 = 1_000;
+const COMPRESSION_RATIO_MINIMUM_BYTES: u64 = 1024 * 1024;
 const HASH_PREFIX: &str = "sha256:";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -123,6 +126,8 @@ pub enum PortableError {
     ArchiveTooLarge,
     #[error("archive contains too many entries")]
     TooManyEntries,
+    #[error("archive entry has a suspicious compression ratio: {0}")]
+    SuspiciousCompression(String),
     #[error("archive entry is missing: {0}")]
     MissingEntry(String),
     #[error("archive contains a duplicate or unexpected entry: {0}")]
@@ -281,7 +286,11 @@ pub fn read_archive(path: &Path) -> Result<ValidatedArchive, PortableError> {
     if archive.len() > MAX_ENTRIES {
         return Err(PortableError::TooManyEntries);
     }
-    let names = archive_names(&mut archive)?;
+    let names = archive_names(path, archive.central_directory_start())?;
+    if names.len() != archive.len() {
+        return Err(PortableError::UnexpectedEntry("duplicate entry".into()));
+    }
+    preflight_archive_entries(&mut archive)?;
     let manifest_bytes = read_entry(&mut archive, MANIFEST_ENTRY, MAX_COLLECTION_BYTES)?;
     let manifest: ArchiveManifest = serde_json::from_slice(&manifest_bytes)?;
     validate_manifest(&manifest)?;
@@ -906,18 +915,95 @@ fn extract_media_entry<R: Read + Seek>(
         .map_err(|error| portable_io("sync media", output, error))
 }
 
-fn archive_names<R: Read + Seek>(
-    archive: &mut ZipArchive<R>,
+fn archive_names(
+    path: &Path,
+    central_directory_start: u64,
 ) -> Result<HashSet<String>, PortableError> {
-    let mut names = HashSet::with_capacity(archive.len());
-    for index in 0..archive.len() {
-        let entry = archive.by_index(index)?;
-        let name = entry.name().to_owned();
-        if entry.is_dir() || !names.insert(name.clone()) {
+    const CENTRAL_HEADER_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
+    const END_SIGNATURES: [[u8; 4]; 2] = [[0x50, 0x4b, 0x05, 0x06], [0x50, 0x4b, 0x06, 0x06]];
+
+    let mut file = File::open(path).map_err(|error| portable_io("open", path, error))?;
+    file.seek(SeekFrom::Start(central_directory_start))
+        .map_err(|error| portable_io("seek central directory", path, error))?;
+    let mut names = HashSet::new();
+    loop {
+        let mut signature = [0_u8; 4];
+        file.read_exact(&mut signature)
+            .map_err(|error| portable_io("read central directory", path, error))?;
+        if END_SIGNATURES.contains(&signature) {
+            break;
+        }
+        if signature != CENTRAL_HEADER_SIGNATURE {
+            return Err(PortableError::UnexpectedEntry(
+                "<invalid central directory>".into(),
+            ));
+        }
+
+        let mut fixed = [0_u8; 42];
+        file.read_exact(&mut fixed)
+            .map_err(|error| portable_io("read central directory", path, error))?;
+        let name_length = usize::from(u16::from_le_bytes([fixed[24], fixed[25]]));
+        let extra_length = u64::from(u16::from_le_bytes([fixed[26], fixed[27]]));
+        let comment_length = u64::from(u16::from_le_bytes([fixed[28], fixed[29]]));
+        let mut raw_name = vec![0_u8; name_length];
+        file.read_exact(&mut raw_name)
+            .map_err(|error| portable_io("read archive entry name", path, error))?;
+        let name = String::from_utf8(raw_name)
+            .map_err(|_| PortableError::UnexpectedEntry("<non-UTF-8 entry name>".into()))?;
+        if name.ends_with('/') || !names.insert(name.clone()) {
             return Err(PortableError::UnexpectedEntry(name));
         }
+        if names.len() > MAX_ENTRIES {
+            return Err(PortableError::TooManyEntries);
+        }
+        let skip = extra_length
+            .checked_add(comment_length)
+            .ok_or(PortableError::ArchiveTooLarge)?;
+        file.seek(SeekFrom::Current(
+            i64::try_from(skip).map_err(|_| PortableError::ArchiveTooLarge)?,
+        ))
+        .map_err(|error| portable_io("seek central directory", path, error))?;
     }
     Ok(names)
+}
+
+fn preflight_archive_entries<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+) -> Result<(), PortableError> {
+    let mut total_uncompressed = 0_u64;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index)?;
+        validate_entry_budget(
+            entry.name(),
+            entry.size(),
+            entry.compressed_size(),
+            &mut total_uncompressed,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_entry_budget(
+    name: &str,
+    uncompressed_size: u64,
+    compressed_size: u64,
+    total_uncompressed: &mut u64,
+) -> Result<(), PortableError> {
+    *total_uncompressed = total_uncompressed
+        .checked_add(uncompressed_size)
+        .ok_or(PortableError::ArchiveTooLarge)?;
+    if *total_uncompressed > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+        return Err(PortableError::ArchiveTooLarge);
+    }
+    if uncompressed_size >= COMPRESSION_RATIO_MINIMUM_BYTES
+        && (compressed_size == 0
+            || compressed_size
+                .checked_mul(MAX_COMPRESSION_RATIO)
+                .is_none_or(|maximum| uncompressed_size > maximum))
+    {
+        return Err(PortableError::SuspiciousCompression(name.to_owned()));
+    }
+    Ok(())
 }
 
 fn read_entry<R: Read + Seek>(
@@ -1039,9 +1125,10 @@ mod tests {
     use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        ArchiveManifest, ArchiveMediaSource, ArchiveScope, COLLECTION_ENTRY, MANIFEST_ENTRY,
-        PortableCard, PortableCollection, PortableError, PortableNote, content_hash, read_archive,
-        validate_collection, write_archive,
+        ArchiveManifest, ArchiveMediaSource, ArchiveScope, COLLECTION_ENTRY,
+        COMPRESSION_RATIO_MINIMUM_BYTES, MANIFEST_ENTRY, MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+        MAX_COMPRESSION_RATIO, PortableCard, PortableCollection, PortableError, PortableNote,
+        content_hash, read_archive, validate_collection, validate_entry_budget, write_archive,
     };
 
     #[test]
@@ -1231,6 +1318,134 @@ mod tests {
             Err(PortableError::UnexpectedEntry(_))
         ));
         assert!(!directory.path().join("outside").exists());
+    }
+
+    #[test]
+    fn archive_hostility_rejects_absolute_duplicate_partial_and_malformed_entries() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("source.bin");
+        let media_bytes = b"\x89PNG\r\n\x1a\nportable-media";
+        std::fs::write(&source, media_bytes).unwrap();
+        let hash = content_hash(media_bytes);
+        let archive = directory.path().join("source.meiki");
+        write_archive(
+            &archive,
+            &collection(&hash),
+            &[ArchiveMediaSource {
+                content_hash: hash,
+                path: source,
+            }],
+            42,
+        )
+        .unwrap();
+
+        for (name, archive_name) in [
+            ("/absolute-outside", "absolute.meiki"),
+            ("C:\\absolute-outside", "windows-absolute.meiki"),
+        ] {
+            let hostile = directory.path().join(archive_name);
+            rewrite_archive(&archive, &hostile, None, Some((name, b"unsafe")));
+            assert!(matches!(
+                read_archive(&hostile),
+                Err(PortableError::UnexpectedEntry(_))
+            ));
+        }
+
+        let duplicate = directory.path().join("duplicate.meiki");
+        rewrite_archive(&archive, &duplicate, None, Some(("manifesx.json", b"{}")));
+        rewrite_zip_name(&duplicate, b"manifesx.json", MANIFEST_ENTRY.as_bytes());
+        let duplicate_result = read_archive(&duplicate);
+        assert!(
+            matches!(duplicate_result, Err(PortableError::UnexpectedEntry(_))),
+            "{duplicate_result:?}"
+        );
+
+        let invalid_name = directory.path().join("invalid-name.meiki");
+        rewrite_archive(
+            &archive,
+            &invalid_name,
+            None,
+            Some(("invalid-name", b"unsafe")),
+        );
+        rewrite_zip_name(&invalid_name, b"invalid-name", b"\xffnvalid-name");
+        assert!(matches!(
+            read_archive(&invalid_name),
+            Err(PortableError::UnexpectedEntry(_))
+        ));
+
+        let malformed_manifest = directory.path().join("malformed-manifest.meiki");
+        rewrite_named_entry(
+            &archive,
+            &malformed_manifest,
+            MANIFEST_ENTRY,
+            b"\xffnot-utf8-json",
+        );
+        assert!(matches!(
+            read_archive(&malformed_manifest),
+            Err(PortableError::Json(_))
+        ));
+
+        let malformed_collection = directory.path().join("malformed-collection.meiki");
+        rewrite_named_entry(
+            &archive,
+            &malformed_collection,
+            COLLECTION_ENTRY,
+            b"not-json",
+        );
+        assert!(matches!(
+            read_archive(&malformed_collection),
+            Err(PortableError::ChecksumMismatch(_))
+        ));
+
+        let partial = directory.path().join("partial.meiki");
+        let archive_bytes = std::fs::read(&archive).unwrap();
+        std::fs::write(&partial, &archive_bytes[..archive_bytes.len() / 2]).unwrap();
+        assert!(matches!(
+            read_archive(&partial),
+            Err(PortableError::Zip(_) | PortableError::Io { .. })
+        ));
+        assert!(!directory.path().join("absolute-outside").exists());
+    }
+
+    #[test]
+    fn aggregate_and_compression_budgets_reject_zip_bomb_shapes() {
+        let mut total = 0;
+        validate_entry_budget(
+            "maximum",
+            MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+            MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+            &mut total,
+        )
+        .unwrap();
+        assert!(matches!(
+            validate_entry_budget("one-byte-too-many", 1, 1, &mut total),
+            Err(PortableError::ArchiveTooLarge)
+        ));
+
+        let mut total = 0;
+        let compressed = COMPRESSION_RATIO_MINIMUM_BYTES / MAX_COMPRESSION_RATIO;
+        assert!(matches!(
+            validate_entry_budget(
+                "compressed-bomb",
+                COMPRESSION_RATIO_MINIMUM_BYTES,
+                compressed,
+                &mut total,
+            ),
+            Err(PortableError::SuspiciousCompression(_))
+        ));
+
+        let directory = tempdir().unwrap();
+        let compressed_bomb = directory.path().join("compressed-bomb.meiki");
+        let output = std::fs::File::create(&compressed_bomb).unwrap();
+        let mut writer = ZipWriter::new(output);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        writer.start_file(MANIFEST_ENTRY, options).unwrap();
+        writer.write_all(&vec![0_u8; 2 * 1024 * 1024]).unwrap();
+        writer.finish().unwrap();
+        assert!(matches!(
+            read_archive(&compressed_bomb),
+            Err(PortableError::SuspiciousCompression(_))
+        ));
     }
 
     #[test]
@@ -1487,6 +1702,43 @@ mod tests {
             writer.write_all(bytes).unwrap();
         }
         writer.finish().unwrap();
+    }
+
+    fn rewrite_named_entry(
+        source: &std::path::Path,
+        destination: &std::path::Path,
+        target: &str,
+        replacement: &[u8],
+    ) {
+        let mut input = ZipArchive::new(std::fs::File::open(source).unwrap()).unwrap();
+        let output = std::fs::File::create(destination).unwrap();
+        let mut writer = ZipWriter::new(output);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for index in 0..input.len() {
+            let mut entry = input.by_index(index).unwrap();
+            let name = entry.name().to_owned();
+            writer.start_file(&name, options).unwrap();
+            if name == target {
+                writer.write_all(replacement).unwrap();
+            } else {
+                std::io::copy(&mut entry, &mut writer).unwrap();
+            }
+        }
+        writer.finish().unwrap();
+    }
+
+    fn rewrite_zip_name(path: &std::path::Path, old: &[u8], new: &[u8]) {
+        assert_eq!(old.len(), new.len());
+        let mut bytes = std::fs::read(path).unwrap();
+        let mut replacements = 0;
+        for index in 0..=bytes.len() - old.len() {
+            if bytes[index..index + old.len()] == *old {
+                bytes[index..index + new.len()].copy_from_slice(new);
+                replacements += 1;
+            }
+        }
+        assert_eq!(replacements, 2, "local and central names must be replaced");
+        std::fs::write(path, bytes).unwrap();
     }
 
     fn rewrite_as_version_one(source: &std::path::Path, destination: &std::path::Path) {
