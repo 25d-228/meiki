@@ -3,7 +3,7 @@ use std::{
     fs,
 };
 
-use meiki_domain::{Cloze, Deck, SegmentContent, SourceItem, Tag};
+use meiki_domain::{CardLifecycle, Cloze, Deck, SegmentContent, SourceItem, Tag};
 use meiki_storage::{DeckRepository, StoredLibraryNote, TagRepository};
 use meiki_text::normalize_for_search;
 use serde::{Deserialize, Serialize};
@@ -496,15 +496,17 @@ fn library_matches(
         && match request.due {
             LibraryDueFilterDto::All => true,
             LibraryDueFilterDto::Due => record.stored.cards.iter().any(|card| {
-                card.schedule.repetitions > 0 && card.schedule.due_at_ms <= request.now_ms
+                card.schedule.lifecycle == CardLifecycle::Introduced
+                    && card.schedule.due_at_ms <= request.now_ms
             }),
             LibraryDueFilterDto::New => record
                 .stored
                 .cards
                 .iter()
-                .any(|card| card.schedule.repetitions == 0),
+                .any(|card| card.schedule.lifecycle == CardLifecycle::Unseen),
             LibraryDueFilterDto::Scheduled => record.stored.cards.iter().any(|card| {
-                card.schedule.repetitions > 0 && card.schedule.due_at_ms > request.now_ms
+                card.schedule.lifecycle == CardLifecycle::Introduced
+                    && card.schedule.due_at_ms > request.now_ms
             }),
         }
         && (normalized_query.is_empty()
@@ -530,8 +532,9 @@ fn library_note_dto(
                 prompt: prompt(source, &cloze.id),
                 answer: cloze.answer.clone(),
                 suspended: stored.card.suspended,
-                is_new: stored.schedule.repetitions == 0,
-                is_due: stored.schedule.repetitions > 0 && stored.schedule.due_at_ms <= now_ms,
+                is_new: stored.schedule.lifecycle == CardLifecycle::Unseen,
+                is_due: stored.schedule.lifecycle == CardLifecycle::Introduced
+                    && stored.schedule.due_at_ms <= now_ms,
                 due_at: timestamp_string(stored.schedule.due_at_ms)?,
                 language_tag: cloze
                     .language_tag
@@ -707,6 +710,7 @@ mod tests {
         LibraryExportRequest, LibraryMediaFilterDto, LibraryRecord, LibraryRequest,
         LibrarySuspendedFilterDto, LibraryTrashFilterDto, library_matches,
     };
+    use crate::{GradeDto, GradeReviewRequest};
 
     fn request(query: &str) -> LibraryRequest {
         LibraryRequest {
@@ -835,6 +839,42 @@ mod tests {
 
         filtered.media = LibraryMediaFilterDto::WithoutMedia;
         assert!(service.get_library(&filtered).unwrap().notes.is_empty());
+    }
+
+    #[test]
+    fn new_filter_excludes_a_mature_card_after_lapse() {
+        let (_directory, service, _source_id) = service_with_search_fixture();
+        let initial = service.get_study_card(SAMPLE_CARD_ID).unwrap();
+        service
+            .grade_review(&GradeReviewRequest {
+                review_event_id: "library-good".into(),
+                card_id: SAMPLE_CARD_ID.into(),
+                card_content_version: initial.card_content_version,
+                schedule_version: initial.schedule_version,
+                raw_response: "行きます".into(),
+                chosen_grade: GradeDto::Good,
+                response_duration_ms: 1_000,
+            })
+            .unwrap();
+        let mature = service.get_study_card(SAMPLE_CARD_ID).unwrap();
+        service
+            .grade_review(&GradeReviewRequest {
+                review_event_id: "library-lapse".into(),
+                card_id: SAMPLE_CARD_ID.into(),
+                card_content_version: mature.card_content_version,
+                schedule_version: mature.schedule_version,
+                raw_response: String::new(),
+                chosen_grade: GradeDto::Again,
+                response_duration_ms: 1_000,
+            })
+            .unwrap();
+
+        let mut new_only = request("");
+        new_only.due = LibraryDueFilterDto::New;
+        assert!(service.get_library(&new_only).unwrap().notes.is_empty());
+
+        let overview = service.get_library(&request("")).unwrap();
+        assert!(!overview.notes[0].cards[0].is_new);
     }
 
     #[test]

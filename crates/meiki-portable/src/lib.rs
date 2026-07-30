@@ -11,8 +11,8 @@ use std::{
 };
 
 use meiki_domain::{
-    Card, Cloze, Deck, ReviewEvent, ReviewEventKind, ScheduleState, SchedulerParameterSet,
-    SchedulerProfile, SourceItem,
+    Card, CardLifecycle, Cloze, Deck, ReviewEvent, ReviewEventKind, ScheduleState,
+    SchedulerParameterSet, SchedulerProfile, SourceItem,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,7 +21,8 @@ use thiserror::Error;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const ARCHIVE_FORMAT: &str = "meiki";
-pub const ARCHIVE_VERSION: u32 = 1;
+pub const ARCHIVE_VERSION: u32 = 2;
+const LEGACY_ARCHIVE_VERSION: u32 = 1;
 const MANIFEST_ENTRY: &str = "manifest.json";
 const COLLECTION_ENTRY: &str = "collection.json";
 const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -306,7 +307,10 @@ pub fn read_archive(path: &Path) -> Result<ValidatedArchive, PortableError> {
             manifest.collection_path.clone(),
         ));
     }
-    let collection: PortableCollection = serde_json::from_slice(&collection_bytes)?;
+    let mut collection: PortableCollection = serde_json::from_slice(&collection_bytes)?;
+    if manifest.version == LEGACY_ARCHIVE_VERSION {
+        restore_legacy_lifecycles(&mut collection)?;
+    }
     validate_collection(&collection)?;
     if collection_counts(&collection)? != manifest.counts {
         return Err(PortableError::InvalidManifest(
@@ -538,7 +542,7 @@ fn validate_card_history(
         return invalid_collection("card schedule references the wrong card");
     }
     let mut projected = portable.baseline.clone();
-    let mut active_review_ids = HashSet::new();
+    let mut active_review_ids = Vec::<&str>::new();
     for event in &portable.review_events {
         if event.card_id != card_id
             || event.previous_schedule != projected
@@ -555,19 +559,28 @@ fn validate_card_history(
         }
         match event.kind {
             ReviewEventKind::Review if event.undoes_review_event_id.is_none() => {
-                active_review_ids.insert(event.id.as_str());
+                active_review_ids.push(event.id.as_str());
             }
             ReviewEventKind::Undo => {
                 let Some(target) = event.undoes_review_event_id.as_deref() else {
                     return invalid_collection("undo event has no review target");
                 };
-                if !active_review_ids.remove(target) {
-                    return invalid_collection("undo event target is not an active review");
+                if active_review_ids.last().copied() != Some(target) {
+                    return invalid_collection("undo event target is not the latest active review");
                 }
+                active_review_ids.pop();
             }
             ReviewEventKind::Review => {
                 return invalid_collection("review event cannot undo another review");
             }
+        }
+        let expected_lifecycle = if active_review_ids.is_empty() {
+            portable.baseline.lifecycle
+        } else {
+            CardLifecycle::Introduced
+        };
+        if event.next_schedule.lifecycle != expected_lifecycle {
+            return invalid_collection("review history lifecycle transition is invalid");
         }
         projected = event.next_schedule.clone();
     }
@@ -575,6 +588,67 @@ fn validate_card_history(
         return invalid_collection("current schedule does not match review history");
     }
     Ok(())
+}
+
+fn restore_legacy_lifecycles(collection: &mut PortableCollection) -> Result<(), PortableError> {
+    for portable in collection
+        .notes
+        .iter_mut()
+        .flat_map(|note| note.cards.iter_mut())
+    {
+        portable.baseline.lifecycle = lifecycle_from_memory(&portable.baseline);
+        let baseline_lifecycle = portable.baseline.lifecycle;
+        let mut active_reviews = Vec::<String>::new();
+        for event in &mut portable.review_events {
+            event.previous_schedule.lifecycle = if active_reviews.is_empty() {
+                baseline_lifecycle
+            } else {
+                CardLifecycle::Introduced
+            };
+            match event.kind {
+                ReviewEventKind::Review if event.undoes_review_event_id.is_none() => {
+                    active_reviews.push(event.id.clone());
+                }
+                ReviewEventKind::Undo => {
+                    let Some(target) = event.undoes_review_event_id.as_deref() else {
+                        return invalid_collection("undo event has no review target");
+                    };
+                    if active_reviews.last().map(String::as_str) != Some(target) {
+                        return invalid_collection(
+                            "undo event target is not the latest active review",
+                        );
+                    }
+                    active_reviews.pop();
+                }
+                ReviewEventKind::Review => {
+                    return invalid_collection("review event cannot undo another review");
+                }
+            }
+            event.next_schedule.lifecycle = if active_reviews.is_empty() {
+                baseline_lifecycle
+            } else {
+                CardLifecycle::Introduced
+            };
+        }
+        portable.schedule.lifecycle = if active_reviews.is_empty() {
+            lifecycle_from_memory(&portable.schedule)
+        } else {
+            CardLifecycle::Introduced
+        };
+    }
+    Ok(())
+}
+
+const fn lifecycle_from_memory(schedule: &ScheduleState) -> CardLifecycle {
+    if schedule.repetitions > 0
+        || schedule.stability_milliseconds > 0
+        || schedule.difficulty_millipoints > 0
+        || schedule.last_reviewed_at_ms.is_some()
+    {
+        CardLifecycle::Introduced
+    } else {
+        CardLifecycle::Unseen
+    }
 }
 
 /// Deterministically namespaces every database identity in a collection.
@@ -745,7 +819,7 @@ fn collection_counts(collection: &PortableCollection) -> Result<ArchiveCounts, P
 
 fn validate_manifest(manifest: &ArchiveManifest) -> Result<(), PortableError> {
     if manifest.format != ARCHIVE_FORMAT
-        || manifest.version != ARCHIVE_VERSION
+        || !(LEGACY_ARCHIVE_VERSION..=ARCHIVE_VERSION).contains(&manifest.version)
         || manifest.collection_path != COLLECTION_ENTRY
         || manifest.created_at_ms < 0
     {
@@ -947,18 +1021,18 @@ mod tests {
     use std::io::{Read, Write};
 
     use meiki_domain::{
-        Card, Cloze, ComparisonResult, Deck, Direction, Grade, MatchingPolicy, MediaKind,
-        MediaReference, MediaRole, OptimizerStatus, ReviewEvent, ReviewEventKind, ScheduleState,
-        SchedulerParameterSet, SchedulerProfile, SegmentContent, SemanticSegment, SourceItem,
-        StudyIntensity, StudySettingsOverride,
+        Card, CardLifecycle, Cloze, ComparisonResult, Deck, Direction, Grade, MatchingPolicy,
+        MediaKind, MediaReference, MediaRole, OptimizerStatus, ReviewEvent, ReviewEventKind,
+        ScheduleState, SchedulerParameterSet, SchedulerProfile, SegmentContent, SemanticSegment,
+        SourceItem, StudyIntensity, StudySettingsOverride,
     };
     use tempfile::tempdir;
     use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        ArchiveMediaSource, ArchiveScope, COLLECTION_ENTRY, MANIFEST_ENTRY, PortableCard,
-        PortableCollection, PortableError, PortableNote, content_hash, namespace_collection,
-        read_archive, write_archive,
+        ArchiveManifest, ArchiveMediaSource, ArchiveScope, COLLECTION_ENTRY, MANIFEST_ENTRY,
+        PortableCard, PortableCollection, PortableError, PortableNote, content_hash,
+        namespace_collection, read_archive, write_archive,
     };
 
     #[test]
@@ -985,6 +1059,7 @@ mod tests {
         let restored = read_archive(&archive_path).unwrap();
 
         assert_eq!(written, restored.manifest);
+        assert_eq!(written.version, 2);
         assert_eq!(restored.collection, collection);
         assert_eq!(
             restored.collection.notes[0]
@@ -1002,6 +1077,39 @@ mod tests {
         assert_eq!(
             std::fs::read(&restored.media_objects[0].path).unwrap(),
             media_bytes
+        );
+    }
+
+    #[test]
+    fn version_one_archive_derives_lifecycle_from_immutable_history() {
+        let directory = tempdir().unwrap();
+        let media_path = directory.path().join("image.bin");
+        let media_bytes = b"\x89PNG\r\n\x1a\nportable-media";
+        std::fs::write(&media_path, media_bytes).unwrap();
+        let media_hash = content_hash(media_bytes);
+        let collection = collection(&media_hash);
+        let current = directory.path().join("current.meiki");
+        write_archive(
+            &current,
+            &collection,
+            &[ArchiveMediaSource {
+                content_hash: media_hash,
+                path: media_path,
+            }],
+            ArchiveScope::FullCollection,
+            42,
+        )
+        .unwrap();
+        let legacy = directory.path().join("version-1.meiki");
+        rewrite_as_version_one(&current, &legacy);
+
+        let restored = read_archive(&legacy).unwrap();
+
+        assert_eq!(restored.manifest.version, 1);
+        assert_eq!(restored.collection, collection);
+        assert_eq!(
+            restored.collection.notes[0].cards[0].schedule.lifecycle,
+            CardLifecycle::Introduced
         );
     }
 
@@ -1089,18 +1197,20 @@ mod tests {
         let schedule = ScheduleState {
             card_id: "card-1".into(),
             version: 0,
+            lifecycle: CardLifecycle::Unseen,
             due_at_ms: 1_000,
             ideal_due_at_ms: 1_000,
             interval_milliseconds: 0,
             interval_seconds: 0,
             repetitions: 0,
             stability_milliseconds: 0,
-            difficulty_millipoints: 5_000,
+            difficulty_millipoints: 0,
             last_reviewed_at_ms: None,
             last_review_event_id: None,
         };
         let mut reviewed_schedule = schedule.clone();
         reviewed_schedule.version = 1;
+        reviewed_schedule.lifecycle = CardLifecycle::Introduced;
         reviewed_schedule.due_at_ms = 86_401_000;
         reviewed_schedule.ideal_due_at_ms = 86_401_000;
         reviewed_schedule.interval_milliseconds = 86_400_000;
@@ -1265,5 +1375,62 @@ mod tests {
             writer.write_all(bytes).unwrap();
         }
         writer.finish().unwrap();
+    }
+
+    fn rewrite_as_version_one(source: &std::path::Path, destination: &std::path::Path) {
+        let mut input = ZipArchive::new(std::fs::File::open(source).unwrap()).unwrap();
+        let mut entries = Vec::new();
+        for index in 0..input.len() {
+            let mut entry = input.by_index(index).unwrap();
+            let name = entry.name().to_owned();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            entries.push((name, bytes));
+        }
+
+        let collection_entry = entries
+            .iter_mut()
+            .find(|(name, _)| name == COLLECTION_ENTRY)
+            .unwrap();
+        let mut collection_json: serde_json::Value =
+            serde_json::from_slice(&collection_entry.1).unwrap();
+        remove_lifecycle_fields(&mut collection_json);
+        collection_entry.1 = serde_json::to_vec(&collection_json).unwrap();
+        let collection_sha256 = content_hash(&collection_entry.1);
+
+        let manifest_entry = entries
+            .iter_mut()
+            .find(|(name, _)| name == MANIFEST_ENTRY)
+            .unwrap();
+        let mut manifest: ArchiveManifest = serde_json::from_slice(&manifest_entry.1).unwrap();
+        manifest.version = 1;
+        manifest.collection_sha256 = collection_sha256;
+        manifest_entry.1 = serde_json::to_vec(&manifest).unwrap();
+
+        let output = std::fs::File::create(destination).unwrap();
+        let mut writer = ZipWriter::new(output);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (name, bytes) in entries {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn remove_lifecycle_fields(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(values) => {
+                values.remove("lifecycle");
+                for nested in values.values_mut() {
+                    remove_lifecycle_fields(nested);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for nested in values {
+                    remove_lifecycle_fields(nested);
+                }
+            }
+            _ => {}
+        }
     }
 }

@@ -1,7 +1,12 @@
-use meiki_domain::{ComparisonResult, Grade, ReviewEvent, ReviewEventKind, ScheduleState};
+use meiki_domain::{
+    CardLifecycle, ComparisonResult, Grade, ReviewEvent, ReviewEventKind, ScheduleState,
+};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
-use crate::{Storage, StorageError, repository::load_schedule_row};
+use crate::{
+    Storage, StorageError,
+    repository::{card_lifecycle_from_database, card_lifecycle_to_database, load_schedule_row},
+};
 
 impl Storage {
     /// Atomically appends a review event, advances the schedule projection, and
@@ -161,6 +166,7 @@ impl Storage {
 
         let mut projected = baseline.clone();
         let mut event_ids = std::collections::HashSet::new();
+        let mut active_review_ids = Vec::<String>::new();
         for event in events {
             if event.card_id != card_id
                 || event.previous_schedule != projected
@@ -173,6 +179,7 @@ impl Storage {
                     "portable review history is not a continuous projection chain".into(),
                 ));
             }
+            validate_restored_lifecycle(&mut active_review_ids, baseline.lifecycle, event)?;
             insert_review_event(&transaction, event)?;
             projected = event.next_schedule.clone();
         }
@@ -194,8 +201,9 @@ impl Storage {
                  stability_milliseconds = ?7,
                  difficulty_millipoints = ?8,
                  last_reviewed_at_ms = ?9,
-                 last_review_event_id = ?10
-             WHERE card_id = ?11",
+                 last_review_event_id = ?10,
+                 lifecycle = ?11
+             WHERE card_id = ?12",
             params![
                 current.version,
                 current.due_at_ms,
@@ -207,6 +215,7 @@ impl Storage {
                 current.difficulty_millipoints,
                 current.last_reviewed_at_ms,
                 current.last_review_event_id,
+                card_lifecycle_to_database(current.lifecycle),
                 card_id,
             ],
         )?;
@@ -341,8 +350,9 @@ impl Storage {
                      stability_milliseconds = ?7,
                      difficulty_millipoints = ?8,
                      last_reviewed_at_ms = ?9,
-                     last_review_event_id = ?10
-                 WHERE card_id = ?11",
+                     last_review_event_id = ?10,
+                     lifecycle = ?11
+                 WHERE card_id = ?12",
                 params![
                     schedule.version,
                     schedule.due_at_ms,
@@ -354,6 +364,7 @@ impl Storage {
                     schedule.difficulty_millipoints,
                     schedule.last_reviewed_at_ms,
                     schedule.last_review_event_id,
+                    card_lifecycle_to_database(schedule.lifecycle),
                     schedule.card_id,
                 ],
             )?;
@@ -416,8 +427,9 @@ impl Storage {
                  stability_milliseconds = ?7,
                  difficulty_millipoints = ?8,
                  last_reviewed_at_ms = ?9,
-                 last_review_event_id = ?10
-             WHERE card_id = ?11",
+                 last_review_event_id = ?10,
+                 lifecycle = ?11
+             WHERE card_id = ?12",
             params![
                 projected.version,
                 projected.due_at_ms,
@@ -429,6 +441,7 @@ impl Storage {
                 projected.difficulty_millipoints,
                 projected.last_reviewed_at_ms,
                 projected.last_review_event_id,
+                card_lifecycle_to_database(projected.lifecycle),
                 card_id,
             ],
         )?;
@@ -469,6 +482,40 @@ impl Storage {
     }
 }
 
+fn validate_restored_lifecycle(
+    active_review_ids: &mut Vec<String>,
+    baseline_lifecycle: CardLifecycle,
+    event: &ReviewEvent,
+) -> Result<(), StorageError> {
+    match event.kind {
+        ReviewEventKind::Review if event.undoes_review_event_id.is_none() => {
+            active_review_ids.push(event.id.clone());
+        }
+        ReviewEventKind::Undo
+            if active_review_ids.last().map(String::as_str)
+                == event.undoes_review_event_id.as_deref() =>
+        {
+            active_review_ids.pop();
+        }
+        _ => {
+            return Err(StorageError::ProjectionMismatch(
+                "portable review history has an invalid compensation chain".into(),
+            ));
+        }
+    }
+    let expected = if active_review_ids.is_empty() {
+        baseline_lifecycle
+    } else {
+        CardLifecycle::Introduced
+    };
+    if event.next_schedule.lifecycle != expected {
+        return Err(StorageError::ProjectionMismatch(
+            "portable review history has an invalid lifecycle transition".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_review_preconditions(
     transaction: &Transaction<'_>,
     event: &ReviewEvent,
@@ -487,6 +534,8 @@ fn validate_review_preconditions(
     if event.previous_schedule.card_id != event.card_id
         || event.next_schedule.card_id != event.card_id
         || event.next_schedule.last_review_event_id.as_deref() != Some(event.id.as_str())
+        || (event.kind == ReviewEventKind::Review
+            && event.next_schedule.lifecycle != CardLifecycle::Introduced)
         || (event.kind == ReviewEventKind::Review && event.undoes_review_event_id.is_some())
         || (event.kind == ReviewEventKind::Undo && event.undoes_review_event_id.is_none())
         || card_version != event.card_content_version
@@ -516,18 +565,20 @@ fn persist_review_event(
              stability_milliseconds = ?7,
              difficulty_millipoints = ?8,
              last_reviewed_at_ms = ?9,
-             last_review_event_id = ?10
-         WHERE card_id = ?11
-           AND version = ?12
-           AND due_at_ms = ?13
-           AND ideal_due_at_ms = ?14
-           AND interval_milliseconds = ?15
-           AND interval_seconds = ?16
-           AND repetitions = ?17
-           AND stability_milliseconds = ?18
-           AND difficulty_millipoints = ?19
-           AND last_reviewed_at_ms IS ?20
-           AND last_review_event_id IS ?21",
+             last_review_event_id = ?10,
+             lifecycle = ?11
+         WHERE card_id = ?12
+           AND version = ?13
+           AND due_at_ms = ?14
+           AND ideal_due_at_ms = ?15
+           AND interval_milliseconds = ?16
+           AND interval_seconds = ?17
+           AND repetitions = ?18
+           AND stability_milliseconds = ?19
+           AND difficulty_millipoints = ?20
+           AND last_reviewed_at_ms IS ?21
+           AND last_review_event_id IS ?22
+           AND lifecycle = ?23",
         params![
             event.next_schedule.version,
             event.next_schedule.due_at_ms,
@@ -539,6 +590,7 @@ fn persist_review_event(
             event.next_schedule.difficulty_millipoints,
             event.next_schedule.last_reviewed_at_ms,
             event.id,
+            card_lifecycle_to_database(event.next_schedule.lifecycle),
             event.card_id,
             event.previous_schedule.version,
             event.previous_schedule.due_at_ms,
@@ -550,6 +602,7 @@ fn persist_review_event(
             event.previous_schedule.difficulty_millipoints,
             event.previous_schedule.last_reviewed_at_ms,
             event.previous_schedule.last_review_event_id,
+            card_lifecycle_to_database(event.previous_schedule.lifecycle),
         ],
     )?;
     if changed != 1 {
@@ -636,12 +689,14 @@ fn insert_review_event(
             event_kind,
             undoes_review_event_id,
             response_duration_ms,
-            grade_overridden
+            grade_overridden,
+            previous_lifecycle,
+            next_lifecycle
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
-            ?31, ?32, ?33, ?34
+            ?31, ?32, ?33, ?34, ?35, ?36
          )",
         params![
             event.id,
@@ -678,6 +733,8 @@ fn insert_review_event(
             event.undoes_review_event_id,
             event.response_duration_ms,
             event.grade_overridden,
+            card_lifecycle_to_database(event.previous_schedule.lifecycle),
+            card_lifecycle_to_database(event.next_schedule.lifecycle),
         ],
     )?;
     Ok(())
@@ -722,7 +779,9 @@ fn load_review_events(
             event_kind,
             undoes_review_event_id,
             response_duration_ms,
-            grade_overridden
+            grade_overridden,
+            previous_lifecycle,
+            next_lifecycle
          FROM review_events
          WHERE card_id = ?1
          ORDER BY previous_schedule_version, reviewed_at_ms, id",
@@ -778,6 +837,8 @@ struct StoredReviewEvent {
     undoes_review_event_id: Option<String>,
     response_duration_ms: u64,
     grade_overridden: bool,
+    previous_lifecycle: String,
+    next_lifecycle: String,
 }
 
 impl StoredReviewEvent {
@@ -789,6 +850,7 @@ impl StoredReviewEvent {
         let previous_schedule = ScheduleState {
             card_id: self.card_id.clone(),
             version: self.previous_version,
+            lifecycle: card_lifecycle_from_database(&self.previous_lifecycle)?,
             due_at_ms: self.previous_due_at_ms,
             ideal_due_at_ms: if is_legacy {
                 self.previous_due_at_ms
@@ -810,6 +872,7 @@ impl StoredReviewEvent {
         let next_schedule = ScheduleState {
             card_id: self.card_id.clone(),
             version: self.next_version,
+            lifecycle: card_lifecycle_from_database(&self.next_lifecycle)?,
             due_at_ms: self.next_due_at_ms,
             ideal_due_at_ms: if is_legacy {
                 self.next_due_at_ms
@@ -887,6 +950,8 @@ fn stored_review_event_from_row(row: &Row<'_>) -> rusqlite::Result<StoredReviewE
         undoes_review_event_id: row.get(31)?,
         response_duration_ms: row.get(32)?,
         grade_overridden: row.get(33)?,
+        previous_lifecycle: row.get(34)?,
+        next_lifecycle: row.get(35)?,
     })
 }
 
