@@ -49,6 +49,7 @@ test("authors multiple stable Japanese clozes, previews each, and saves", async 
     "行きます",
   );
 
+  await page.getByRole("button", { name: "Optional cloze details" }).click();
   await page.getByLabel("Accepted answers").fill("ゆきます\n行く");
   await page.getByLabel("Hint").fill("polite present");
   await page.getByLabel("Answer matching").selectOption("forgiving");
@@ -103,6 +104,7 @@ test("attaches role-specific local media, labels it, and saves references", asyn
   await source.fill("図書館");
   await selectRange(page, 0, 3);
   await page.getByRole("button", { name: "Make cloze" }).click();
+  await page.getByRole("button", { name: "Local media" }).click();
 
   await page.getByRole("button", { name: "Add prompt audio" }).click();
   await page.getByRole("button", { name: "Add answer audio" }).click();
@@ -176,6 +178,7 @@ test("raw executable HTML is not saved", async ({ page }) => {
   await source.fill("Remember café");
   await selectRange(page, 9, 13);
   await page.getByRole("button", { name: "Make cloze" }).click();
+  await page.getByRole("button", { name: "Optional cloze details" }).click();
   await page.getByLabel("Explanation").fill("<script>alert(1)</script>");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText(

@@ -3,13 +3,13 @@
   import { SvelteDate } from "svelte/reactivity";
 
   import { api } from "../lib/api";
-  import Button from "../lib/components/Button.svelte";
-  import Feedback from "../lib/components/Feedback.svelte";
-  import Field from "../lib/components/Field.svelte";
+  import * as Alert from "$lib/components/ui/alert/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import * as Card from "$lib/components/ui/card/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
   import LimitedMarkdown from "../lib/components/LimitedMarkdown.svelte";
   import MediaFrame from "../lib/components/MediaFrame.svelte";
-  import SurfaceCard from "../lib/components/SurfaceCard.svelte";
-  import TextInput from "../lib/components/TextInput.svelte";
   import type { GradeDto } from "../lib/generated/GradeDto";
   import type { GradePreviewDto } from "../lib/generated/GradePreviewDto";
   import type { GradeReviewRequest } from "../lib/generated/GradeReviewRequest";
@@ -83,7 +83,7 @@
   let undoNotice = $state("");
   let hintVisible = $state(false);
   let composing = $state(false);
-  let answerInput = $state<HTMLInputElement | undefined>();
+  let answerInput = $state<HTMLInputElement | null>(null);
   let studyElement = $state<HTMLElement | undefined>();
   let promptStartedAt = $state(0);
   let autoplayPromptAudio = $state(false);
@@ -650,30 +650,35 @@
   </header>
 
   {#if sessionNotice}
-    <Feedback tone="warning" title="Study item refreshed" compact>
-      <p>{sessionNotice}</p>
-    </Feedback>
+    <Alert.Root role="status" class="mb-5 bg-muted/40">
+      <Alert.Title>Study item refreshed</Alert.Title>
+      <Alert.Description>{sessionNotice}</Alert.Description>
+    </Alert.Root>
   {:else if undoNotice}
-    <Feedback tone="success" title={undoNotice} compact />
+    <Alert.Root role="status" class="mb-5">
+      <Alert.Title>{undoNotice}</Alert.Title>
+    </Alert.Root>
   {:else if audioNotice}
-    <Feedback tone="info" title={audioNotice} compact />
+    <Alert.Root role="status" class="mb-5">
+      <Alert.Title>{audioNotice}</Alert.Title>
+    </Alert.Root>
   {/if}
 
   {#if view === "loading"}
-    <SurfaceCard>
+    <Card.Root class="p-6">
       <div class="state-card" aria-live="polite" aria-busy="true">
         <span class="spinner" aria-hidden="true"></span>
         <p>{messages.loading}</p>
       </div>
-    </SurfaceCard>
+    </Card.Root>
   {:else if view === "empty"}
-    <SurfaceCard>
+    <Card.Root class="p-6">
       <div class="state-card" aria-live="polite">
         {#if studyAvailability === "empty_collection"}
           <span class="eyebrow">Start your collection</span>
           <h2>Your collection is empty</h2>
           <p>Create a typed cloze from any language or script to begin.</p>
-          <Button variant="primary" data-primary-action onclick={onCreate}
+          <Button variant="default" data-primary-action onclick={onCreate}
             >Create a cloze</Button
           >
         {:else}
@@ -687,30 +692,32 @@
             {/if}
           </p>
           <Button
-            variant="primary"
+            variant="default"
             data-primary-action
             onclick={onQueueComplete}>Return to Today</Button
           >
         {/if}
       </div>
-    </SurfaceCard>
+    </Card.Root>
   {:else if view === "error"}
-    <SurfaceCard>
+    <Card.Root class="p-6">
       <div class="state-card">
-        <Feedback
-          tone="error"
-          title={retryAction === "load" || retryAction === "recover"
-            ? messages.collectionError
-            : "The study action was not completed"}
-        >
-          <p>{errorMessage}</p>
-          <p>Your answer and current review state are still available.</p>
-        </Feedback>
-        <Button variant="primary" onclick={retry}>{messages.retry}</Button>
+        <Alert.Root variant="destructive" role="alert">
+          <Alert.Title>
+            {retryAction === "load" || retryAction === "recover"
+              ? messages.collectionError
+              : "The study action was not completed"}
+          </Alert.Title>
+          <Alert.Description>
+            <p>{errorMessage}</p>
+            <p>Your answer and current review state are still available.</p>
+          </Alert.Description>
+        </Alert.Root>
+        <Button variant="default" onclick={retry}>{messages.retry}</Button>
       </div>
-    </SurfaceCard>
+    </Card.Root>
   {:else if card}
-    <SurfaceCard class="study-card" padding="none">
+    <Card.Root class="study-card overflow-hidden p-0">
       <article
         class="study-content"
         data-testid="study-card"
@@ -739,30 +746,21 @@
           <div class="prompt-tools">
             {#if card.hint}
               <Button
-                variant="quiet"
-                size="small"
+                variant="ghost"
+                size="sm"
                 aria-expanded={hintVisible}
                 onclick={() => (hintVisible = !hintVisible)}
                 >{hintVisible ? "Hide hint" : "Show hint"}</Button
               >
             {/if}
-            <Button
-              variant="quiet"
-              size="small"
-              shortcut="R"
-              onclick={replayAudio}>Replay audio</Button
+            <Button variant="ghost" size="sm" onclick={replayAudio}
+              >Replay audio</Button
             >
-            <Button
-              variant="quiet"
-              size="small"
-              shortcut="E"
-              onclick={beginEdit}>Edit note</Button
+            <Button variant="ghost" size="sm" onclick={beginEdit}
+              >Edit note</Button
             >
-            <Button
-              variant="quiet"
-              size="small"
-              shortcut="S"
-              onclick={suspendCard}>Suspend</Button
+            <Button variant="ghost" size="sm" onclick={suspendCard}
+              >Suspend</Button
             >
           </div>
           {#if hintVisible && card.hint}
@@ -796,9 +794,10 @@
               void checkAnswer();
             }}
           >
-            <Field id="answer" label={messages.answerLabel}>
-              <TextInput
-                bind:element={answerInput}
+            <div class="grid gap-2">
+              <Label for="answer">{messages.answerLabel}</Label>
+              <Input
+                bind:ref={answerInput}
                 bind:value={response}
                 id="answer"
                 name="answer"
@@ -812,14 +811,13 @@
                 oncompositionend={() => (composing = false)}
                 onkeydown={handleAnswerKeydown}
               />
-            </Field>
+            </div>
             <p id="answer-guidance" class="input-guidance">
               Enter checks. R replays audio, E edits, and S suspends.
             </p>
             <Button
-              variant="primary"
-              full
-              shortcut="↵"
+              class="w-full"
+              variant="default"
               disabled={view === "checking"}
               type="submit"
               data-primary-action
@@ -920,35 +918,25 @@
             {/if}
 
             <div class="reveal-tools">
-              <Button
-                variant="quiet"
-                size="small"
-                shortcut="R"
-                onclick={replayAudio}>Replay audio</Button
+              <Button variant="ghost" size="sm" onclick={replayAudio}
+                >Replay audio</Button
               >
-              <Button
-                variant="quiet"
-                size="small"
-                shortcut="E"
-                onclick={beginEdit}>Edit note</Button
+              <Button variant="ghost" size="sm" onclick={beginEdit}
+                >Edit note</Button
               >
-              <Button
-                variant="quiet"
-                size="small"
-                shortcut="S"
-                onclick={suspendCard}>Suspend</Button
+              <Button variant="ghost" size="sm" onclick={suspendCard}
+                >Suspend</Button
               >
             </div>
 
             <fieldset disabled={view === "committing"}>
               <legend>{messages.gradePrompt}</legend>
               <div class="grade-grid">
-                {#each grades as gradeValue, index (gradeValue)}
+                {#each grades as gradeValue (gradeValue)}
                   <Button
                     variant={gradeValue === reveal.suggested_grade
-                      ? "primary"
-                      : "secondary"}
-                    shortcut={String(index + 1)}
+                      ? "default"
+                      : "outline"}
                     onclick={() => grade(gradeValue)}
                   >
                     <span>{messages[gradeValue]}</span>
@@ -976,10 +964,8 @@
               <h2>Card suspended</h2>
               <p>This card will stay out of the study queue.</p>
               <div class="next-actions">
-                <Button variant="secondary" shortcut="E" onclick={beginEdit}
-                  >Edit note</Button
-                >
-                <Button variant="primary" shortcut="↵" onclick={continueStudy}
+                <Button variant="outline" onclick={beginEdit}>Edit note</Button>
+                <Button variant="default" onclick={continueStudy}
                   >{queueSession &&
                   queueSession.position >= queueSession.entries.length
                     ? "Finish session"
@@ -995,12 +981,10 @@
                 <strong>{formatDueDate(result.due_at)}</strong>
               </p>
               <div class="next-actions">
-                <Button
-                  variant="secondary"
-                  shortcut="⌘/Ctrl Z"
-                  onclick={undoReview}>Undo review</Button
+                <Button variant="outline" onclick={undoReview}
+                  >Undo review</Button
                 >
-                <Button variant="primary" shortcut="↵" onclick={continueStudy}
+                <Button variant="default" onclick={continueStudy}
                   >{queueSession &&
                   queueSession.position >= queueSession.entries.length
                     ? "Finish session"
@@ -1011,31 +995,31 @@
           </div>
         {/if}
       </article>
-    </SurfaceCard>
+    </Card.Root>
   {/if}
 </section>
 
 <style>
   .study-screen {
-    width: min(100%, var(--reading-width));
+    width: min(100%, 50rem);
   }
 
   .review-count {
     flex: 0 0 auto;
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
     font-weight: 700;
   }
 
   .study-content {
     min-height: 27rem;
-    padding: clamp(var(--space-6), 7vw, var(--space-10));
+    padding: clamp(1.5rem, 7vw, 4rem);
   }
 
   .prompt {
     min-height: 8rem;
-    margin: 0 0 var(--space-5);
-    color: var(--color-text);
+    margin: 0 0 1.25rem;
+    color: var(--foreground);
     font-size: var(--text-2xl);
     font-weight: 540;
     line-height: 1.6;
@@ -1045,9 +1029,9 @@
 
   .prompt mark {
     padding: 0.08em 0.18em;
-    border-radius: var(--radius-xs);
-    color: var(--color-accent-strong);
-    background: var(--color-accent-soft);
+    border-radius: var(--radius-sm);
+    color: var(--primary);
+    background: var(--accent);
   }
 
   .prompt-tools,
@@ -1055,29 +1039,29 @@
   .next-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-2);
+    gap: 0.5rem;
     justify-content: center;
-    margin-bottom: var(--space-4);
+    margin-bottom: 1rem;
   }
 
   .hint {
     width: min(100%, 38rem);
-    margin: 0 auto var(--space-4);
-    padding: var(--space-3);
-    border-radius: var(--radius-control);
-    color: var(--color-text-muted);
-    background: var(--color-surface-muted);
+    margin: 0 auto 1rem;
+    padding: 0.75rem;
+    border-radius: var(--radius-lg);
+    color: var(--muted-foreground);
+    background: var(--muted);
     text-align: center;
   }
 
   form {
     width: min(100%, 38rem);
-    margin: var(--space-5) auto 0;
+    margin: 1.25rem auto 0;
   }
 
   .input-guidance {
-    margin: var(--space-2) 0 var(--space-4);
-    color: var(--color-text-muted);
+    margin: 0.5rem 0 1rem;
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
     line-height: 1.5;
   }
@@ -1085,9 +1069,9 @@
   .answer-comparison {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: var(--space-5);
-    padding: var(--space-5) 0;
-    border-block: var(--border-width) solid var(--color-border);
+    gap: 1.25rem;
+    padding: 1.25rem 0;
+    border-block: 1px solid var(--border);
   }
 
   .answer-comparison strong {
@@ -1099,8 +1083,8 @@
 
   .answer-difference {
     display: grid;
-    gap: var(--space-2);
-    margin-top: var(--space-4);
+    gap: 0.5rem;
+    margin-top: 1rem;
   }
 
   .answer-difference p {
@@ -1113,32 +1097,32 @@
   .answer-difference del,
   .answer-difference ins {
     padding: 0.08em 0.18em;
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-sm);
     text-decoration-thickness: 0.08em;
   }
 
   .answer-difference del {
-    color: var(--color-danger);
-    background: var(--color-danger-soft);
+    color: var(--destructive);
+    background: color-mix(in oklch, var(--destructive) 12%, transparent);
   }
 
   .answer-difference ins {
-    color: var(--color-success);
-    background: var(--color-success-soft);
+    color: var(--foreground);
+    background: var(--secondary);
     text-decoration: none;
   }
 
   .answer-difference small {
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
   }
 
   .result-pill {
     display: inline-flex;
-    margin: var(--space-4) 0;
-    padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius-pill);
-    color: var(--color-danger);
-    background: var(--color-danger-soft);
+    margin: 1rem 0;
+    padding: 0.5rem 0.75rem;
+    border-radius: 999px;
+    color: var(--destructive);
+    background: color-mix(in oklch, var(--destructive) 12%, transparent);
     font-size: var(--text-xs);
     font-weight: 800;
     letter-spacing: 0.05em;
@@ -1146,36 +1130,36 @@
   }
 
   .result-pill.correct {
-    color: var(--color-success);
-    background: var(--color-success-soft);
+    color: var(--foreground);
+    background: var(--secondary);
   }
 
   .supporting-content {
     display: grid;
-    gap: var(--space-4);
-    margin-bottom: var(--space-5);
+    gap: 1rem;
+    margin-bottom: 1.25rem;
   }
 
   .annotations {
     display: grid;
-    gap: var(--space-2);
+    gap: 0.5rem;
     margin: 0;
   }
 
   .annotations div {
-    padding: var(--space-3);
-    border-radius: var(--radius-control);
-    background: var(--color-surface-muted);
+    padding: 0.75rem;
+    border-radius: var(--radius-lg);
+    background: var(--muted);
   }
 
   .annotations dt {
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
     font-weight: 700;
   }
 
   .annotations dd {
-    margin: var(--space-1) 0 0;
+    margin: 0.25rem 0 0;
   }
 
   fieldset {
@@ -1184,8 +1168,8 @@
   }
 
   legend {
-    margin-bottom: var(--space-3);
-    color: var(--color-text-muted);
+    margin-bottom: 0.75rem;
+    color: var(--muted-foreground);
     font-size: var(--text-sm);
     font-weight: 650;
   }
@@ -1193,7 +1177,7 @@
   .grade-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: var(--space-2);
+    gap: 0.5rem;
   }
 
   .grade-grid small {
@@ -1206,7 +1190,7 @@
   .complete-state,
   .state-card {
     display: grid;
-    gap: var(--space-4);
+    gap: 1rem;
     min-height: 16rem;
     text-align: center;
     place-content: center;
@@ -1214,14 +1198,14 @@
 
   .complete-state h2 {
     margin: 0;
-    font-family: var(--font-display);
+    font-family: var(--font-sans);
     font-size: var(--text-xl);
   }
 
   .complete-state p,
   .state-card p {
     margin: 0;
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
   }
 
   .checkmark {
@@ -1230,8 +1214,8 @@
     height: 3.4rem;
     margin-inline: auto;
     border-radius: 50%;
-    color: var(--color-success);
-    background: var(--color-success-soft);
+    color: var(--foreground);
+    background: var(--secondary);
     font-size: var(--text-xl);
     place-items: center;
   }
@@ -1240,8 +1224,8 @@
     width: 1.6rem;
     height: 1.6rem;
     margin-inline: auto;
-    border: 2px solid var(--color-border);
-    border-top-color: var(--color-accent);
+    border: 2px solid var(--border);
+    border-top-color: var(--primary);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -1255,7 +1239,7 @@
   @media (max-width: 560px) {
     .study-content {
       min-height: 25rem;
-      padding: var(--space-6) var(--space-5);
+      padding: 1.5rem 1.25rem;
     }
 
     .prompt {

@@ -1,15 +1,18 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
 
   import { api } from "../lib/api";
-  import Button from "../lib/components/Button.svelte";
-  import Dialog from "../lib/components/Dialog.svelte";
-  import Feedback from "../lib/components/Feedback.svelte";
-  import Field from "../lib/components/Field.svelte";
+  import * as Alert from "$lib/components/ui/alert/index.js";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import * as Card from "$lib/components/ui/card/index.js";
+  import * as Collapsible from "$lib/components/ui/collapsible/index.js";
+  import * as Dialog from "$lib/components/ui/dialog/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
+  import { Textarea } from "$lib/components/ui/textarea/index.js";
   import LimitedMarkdown from "../lib/components/LimitedMarkdown.svelte";
   import MediaFrame from "../lib/components/MediaFrame.svelte";
-  import SurfaceCard from "../lib/components/SurfaceCard.svelte";
-  import TextInput from "../lib/components/TextInput.svelte";
   import type { AnnotationDraftDto } from "../lib/generated/AnnotationDraftDto";
   import type { AuthoringClozeDto } from "../lib/generated/AuthoringClozeDto";
   import type { AuthoringDraftDto } from "../lib/generated/AuthoringDraftDto";
@@ -49,6 +52,10 @@
   let busy = $state(false);
   let error = $state("");
   let savedMessage = $state("");
+  let confirmationOpen = $state(false);
+  let confirmationKind = $state<"new" | "remove-cloze" | null>(null);
+  let confirmationDescription = $state("");
+  let previewTrigger = $state<HTMLElement | null>(null);
 
   const shortcut = navigator.platform.includes("Mac") ? "⌘" : "Ctrl";
 
@@ -123,11 +130,11 @@
 
   async function startNew(protect = true): Promise<void> {
     if (composing) return;
-    if (
-      protect &&
-      dirty &&
-      !window.confirm("Discard the unsaved source note and start a new one?")
-    ) {
+    if (protect && dirty) {
+      confirmationKind = "new";
+      confirmationDescription =
+        "Discard the unsaved source note and start a new one?";
+      confirmationOpen = true;
       return;
     }
     busy = true;
@@ -345,12 +352,18 @@
 
   async function removeActiveCloze(): Promise<void> {
     if (!draft?.active_cloze_id || composing) return;
-    const confirmed =
-      !draft.persisted ||
-      window.confirm(
-        "Convert this persisted cloze to text? Saving will remove its card. Existing review history prevents unsafe deletion and will be reported.",
-      );
-    if (!confirmed) return;
+    if (draft.persisted) {
+      confirmationKind = "remove-cloze";
+      confirmationDescription =
+        "Saving will remove this card. Existing review history prevents unsafe deletion and will be reported.";
+      confirmationOpen = true;
+      return;
+    }
+    await performRemoveActiveCloze(false);
+  }
+
+  async function performRemoveActiveCloze(confirmed: boolean): Promise<void> {
+    if (!draft?.active_cloze_id) return;
     busy = true;
     try {
       draft = await api.removeCloze({
@@ -364,6 +377,14 @@
     } finally {
       busy = false;
     }
+  }
+
+  async function confirmEditorAction(): Promise<void> {
+    const action = confirmationKind;
+    confirmationOpen = false;
+    confirmationKind = null;
+    if (action === "new") await startNew(false);
+    if (action === "remove-cloze") await performRemoveActiveCloze(true);
   }
 
   async function moveSegment(segmentId: string, offset: number): Promise<void> {
@@ -399,6 +420,14 @@
       reportFailure(reason);
     } finally {
       busy = false;
+    }
+  }
+
+  async function handlePreviewOpenChange(open: boolean): Promise<void> {
+    previewOpen = open;
+    if (!open) {
+      await tick();
+      previewTrigger?.focus();
     }
   }
 
@@ -458,31 +487,24 @@
     </div>
     <div class="cluster">
       {#if cardId && onReturn}
-        <Button variant="quiet" disabled={busy} onclick={onReturn}
+        <Button variant="ghost" disabled={busy} onclick={onReturn}
           >{returnLabel}</Button
         >
       {/if}
-      <Button
-        variant="quiet"
-        shortcut={`${shortcut} N`}
-        disabled={busy}
-        onclick={() => startNew()}>New</Button
+      <Button variant="ghost" disabled={busy} onclick={() => startNew()}
+        >New</Button
       >
       <Button
-        variant="secondary"
-        shortcut={`${shortcut} P`}
+        bind:ref={previewTrigger}
+        variant="outline"
         disabled={busy || !draft?.clozes.length}
         onclick={openPreview}>Preview</Button
       >
-      <Button
-        variant="secondary"
-        shortcut={`${shortcut} ⇧ S`}
-        disabled={busy}
-        onclick={() => save(true)}>Save & next</Button
+      <Button variant="outline" disabled={busy} onclick={() => save(true)}
+        >Save & next</Button
       >
       <Button
-        variant="primary"
-        shortcut={`${shortcut} S`}
+        variant="default"
         data-primary-action
         disabled={busy}
         onclick={() => save(false)}>Save</Button
@@ -491,17 +513,20 @@
   </header>
 
   {#if error}
-    <Feedback tone="error" title="The source note was not changed" compact>
-      <p>{error}</p>
-    </Feedback>
+    <Alert.Root variant="destructive" role="alert" class="mb-5">
+      <Alert.Title>The source note was not changed</Alert.Title>
+      <Alert.Description>{error}</Alert.Description>
+    </Alert.Root>
   {:else if savedMessage}
-    <Feedback tone="success" title={savedMessage} compact />
+    <Alert.Root role="status" class="mb-5">
+      <Alert.Title>{savedMessage}</Alert.Title>
+    </Alert.Root>
   {/if}
 
   {#if draft}
     <div class="editor-grid">
       <div class="stack">
-        <SurfaceCard>
+        <Card.Root class="p-6">
           <div class="stack">
             <div class="source-heading">
               <div>
@@ -512,8 +537,8 @@
                 </p>
               </div>
               <Button
-                variant="primary"
-                size="small"
+                variant="default"
+                size="sm"
                 disabled={busy ||
                   !selection ||
                   selection.start === selection.end}
@@ -536,11 +561,11 @@
                     <label class="visually-hidden" for={`segment-${segment.id}`}
                       >Source text segment {index + 1}</label
                     >
-                    <textarea
+                    <Textarea
                       id={`segment-${segment.id}`}
-                      class="segment-text content-text"
+                      class="segment-text min-h-20 content-text"
                       dir="auto"
-                      rows="2"
+                      rows={2}
                       value={segment.text}
                       oninput={(event) =>
                         updateSegmentText(
@@ -551,7 +576,7 @@
                       onkeyup={(event) => rememberSelection(event, segment.id)}
                       oncompositionstart={() => (composing = true)}
                       oncompositionend={() => (composing = false)}
-                    ></textarea>
+                    ></Textarea>
                   {:else}
                     <button
                       type="button"
@@ -574,29 +599,30 @@
                     aria-label={`Reorder segment ${index + 1}`}
                   >
                     <Button
-                      variant="quiet"
-                      size="small"
+                      variant="ghost"
+                      size="sm"
                       aria-label={`Move segment ${index + 1} earlier`}
                       disabled={index === 0 || busy}
-                      onclick={() => moveSegment(segment.id, -1)}>↑</Button
+                      onclick={() => moveSegment(segment.id, -1)}
+                      >Earlier</Button
                     >
                     <Button
-                      variant="quiet"
-                      size="small"
+                      variant="ghost"
+                      size="sm"
                       aria-label={`Move segment ${index + 1} later`}
                       disabled={index === draft.segments.length - 1 || busy}
-                      onclick={() => moveSegment(segment.id, 1)}>↓</Button
+                      onclick={() => moveSegment(segment.id, 1)}>Later</Button
                     >
                   </div>
                 </div>
               {/each}
             </div>
           </div>
-        </SurfaceCard>
+        </Card.Root>
 
         {#if activeCloze()}
           {@const cloze = activeCloze()!}
-          <SurfaceCard>
+          <Card.Root class="p-6">
             <div class="stack metadata">
               <div class="metadata-heading">
                 <div>
@@ -604,20 +630,18 @@
                   <bdi>{cloze.answer}</bdi>
                 </div>
                 <Button
-                  variant="danger"
-                  size="small"
+                  variant="destructive"
+                  size="sm"
                   disabled={busy}
                   onclick={removeActiveCloze}>Convert to text</Button
                 >
               </div>
 
-              <Field
-                id="surface-answer"
-                label="Surface answer"
-                description="Changing this preserves the cloze and card identities."
-              >
-                <TextInput
+              <div class="field">
+                <Label for="surface-answer">Surface answer</Label>
+                <Input
                   id="surface-answer"
+                  aria-describedby="surface-answer-description"
                   value={cloze.answer}
                   dir="auto"
                   oninput={(event) =>
@@ -628,17 +652,20 @@
                   oncompositionstart={() => (composing = true)}
                   oncompositionend={() => (composing = false)}
                 />
-              </Field>
+                <p id="surface-answer-description" class="field-description">
+                  Changing this preserves the cloze and card identities.
+                </p>
+              </div>
 
-              <Field
-                id="accepted-answers"
-                label="Accepted answers"
-                description="Enter one explicit alternative per line."
-                optional
-              >
-                <textarea
+              <div class="field">
+                <div class="label-row">
+                  <Label for="accepted-answers">Accepted answers</Label>
+                  <span>Optional</span>
+                </div>
+                <Textarea
                   id="accepted-answers"
-                  class="compact-textarea content-text"
+                  class="min-h-24 content-text"
+                  aria-describedby="accepted-answers-description"
                   dir="auto"
                   value={cloze.accepted_answers.join("\n")}
                   oninput={(event) =>
@@ -651,169 +678,207 @@
                     }))}
                   oncompositionstart={() => (composing = true)}
                   oncompositionend={() => (composing = false)}
-                ></textarea>
-              </Field>
-
-              <Field id="cloze-hint" label="Hint" optional>
-                <TextInput
-                  id="cloze-hint"
-                  value={cloze.hint}
-                  dir="auto"
-                  oninput={(event) =>
-                    updateActiveCloze((value) => ({
-                      ...value,
-                      hint: event.currentTarget.value,
-                    }))}
-                />
-              </Field>
-
-              <div class="metadata-row">
-                <Field id="cloze-language" label="Language" optional>
-                  <TextInput
-                    id="cloze-language"
-                    placeholder={draft.language_tag ?? "Inherit deck / source"}
-                    value={cloze.language_tag ?? ""}
-                    oninput={(event) =>
-                      updateActiveCloze((value) => ({
-                        ...value,
-                        language_tag: event.currentTarget.value.trim() || null,
-                      }))}
-                  />
-                </Field>
-                <Field id="cloze-direction" label="Direction">
-                  <select
-                    id="cloze-direction"
-                    value={cloze.direction}
-                    onchange={(event) =>
-                      updateActiveCloze((value) => ({
-                        ...value,
-                        direction: event.currentTarget.value as DirectionDto,
-                      }))}
-                  >
-                    <option value="auto">Auto / inherit</option>
-                    <option value="ltr">Left to right</option>
-                    <option value="rtl">Right to left</option>
-                  </select>
-                </Field>
+                ></Textarea>
+                <p id="accepted-answers-description" class="field-description">
+                  Enter one explicit alternative per line.
+                </p>
               </div>
 
-              <Field
-                id="cloze-matching"
-                label="Answer matching"
-                description="Inherit the deck policy or override it for this cloze."
-              >
-                <select
-                  id="cloze-matching"
-                  value={cloze.matching_policy ?? ""}
-                  onchange={(event) =>
-                    updateActiveCloze((value) => ({
-                      ...value,
-                      matching_policy:
-                        (event.currentTarget.value as MatchingPolicyDto) ||
-                        null,
-                    }))}
+              <Collapsible.Root>
+                <Collapsible.Trigger
+                  class="w-full rounded-lg border px-3 py-2 text-left text-sm font-semibold hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
                 >
-                  <option value=""
-                    >Inherit deck ({draft.deck_matching_policy})</option
-                  >
-                  <option value="strict">Strict Unicode</option>
-                  <option value="forgiving"
-                    >Forgiving case, accents, width, and punctuation</option
-                  >
-                </select>
-              </Field>
+                  Optional cloze details
+                </Collapsible.Trigger>
+                <Collapsible.Content class="grid gap-6 pt-4">
+                  <div class="field">
+                    <div class="label-row">
+                      <Label for="cloze-hint">Hint</Label>
+                      <span>Optional</span>
+                    </div>
+                    <Input
+                      id="cloze-hint"
+                      value={cloze.hint}
+                      dir="auto"
+                      oninput={(event) =>
+                        updateActiveCloze((value) => ({
+                          ...value,
+                          hint: event.currentTarget.value,
+                        }))}
+                    />
+                  </div>
 
-              <Field
-                id="cloze-explanation"
-                label="Explanation"
-                description="Limited Markdown is stored as text. Raw HTML and executable links are rejected."
-                optional
-              >
-                <textarea
-                  id="cloze-explanation"
-                  class="compact-textarea content-text"
-                  dir="auto"
-                  value={cloze.explanation_markdown}
-                  oninput={(event) =>
-                    updateActiveCloze((value) => ({
-                      ...value,
-                      explanation_markdown: event.currentTarget.value,
-                    }))}
-                  oncompositionstart={() => (composing = true)}
-                  oncompositionend={() => (composing = false)}
-                ></textarea>
-              </Field>
+                  <div class="metadata-row">
+                    <div class="field">
+                      <div class="label-row">
+                        <Label for="cloze-language">Language</Label>
+                        <span>Optional</span>
+                      </div>
+                      <Input
+                        id="cloze-language"
+                        placeholder={draft.language_tag ??
+                          "Inherit deck / source"}
+                        value={cloze.language_tag ?? ""}
+                        oninput={(event) =>
+                          updateActiveCloze((value) => ({
+                            ...value,
+                            language_tag:
+                              event.currentTarget.value.trim() || null,
+                          }))}
+                      />
+                    </div>
+                    <div class="field">
+                      <Label for="cloze-direction">Direction</Label>
+                      <select
+                        id="cloze-direction"
+                        value={cloze.direction}
+                        onchange={(event) =>
+                          updateActiveCloze((value) => ({
+                            ...value,
+                            direction: event.currentTarget
+                              .value as DirectionDto,
+                          }))}
+                      >
+                        <option value="auto">Auto / inherit</option>
+                        <option value="ltr">Left to right</option>
+                        <option value="rtl">Right to left</option>
+                      </select>
+                    </div>
+                  </div>
 
-              <div class="annotation-heading">
-                <div>
-                  <span class="eyebrow">Ordered annotations</span>
-                  <p>
-                    Use any labels your material needs: reading, gloss, or note.
-                  </p>
-                </div>
-                <Button variant="secondary" size="small" onclick={addAnnotation}
-                  >Add annotation</Button
-                >
-              </div>
-              {#each cloze.annotations as annotation, index (annotation.id)}
-                <div class="annotation">
-                  <TextInput
-                    aria-label={`Annotation ${index + 1} label`}
-                    placeholder="Label"
-                    value={annotation.label}
-                    oninput={(event) =>
-                      updateAnnotation(annotation.id, (value) => ({
-                        ...value,
-                        label: event.currentTarget.value,
-                      }))}
-                  />
-                  <TextInput
-                    aria-label={`Annotation ${index + 1} value`}
-                    placeholder="Value"
-                    dir="auto"
-                    value={annotation.value}
-                    oninput={(event) =>
-                      updateAnnotation(annotation.id, (value) => ({
-                        ...value,
-                        value: event.currentTarget.value,
-                      }))}
-                  />
-                  <div class="cluster">
-                    <Button
-                      variant="quiet"
-                      size="small"
-                      aria-label={`Move annotation ${index + 1} earlier`}
-                      disabled={index === 0}
-                      onclick={() => moveAnnotation(annotation.id, -1)}
-                      >↑</Button
+                  <div class="field">
+                    <Label for="cloze-matching">Answer matching</Label>
+                    <select
+                      id="cloze-matching"
+                      aria-describedby="cloze-matching-description"
+                      value={cloze.matching_policy ?? ""}
+                      onchange={(event) =>
+                        updateActiveCloze((value) => ({
+                          ...value,
+                          matching_policy:
+                            (event.currentTarget.value as MatchingPolicyDto) ||
+                            null,
+                        }))}
                     >
-                    <Button
-                      variant="quiet"
-                      size="small"
-                      aria-label={`Move annotation ${index + 1} later`}
-                      disabled={index === cloze.annotations.length - 1}
-                      onclick={() => moveAnnotation(annotation.id, 1)}>↓</Button
+                      <option value=""
+                        >Inherit deck ({draft.deck_matching_policy})</option
+                      >
+                      <option value="strict">Strict Unicode</option>
+                      <option value="forgiving"
+                        >Forgiving case, accents, width, and punctuation</option
+                      >
+                    </select>
+                    <p
+                      id="cloze-matching-description"
+                      class="field-description"
                     >
-                    <Button
-                      variant="danger"
-                      size="small"
-                      aria-label={`Remove annotation ${index + 1}`}
-                      onclick={() => removeAnnotation(annotation.id)}
-                      >Remove</Button
+                      Inherit the deck policy or override it for this cloze.
+                    </p>
+                  </div>
+
+                  <div class="field">
+                    <div class="label-row">
+                      <Label for="cloze-explanation">Explanation</Label>
+                      <span>Optional</span>
+                    </div>
+                    <Textarea
+                      id="cloze-explanation"
+                      class="min-h-24 content-text"
+                      aria-describedby="cloze-explanation-description"
+                      dir="auto"
+                      value={cloze.explanation_markdown}
+                      oninput={(event) =>
+                        updateActiveCloze((value) => ({
+                          ...value,
+                          explanation_markdown: event.currentTarget.value,
+                        }))}
+                      oncompositionstart={() => (composing = true)}
+                      oncompositionend={() => (composing = false)}
+                    ></Textarea>
+                    <p
+                      id="cloze-explanation-description"
+                      class="field-description"
+                    >
+                      Limited Markdown is stored as text. Raw HTML and
+                      executable links are rejected.
+                    </p>
+                  </div>
+
+                  <div class="annotation-heading">
+                    <div>
+                      <span class="eyebrow">Ordered annotations</span>
+                      <p>
+                        Use any labels your material needs: reading, gloss, or
+                        note.
+                      </p>
+                    </div>
+                    <Button variant="outline" size="sm" onclick={addAnnotation}
+                      >Add annotation</Button
                     >
                   </div>
-                </div>
-              {/each}
+                  {#each cloze.annotations as annotation, index (annotation.id)}
+                    <div class="annotation">
+                      <Input
+                        aria-label={`Annotation ${index + 1} label`}
+                        placeholder="Label"
+                        value={annotation.label}
+                        oninput={(event) =>
+                          updateAnnotation(annotation.id, (value) => ({
+                            ...value,
+                            label: event.currentTarget.value,
+                          }))}
+                      />
+                      <Input
+                        aria-label={`Annotation ${index + 1} value`}
+                        placeholder="Value"
+                        dir="auto"
+                        value={annotation.value}
+                        oninput={(event) =>
+                          updateAnnotation(annotation.id, (value) => ({
+                            ...value,
+                            value: event.currentTarget.value,
+                          }))}
+                      />
+                      <div class="cluster">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Move annotation ${index + 1} earlier`}
+                          disabled={index === 0}
+                          onclick={() => moveAnnotation(annotation.id, -1)}
+                          >Earlier</Button
+                        >
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Move annotation ${index + 1} later`}
+                          disabled={index === cloze.annotations.length - 1}
+                          onclick={() => moveAnnotation(annotation.id, 1)}
+                          >Later</Button
+                        >
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          aria-label={`Remove annotation ${index + 1}`}
+                          onclick={() => removeAnnotation(annotation.id)}
+                          >Remove</Button
+                        >
+                      </div>
+                    </div>
+                  {/each}
+                </Collapsible.Content>
+              </Collapsible.Root>
             </div>
-          </SurfaceCard>
+          </Card.Root>
         {/if}
       </div>
 
       <aside class="stack" aria-label="Source defaults and optional media">
-        <SurfaceCard padding="compact" tone="quiet">
+        <Card.Root class="bg-muted/40 p-4 shadow-none">
           <div class="stack compact-stack">
             <span class="eyebrow">Deck defaults / source overrides</span>
-            <Field id="authoring-deck" label="Deck">
+            <div class="field">
+              <Label for="authoring-deck">Deck</Label>
               <select
                 id="authoring-deck"
                 aria-label="Author in deck"
@@ -825,7 +890,7 @@
                   <option value={deck.id}>{deck.name}</option>
                 {/each}
               </select>
-            </Field>
+            </div>
             <dl class="deck-defaults">
               <div>
                 <dt>Language</dt>
@@ -840,16 +905,21 @@
                 <dd>{draft.deck_matching_policy}</dd>
               </div>
             </dl>
-            <Field id="source-language" label="Language" optional>
-              <TextInput
+            <div class="field">
+              <div class="label-row">
+                <Label for="source-language">Language</Label>
+                <span>Optional</span>
+              </div>
+              <Input
                 id="source-language"
                 placeholder="BCP 47, for example ja"
                 value={draft.language_tag ?? ""}
                 oninput={(event) =>
                   updateSourceLanguage(event.currentTarget.value)}
               />
-            </Field>
-            <Field id="source-direction" label="Direction">
+            </div>
+            <div class="field">
+              <Label for="source-direction">Direction</Label>
               <select
                 id="source-direction"
                 value={draft.direction}
@@ -860,161 +930,204 @@
                 <option value="ltr">Left to right</option>
                 <option value="rtl">Right to left</option>
               </select>
-            </Field>
+            </div>
             <p class="default-note">
               Source language and direction override the deck. Matching and
               explicit accepted answers can be overridden per cloze.
             </p>
           </div>
-        </SurfaceCard>
-        <SurfaceCard padding="compact" tone="quiet">
-          <div class="stack compact-stack">
-            <span class="eyebrow">Local media</span>
-            {#if activeCloze()}
-              {@const mediaCloze = activeCloze()!}
-              <div class="media-actions">
-                <Button
-                  variant="secondary"
-                  size="small"
-                  disabled={busy}
-                  onclick={() => attachMedia("prompt_audio")}
-                  >Add prompt audio</Button
-                >
-                <Button
-                  variant="secondary"
-                  size="small"
-                  disabled={busy}
-                  onclick={() => attachMedia("answer_audio")}
-                  >Add answer audio</Button
-                >
-                <Button
-                  variant="secondary"
-                  size="small"
-                  disabled={busy}
-                  onclick={() => attachMedia("reveal_image")}
-                  >Add reveal image</Button
-                >
-              </div>
-              {#each mediaCloze.media as media (media.id)}
-                <div class="media-attachment">
-                  <MediaFrame
-                    kind={media.kind}
-                    label={media.original_file_name ??
-                      mediaRoleLabel(media.role)}
-                    role={media.role}
-                    availability={media.availability}
-                    source={mediaAssetSource(media.asset_path)}
-                    mediaType={media.media_type}
-                    altText={media.alt_text}
-                    width={media.width}
-                    height={media.height}
-                  />
-                  <TextInput
-                    aria-label={`${mediaRoleLabel(media.role)} alternative text`}
-                    placeholder={media.kind === "image"
-                      ? "Describe this image"
-                      : "Optional audio label"}
-                    value={media.alt_text ?? ""}
-                    oninput={(event) =>
-                      updateMediaAlt(media.id, event.currentTarget.value)}
-                  />
+        </Card.Root>
+        <Card.Root class="bg-muted/40 p-4 shadow-none">
+          <Collapsible.Root>
+            <Collapsible.Trigger
+              class="w-full rounded-lg px-2 py-1 text-left text-xs font-extrabold tracking-[0.09em] text-muted-foreground uppercase hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              Local media
+            </Collapsible.Trigger>
+            <Collapsible.Content class="grid gap-4 pt-4">
+              {#if activeCloze()}
+                {@const mediaCloze = activeCloze()!}
+                <div class="media-actions">
                   <Button
-                    variant="danger"
-                    size="small"
+                    variant="outline"
+                    size="sm"
                     disabled={busy}
-                    onclick={() => removeMedia(media.id)}
-                    >Remove {mediaRoleLabel(media.role).toLowerCase()}</Button
+                    onclick={() => attachMedia("prompt_audio")}
+                    >Add prompt audio</Button
+                  >
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onclick={() => attachMedia("answer_audio")}
+                    >Add answer audio</Button
+                  >
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy}
+                    onclick={() => attachMedia("reveal_image")}
+                    >Add reveal image</Button
                   >
                 </div>
+                {#each mediaCloze.media as media (media.id)}
+                  <div class="media-attachment">
+                    <MediaFrame
+                      kind={media.kind}
+                      label={media.original_file_name ??
+                        mediaRoleLabel(media.role)}
+                      role={media.role}
+                      availability={media.availability}
+                      source={mediaAssetSource(media.asset_path)}
+                      mediaType={media.media_type}
+                      altText={media.alt_text}
+                      width={media.width}
+                      height={media.height}
+                    />
+                    <Input
+                      aria-label={`${mediaRoleLabel(media.role)} alternative text`}
+                      placeholder={media.kind === "image"
+                        ? "Describe this image"
+                        : "Optional audio label"}
+                      value={media.alt_text ?? ""}
+                      oninput={(event) =>
+                        updateMediaAlt(media.id, event.currentTarget.value)}
+                    />
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={busy}
+                      onclick={() => removeMedia(media.id)}
+                      >Remove {mediaRoleLabel(media.role).toLowerCase()}</Button
+                    >
+                  </div>
+                {:else}
+                  <MediaFrame kind="audio" label="Prompt or answer audio" />
+                  <MediaFrame kind="image" label="Reveal image" />
+                {/each}
+                <p class="default-note">
+                  Files stay on this device in a checksum-addressed store.
+                  Identical files share one object.
+                </p>
               {:else}
-                <MediaFrame kind="audio" label="Prompt or answer audio" />
-                <MediaFrame kind="image" label="Reveal image" />
-              {/each}
-              <p class="default-note">
-                Files stay on this device in a checksum-addressed store.
-                Identical files share one object.
-              </p>
-            {:else}
-              <p class="default-note">
-                Select or create a cloze before attaching media.
-              </p>
-            {/if}
-          </div>
-        </SurfaceCard>
+                <p class="default-note">
+                  Select or create a cloze before attaching media.
+                </p>
+              {/if}
+            </Collapsible.Content>
+          </Collapsible.Root>
+        </Card.Root>
       </aside>
     </div>
   {:else}
-    <Feedback tone="info" title="Preparing a new source note…" />
+    <Alert.Root role="status">
+      <Alert.Title>Preparing a new source note…</Alert.Title>
+    </Alert.Root>
   {/if}
 </section>
 
-<Dialog
+<Dialog.Root
   open={previewOpen}
-  title="Card preview"
-  description="Each cloze produces an independent card. Controls remain left to right."
-  onClose={() => (previewOpen = false)}
+  onOpenChange={(open) => void handlePreviewOpenChange(open)}
 >
-  {#if activePreview()}
-    {@const preview = activePreview()!}
-    <div class="preview-shell" dir="ltr">
-      <div class="preview-tabs" role="tablist" aria-label="Cloze previews">
-        {#each previews as item, index (item.cloze_id)}
-          <button
-            type="button"
-            role="tab"
-            aria-selected={index === previewIndex}
-            onclick={() => (previewIndex = index)}>Card {index + 1}</button
-          >
-        {/each}
-      </div>
-      <p
-        class="dialog-prompt content-text"
-        dir={displayDirection(preview.direction)}
-        lang={preview.language_tag ?? undefined}
-      >
-        {preview.prompt}
-      </p>
-      {#if preview.hint}<p class="preview-hint" dir="auto">
-          {preview.hint}
-        </p>{/if}
-      {#if preview.annotations.length}
-        <dl class="preview-annotations">
-          {#each preview.annotations as annotation (annotation.id)}
-            <div>
-              <dt>{annotation.label}</dt>
-              <dd dir={displayDirection(annotation.direction)}>
-                {annotation.value}
-              </dd>
-            </div>
+  <Dialog.Content class="max-w-2xl">
+    <Dialog.Header>
+      <Dialog.Title>Card preview</Dialog.Title>
+      <Dialog.Description>
+        Each cloze produces an independent card. Controls remain left to right.
+      </Dialog.Description>
+    </Dialog.Header>
+    {#if activePreview()}
+      {@const preview = activePreview()!}
+      <div class="preview-shell" dir="ltr">
+        <div class="preview-tabs" role="tablist" aria-label="Cloze previews">
+          {#each previews as item, index (item.cloze_id)}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={index === previewIndex}
+              onclick={() => (previewIndex = index)}>Card {index + 1}</button
+            >
           {/each}
-        </dl>
-      {/if}
-      {#if preview.explanation_markdown}
-        <div dir="auto">
-          <LimitedMarkdown value={preview.explanation_markdown} />
         </div>
-      {/if}
-    </div>
-  {/if}
-  {#snippet actions()}
-    <Button variant="primary" onclick={() => (previewOpen = false)}>Done</Button
-    >
-  {/snippet}
-</Dialog>
+        <p
+          class="dialog-prompt content-text"
+          dir={displayDirection(preview.direction)}
+          lang={preview.language_tag ?? undefined}
+        >
+          {preview.prompt}
+        </p>
+        {#if preview.hint}<p class="preview-hint" dir="auto">
+            {preview.hint}
+          </p>{/if}
+        {#if preview.annotations.length}
+          <dl class="preview-annotations">
+            {#each preview.annotations as annotation (annotation.id)}
+              <div>
+                <dt>{annotation.label}</dt>
+                <dd dir={displayDirection(annotation.direction)}>
+                  {annotation.value}
+                </dd>
+              </div>
+            {/each}
+          </dl>
+        {/if}
+        {#if preview.explanation_markdown}
+          <div dir="auto">
+            <LimitedMarkdown value={preview.explanation_markdown} />
+          </div>
+        {/if}
+      </div>
+    {/if}
+    <Dialog.Footer>
+      <Dialog.Close>
+        {#snippet child({ props })}
+          <Button {...props}>Done</Button>
+        {/snippet}
+      </Dialog.Close>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
+<AlertDialog.Root bind:open={confirmationOpen}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>
+        {confirmationKind === "remove-cloze"
+          ? "Convert this cloze to text?"
+          : "Discard unsaved changes?"}
+      </AlertDialog.Title>
+      <AlertDialog.Description>
+        {confirmationDescription}
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action
+        class="bg-destructive/10 text-destructive hover:bg-destructive/20"
+        onclick={() => void confirmEditorAction()}
+      >
+        {confirmationKind === "remove-cloze"
+          ? "Convert to text"
+          : "Discard and start new"}
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
 
 <style>
   .editor-grid {
     display: grid;
     grid-template-columns: minmax(0, 1.5fr) minmax(17rem, 0.65fr);
-    gap: var(--space-5);
-    margin-top: var(--space-5);
+    gap: 1.25rem;
+    margin-top: 1.25rem;
   }
 
   .source-heading,
   .metadata-heading,
   .annotation-heading {
     display: flex;
-    gap: var(--space-4);
+    gap: 1rem;
     align-items: center;
     justify-content: space-between;
   }
@@ -1023,7 +1136,7 @@
   .annotation-heading p,
   .default-note {
     margin: 0;
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
     line-height: 1.5;
   }
@@ -1035,58 +1148,53 @@
   .media-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-2);
+    gap: 0.5rem;
   }
 
   .media-attachment {
     display: grid;
-    gap: var(--space-2);
-    padding-bottom: var(--space-3);
-    border-bottom: var(--border-width) solid var(--color-border);
+    gap: 0.5rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
   }
 
   .semantic-source {
     display: grid;
-    gap: var(--space-3);
+    gap: 0.75rem;
   }
 
   .segment {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: var(--space-2);
+    gap: 0.5rem;
     align-items: center;
-  }
-
-  .segment-text {
-    min-height: 5rem;
   }
 
   .segment-order {
     display: grid;
-    gap: var(--space-1);
+    gap: 0.25rem;
   }
 
   .cloze-chip {
     display: flex;
-    gap: var(--space-3);
+    gap: 0.75rem;
     align-items: center;
     min-height: 4.5rem;
-    padding: var(--space-3) var(--space-4);
-    border: var(--border-width) solid var(--color-accent);
-    border-radius: var(--radius-control);
-    color: var(--color-text);
-    background: var(--color-accent-soft);
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--primary);
+    border-radius: var(--radius-lg);
+    color: var(--foreground);
+    background: var(--accent);
     text-align: start;
     cursor: pointer;
   }
 
   .cloze-chip.active {
-    box-shadow: 0 0 0 3px
-      color-mix(in srgb, var(--color-accent) 24%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 24%, transparent);
   }
 
   .cloze-chip span {
-    color: var(--color-accent);
+    color: var(--primary);
     font-size: var(--text-xs);
     font-weight: 800;
     text-transform: uppercase;
@@ -1100,47 +1208,43 @@
   }
 
   .metadata {
-    gap: var(--space-6);
+    gap: 1.5rem;
   }
 
   .metadata-row {
     display: grid;
     grid-template-columns: 1fr minmax(10rem, 0.5fr);
-    gap: var(--space-4);
-  }
-
-  .compact-textarea {
-    min-height: 6rem;
+    gap: 1rem;
   }
 
   .annotation {
     display: grid;
     grid-template-columns: minmax(8rem, 0.35fr) minmax(12rem, 1fr) auto;
-    gap: var(--space-3);
+    gap: 0.75rem;
     align-items: center;
-    padding: var(--space-3);
-    border: var(--border-width) solid var(--color-border);
-    border-radius: var(--radius-control);
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
   }
 
   .compact-stack {
-    gap: var(--space-4);
+    gap: 1rem;
   }
 
   .deck-defaults {
     display: grid;
-    gap: var(--space-2);
+    gap: 0.5rem;
     margin: 0;
   }
 
   .deck-defaults div {
     display: flex;
-    gap: var(--space-3);
+    gap: 0.75rem;
     justify-content: space-between;
   }
 
   .deck-defaults dt {
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
   }
 
@@ -1153,29 +1257,29 @@
 
   .preview-shell {
     display: grid;
-    gap: var(--space-5);
+    gap: 1.25rem;
   }
 
   .preview-tabs {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-2);
+    gap: 0.5rem;
   }
 
   .preview-tabs button {
-    min-height: var(--control-height-small);
-    padding-inline: var(--space-3);
-    border: var(--border-width) solid var(--color-border-strong);
-    border-radius: var(--radius-control);
-    color: var(--color-text);
-    background: var(--color-surface);
+    min-height: 2.25rem;
+    padding-inline: 0.75rem;
+    border: 1px solid var(--input);
+    border-radius: var(--radius-lg);
+    color: var(--foreground);
+    background: var(--card);
     cursor: pointer;
   }
 
   .preview-tabs button[aria-selected="true"] {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-    background: var(--color-accent-soft);
+    border-color: var(--primary);
+    color: var(--primary);
+    background: var(--accent);
   }
 
   .dialog-prompt {
@@ -1187,24 +1291,24 @@
 
   .preview-hint {
     margin: 0;
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     text-align: center;
   }
 
   .preview-annotations {
     display: grid;
-    gap: var(--space-2);
+    gap: 0.5rem;
     margin: 0;
   }
 
   .preview-annotations div {
     display: grid;
     grid-template-columns: minmax(6rem, 0.35fr) 1fr;
-    gap: var(--space-3);
+    gap: 0.75rem;
   }
 
   .preview-annotations dt {
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     font-weight: 700;
   }
 

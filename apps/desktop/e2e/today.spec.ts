@@ -7,10 +7,22 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function openToday(page: import("@playwright/test").Page): Promise<void> {
-  await page.getByRole("button", { name: "Today", exact: true }).click();
-  await expect(
-    page.getByRole("heading", { name: "Today", level: 1 }),
-  ).toBeVisible();
+  const heading = page.getByRole("heading", { name: "Today", level: 1 });
+  if (!(await heading.isVisible())) {
+    const openNavigation = page.getByRole("button", {
+      name: "Open navigation",
+    });
+    if (await openNavigation.isVisible()) await openNavigation.click();
+    await page.getByRole("button", { name: "Today", exact: true }).click();
+  }
+  await expect(heading).toBeVisible();
+}
+
+function statusMessage(page: import("@playwright/test").Page, text: string) {
+  return page
+    .getByTestId("app-shell")
+    .getByRole("status")
+    .filter({ hasText: text });
 }
 
 test("shows empty, overdue, and capped workload states", async ({ page }) => {
@@ -33,17 +45,15 @@ test("shows empty, overdue, and capped workload states", async ({ page }) => {
   await openToday(page);
   await expect(page.getByText("1 due and 1 new.")).toBeVisible();
   await expect(page.getByText("New-card intake capped")).toBeVisible();
-  await expect(page.getByRole("status")).toContainText(
-    "2 new cards are deferred",
-  );
+  await expect(statusMessage(page, "2 new cards are deferred")).toBeVisible();
   await expect(page.getByRole("button", { name: "Start study" })).toBeEnabled();
 
   await page.goto("/?today=backlog");
   await openToday(page);
   await expect(page.getByText("Due work exceeds today’s budget")).toBeVisible();
-  await expect(page.getByRole("status")).toContainText(
-    "Every due review remains available.",
-  );
+  await expect(
+    statusMessage(page, "Every due review remains available."),
+  ).toBeVisible();
 });
 
 test("filters by deck and explains a time-budget change", async ({ page }) => {
@@ -53,6 +63,9 @@ test("filters by deck and explains a time-budget change", async ({ page }) => {
 
   await page.getByLabel("Deck").selectOption("travel-deck");
   await expect(page.locator(".queue > .eyebrow")).toHaveText("Travel phrases");
+  await expect(
+    page.locator("header").getByText("Today · Travel phrases"),
+  ).toBeVisible();
 
   await page
     .locator("#main-content")
@@ -66,12 +79,10 @@ test("filters by deck and explains a time-budget change", async ({ page }) => {
 
   await page.getByRole("button", { name: "Today", exact: true }).click();
   await expect(page.getByText("1 due and 1 new.")).toBeVisible();
-  await expect(page.getByRole("status")).toContainText(
-    "2 new cards are deferred",
-  );
-  await expect(page.getByRole("status")).toContainText(
-    "Due reviews were not deferred.",
-  );
+  await expect(statusMessage(page, "2 new cards are deferred")).toBeVisible();
+  await expect(
+    statusMessage(page, "Due reviews were not deferred."),
+  ).toBeVisible();
 });
 
 test("resumes an interrupted queue without duplicating or losing cards", async ({
@@ -115,6 +126,9 @@ test("resumes an interrupted queue without duplicating or losing cards", async (
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Finish session" }).click();
 
+  await expect(page.getByTestId("app-announcement")).toHaveText(
+    "Study queue complete. Returning to Today.",
+  );
   await expect(
     page.getByRole("heading", { name: "Today", level: 1 }),
   ).toBeVisible();

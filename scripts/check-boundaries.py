@@ -71,6 +71,32 @@ REMOVED_GENERATED_BINDINGS = {
     "LibraryExportResultDto.ts",
     "SchedulerDiagnosticsExportDto.ts",
 }
+REMOVED_DESKTOP_COMPONENTS = {
+    "Button.svelte",
+    "Dialog.svelte",
+    "Feedback.svelte",
+    "Field.svelte",
+    "Menu.svelte",
+    "SurfaceCard.svelte",
+    "TextInput.svelte",
+    "Toolbar.svelte",
+}
+REQUIRED_SHADCN_COMPONENTS = {
+    "alert-dialog",
+    "badge",
+    "button",
+    "card",
+    "collapsible",
+    "dialog",
+    "input",
+    "label",
+    "select",
+    "separator",
+    "sheet",
+    "switch",
+    "textarea",
+    "tooltip",
+}
 
 
 def cargo_metadata() -> dict:
@@ -158,6 +184,80 @@ def main() -> int:
                     f"{component_file.relative_to(ROOT)}: visual component "
                     f"contains forbidden dependency {forbidden!r}"
                 )
+
+    for removed_component in REMOVED_DESKTOP_COMPONENTS:
+        removed_path = component_root / removed_component
+        if removed_path.exists():
+            failures.append(
+                f"{removed_path.relative_to(ROOT)}: removed custom UI component exists"
+            )
+
+    shadcn_root = component_root / "ui"
+    missing_shadcn_components = sorted(
+        component
+        for component in REQUIRED_SHADCN_COMPONENTS
+        if not (shadcn_root / component / "index.ts").is_file()
+    )
+    if missing_shadcn_components:
+        failures.append(
+            "apps/desktop/src/lib/components/ui: required shadcn-svelte "
+            f"components are missing: {missing_shadcn_components}"
+        )
+
+    desktop_source_root = ROOT / "apps" / "desktop" / "src"
+    removed_styles = (
+        desktop_source_root / "styles" / "themes.css",
+        desktop_source_root / "styles" / "tokens.css",
+    )
+    for removed_style in removed_styles:
+        if removed_style.exists():
+            failures.append(
+                f"{removed_style.relative_to(ROOT)}: removed custom design token "
+                "stylesheet exists"
+            )
+
+    legacy_import_markers = tuple(
+        f"components/{component}" for component in REMOVED_DESKTOP_COMPONENTS
+    )
+    for frontend_file in desktop_source_root.rglob("*"):
+        if not frontend_file.is_file() or frontend_file.suffix not in {
+            ".css",
+            ".svelte",
+            ".ts",
+        }:
+            continue
+        text = frontend_file.read_text(encoding="utf-8")
+        for legacy_import in legacy_import_markers:
+            if legacy_import in text:
+                failures.append(
+                    f"{frontend_file.relative_to(ROOT)}: imports removed custom UI "
+                    f"component {legacy_import!r}"
+                )
+        if "window.confirm(" in text:
+            failures.append(
+                f"{frontend_file.relative_to(ROOT)}: browser confirmation must use "
+                "the in-app AlertDialog"
+            )
+
+    components_config_path = ROOT / "apps" / "desktop" / "components.json"
+    if not components_config_path.is_file():
+        failures.append("apps/desktop/components.json: shadcn-svelte config is missing")
+    else:
+        components_config = json.loads(
+            components_config_path.read_text(encoding="utf-8")
+        )
+        expected_aliases = {
+            "components": "$lib/components",
+            "utils": "$lib/utils",
+            "ui": "$lib/components/ui",
+            "hooks": "$lib/hooks",
+            "lib": "$lib",
+        }
+        if components_config.get("aliases") != expected_aliases:
+            failures.append(
+                "apps/desktop/components.json: expected standard shadcn-svelte "
+                f"aliases {expected_aliases}"
+            )
 
     package_json = json.loads(
         (ROOT / "apps" / "desktop" / "package.json").read_text(encoding="utf-8")

@@ -3,11 +3,15 @@
   import { SvelteDate } from "svelte/reactivity";
 
   import { api } from "../lib/api";
-  import Button from "../lib/components/Button.svelte";
-  import Dialog from "../lib/components/Dialog.svelte";
-  import Feedback from "../lib/components/Feedback.svelte";
-  import Field from "../lib/components/Field.svelte";
-  import SurfaceCard from "../lib/components/SurfaceCard.svelte";
+  import * as Alert from "$lib/components/ui/alert/index.js";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import * as Card from "$lib/components/ui/card/index.js";
+  import * as Collapsible from "$lib/components/ui/collapsible/index.js";
+  import * as Dialog from "$lib/components/ui/dialog/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
+  import { Separator } from "$lib/components/ui/separator/index.js";
+  import { Switch } from "$lib/components/ui/switch/index.js";
   import type { SchedulerSettingsDto } from "../lib/generated/SchedulerSettingsDto";
   import type { SchedulerPolicyPreviewDto } from "../lib/generated/SchedulerPolicyPreviewDto";
   import type { SchedulingModeDto } from "../lib/generated/SchedulingModeDto";
@@ -54,6 +58,8 @@
   let importConfirmation = $state("");
   let restoreTarget = $state<BackupDto | null>(null);
   let restoreConfirmation = $state("");
+  let deleteDeckDialogOpen = $state(false);
+  let deleteDeckDescription = $state("");
 
   onMount(() => {
     autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
@@ -139,7 +145,14 @@
       deck.note_count > 0
         ? ` Move ${deck.note_count} note${deck.note_count === 1 ? "" : "s"} to the selected destination.`
         : "";
-    if (!window.confirm(`Delete deck “${deck.name}”?${moveMessage}`)) return;
+    deleteDeckDescription = `Delete deck “${deck.name}”?${moveMessage}`;
+    deleteDeckDialogOpen = true;
+  }
+
+  async function confirmDeleteDeck(): Promise<void> {
+    const deck = selectedDeck();
+    if (!deck || deck.is_default) return;
+    deleteDeckDialogOpen = false;
     busy = true;
     notice = "";
     error = "";
@@ -452,7 +465,7 @@
       </p>
     </div>
     <Button
-      variant="primary"
+      variant="default"
       data-primary-action
       disabled={busy || !settings || !policyPreview}
       onclick={save}>Save preferences</Button
@@ -460,31 +473,29 @@
   </header>
 
   {#if error}
-    <Feedback
-      tone="error"
-      title="Scheduling settings could not be updated"
-      compact
-    >
-      <p>{error}</p>
-    </Feedback>
+    <Alert.Root variant="destructive" role="alert">
+      <Alert.Title>Scheduling settings could not be updated</Alert.Title>
+      <Alert.Description>{error}</Alert.Description>
+    </Alert.Root>
   {:else if notice}
-    <Feedback tone="success" title={notice} compact />
+    <Alert.Root role="status">
+      <Alert.Title>{notice}</Alert.Title>
+    </Alert.Root>
   {:else if busy && !settings}
-    <Feedback title="Loading scheduling settings…" compact />
+    <Alert.Root role="status">
+      <Alert.Title>Loading scheduling settings…</Alert.Title>
+    </Alert.Root>
   {/if}
 
-  <SurfaceCard>
+  <Card.Root class="p-6">
     <div class="settings-list" aria-busy={busy}>
-      <Field
-        id="theme"
-        label="Appearance"
-        description="System follows the operating system light or dark preference."
-      >
+      <div class="field">
+        <Label id="theme-label">Appearance</Label>
         <div class="segmented" id="theme" role="group" aria-label="Appearance">
           {#each ["system", "light", "dark"] as ThemeMode[] as mode (mode)}
             <Button
-              variant={theme === mode ? "primary" : "secondary"}
-              size="small"
+              variant={theme === mode ? "default" : "outline"}
+              size="sm"
               aria-pressed={theme === mode}
               onclick={() => onThemeChange(mode)}
             >
@@ -492,13 +503,13 @@
             </Button>
           {/each}
         </div>
-      </Field>
+        <p class="field-description">
+          System follows the operating system light or dark preference.
+        </p>
+      </div>
 
-      <Field
-        id="scheduling-mode"
-        label="Scheduling mode"
-        description="Automatic is recommended. Expert mode exposes manual policy and memory-parameter controls."
-      >
+      <div class="field">
+        <Label id="scheduling-mode-label">Scheduling mode</Label>
         <div
           class="segmented"
           id="scheduling-mode"
@@ -507,8 +518,8 @@
         >
           {#each ["automatic", "expert"] as SchedulingModeDto[] as mode (mode)}
             <Button
-              variant={schedulingMode === mode ? "primary" : "secondary"}
-              size="small"
+              variant={schedulingMode === mode ? "default" : "outline"}
+              size="sm"
               aria-pressed={schedulingMode === mode}
               disabled={busy}
               onclick={() => {
@@ -520,13 +531,14 @@
             </Button>
           {/each}
         </div>
-      </Field>
+        <p class="field-description">
+          Automatic is recommended. Expert mode exposes manual policy and
+          memory-parameter controls.
+        </p>
+      </div>
 
-      <Field
-        id="settings-deck"
-        label="Deck"
-        description="Choose a flat deck to rename or configure. New decks inherit the collection budget."
-      >
+      <div class="field">
+        <Label for="settings-deck">Deck</Label>
         <div class="deck-management">
           <select
             id="settings-deck"
@@ -552,8 +564,8 @@
               />
             </label>
             <Button
-              size="small"
-              variant="secondary"
+              size="sm"
+              variant="outline"
               disabled={busy || !newDeckName.trim()}
               onclick={createDeck}>Create deck</Button
             >
@@ -570,8 +582,8 @@
                 />
               </label>
               <Button
-                size="small"
-                variant="secondary"
+                size="sm"
+                variant="outline"
                 disabled={busy ||
                   !deckName.trim() ||
                   deckName.trim() === selectedDeck()?.name}
@@ -594,8 +606,8 @@
                 </label>
               {/if}
               <Button
-                size="small"
-                variant="danger"
+                size="sm"
+                variant="destructive"
                 disabled={busy ||
                   Boolean(selectedDeck()?.note_count && !deleteDestinationId)}
                 onclick={deleteDeck}>Delete deck</Button
@@ -607,13 +619,14 @@
             {/if}
           {/if}
         </div>
-      </Field>
+        <p class="field-description">
+          Choose a flat deck to rename or configure. New decks inherit the
+          collection budget.
+        </p>
+      </div>
 
-      <Field
-        id="collection-daily-budget"
-        label="Daily study time"
-        description="This collection-wide budget includes reviews and new cards."
-      >
+      <div class="field">
+        <Label id="collection-daily-budget-label">Daily study time</Label>
         <div class="budget-control">
           <div
             class="segmented"
@@ -623,9 +636,9 @@
             {#each [15, 30, 60, 120] as minutes (minutes)}
               <Button
                 variant={collectionBudgetTotal() === minutes
-                  ? "primary"
-                  : "secondary"}
-                size="small"
+                  ? "default"
+                  : "outline"}
+                size="sm"
                 aria-pressed={collectionBudgetTotal() === minutes}
                 disabled={busy}
                 onclick={() => chooseBudget(minutes)}
@@ -635,9 +648,9 @@
             {/each}
             <Button
               variant={[15, 30, 60, 120].includes(collectionBudgetTotal())
-                ? "secondary"
-                : "primary"}
-              size="small"
+                ? "outline"
+                : "default"}
+              size="sm"
               aria-pressed={![15, 30, 60, 120].includes(
                 collectionBudgetTotal(),
               )}
@@ -677,7 +690,10 @@
           </div>
           <span class="value">{formatDuration(collectionBudgetTotal())}</span>
         </div>
-      </Field>
+        <p class="field-description">
+          This collection-wide budget includes reviews and new cards.
+        </p>
+      </div>
 
       <div class="setting-row">
         <div>
@@ -688,12 +704,11 @@
               : "This deck inherits the collection budget."}
           </p>
         </div>
-        <label class="toggle">
-          <input
+        <label class="toggle" for="use-deck-budget">
+          <Switch
             id="use-deck-budget"
-            type="checkbox"
             bind:checked={useDeckBudget}
-            onchange={markPolicyChanged}
+            onCheckedChange={markPolicyChanged}
             disabled={busy}
           />
           <span>{useDeckBudget ? "Deck override" : "Collection budget"}</span>
@@ -701,11 +716,8 @@
       </div>
 
       {#if useDeckBudget}
-        <Field
-          id="deck-daily-budget"
-          label="Deck daily time"
-          description="Minutes for this deck; other decks keep the collection budget."
-        >
+        <div class="field">
+          <Label id="deck-daily-budget-label">Deck daily time</Label>
           <div class="duration-inputs" id="deck-daily-budget">
             <label>
               <span>Hours</span>
@@ -732,14 +744,14 @@
               />
             </label>
           </div>
-        </Field>
+          <p class="field-description">
+            Minutes for this deck; other decks keep the collection budget.
+          </p>
+        </div>
       {/if}
 
-      <Field
-        id="day-boundary"
-        label="Day boundary (minutes after midnight)"
-        description="240 means that a new study day starts at 04:00 local time."
-      >
+      <div class="field">
+        <Label for="day-boundary">Day boundary (minutes after midnight)</Label>
         <input
           id="day-boundary"
           type="number"
@@ -749,75 +761,85 @@
           oninput={markPolicyChanged}
           disabled={busy}
         />
-      </Field>
+        <p class="field-description">
+          240 means that a new study day starts at 04:00 local time.
+        </p>
+      </div>
 
       {#if schedulingMode === "expert"}
-        <details open>
-          <summary>Expert scheduling policy</summary>
-          <div class="advanced">
-            <div class="control-grid">
-              <Field
-                id="target-retention"
-                label="Target retention (basis points)"
-                description="9000 means a 90% target."
-              >
-                <input
-                  id="target-retention"
-                  type="number"
-                  min="7000"
-                  max="9900"
-                  step="10"
-                  bind:value={targetRetention}
-                  oninput={markPolicyChanged}
-                  disabled={busy}
-                />
-              </Field>
-              <Field
-                id="new-cards"
-                label="Maximum new cards per day"
-                description="Use zero to pause unseen cards."
-              >
-                <input
-                  id="new-cards"
-                  type="number"
-                  min="0"
-                  max="10000"
-                  bind:value={newCardsPerDay}
-                  oninput={markPolicyChanged}
-                  disabled={busy}
-                />
-              </Field>
-              <Field id="maximum-interval" label="Maximum interval (days)">
-                <input
-                  id="maximum-interval"
-                  type="number"
-                  min="1"
-                  max="36500"
-                  bind:value={maximumIntervalDays}
-                  oninput={markPolicyChanged}
-                  disabled={busy}
-                />
-              </Field>
-            </div>
+        <Collapsible.Root open>
+          <Collapsible.Trigger
+            class="w-full py-4 text-left text-sm font-semibold"
+          >
+            Expert scheduling policy
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <div class="advanced">
+              <div class="control-grid">
+                <div class="field">
+                  <Label for="target-retention"
+                    >Target retention (basis points)</Label
+                  >
+                  <input
+                    id="target-retention"
+                    type="number"
+                    min="7000"
+                    max="9900"
+                    step="10"
+                    bind:value={targetRetention}
+                    oninput={markPolicyChanged}
+                    disabled={busy}
+                  />
+                  <p class="field-description">9000 means a 90% target.</p>
+                </div>
+                <div class="field">
+                  <Label for="new-cards">Maximum new cards per day</Label>
+                  <input
+                    id="new-cards"
+                    type="number"
+                    min="0"
+                    max="10000"
+                    bind:value={newCardsPerDay}
+                    oninput={markPolicyChanged}
+                    disabled={busy}
+                  />
+                  <p class="field-description">
+                    Use zero to pause unseen cards.
+                  </p>
+                </div>
+                <div class="field">
+                  <Label for="maximum-interval">Maximum interval (days)</Label>
+                  <input
+                    id="maximum-interval"
+                    type="number"
+                    min="1"
+                    max="36500"
+                    bind:value={maximumIntervalDays}
+                    oninput={markPolicyChanged}
+                    disabled={busy}
+                  />
+                </div>
+              </div>
 
-            <div class="scheduler-actions">
-              <Button
-                size="small"
-                disabled={busy || settings?.scheduling_mode !== "expert"}
-                onclick={importParameters}>Import parameters</Button
-              >
-              <Button
-                size="small"
-                disabled={busy || settings?.scheduling_mode !== "expert"}
-                onclick={exportParameters}>Export parameters</Button
-              >
+              <div class="scheduler-actions">
+                <Button
+                  size="sm"
+                  disabled={busy || settings?.scheduling_mode !== "expert"}
+                  onclick={importParameters}>Import parameters</Button
+                >
+                <Button
+                  size="sm"
+                  disabled={busy || settings?.scheduling_mode !== "expert"}
+                  onclick={exportParameters}>Export parameters</Button
+                >
+              </div>
+              <p class="advanced-note">
+                Memory parameters describe recall. The manual policy controls
+                workload. Neither change rewrites prior review events.
+              </p>
             </div>
-            <p class="advanced-note">
-              Memory parameters describe recall. The manual policy controls
-              workload. Neither change rewrites prior review events.
-            </p>
-          </div>
-        </details>
+          </Collapsible.Content>
+        </Collapsible.Root>
       {/if}
 
       <div class="policy-preview" aria-live="polite">
@@ -828,7 +850,7 @@
             hidden when the budget is tight.
           </p>
         </div>
-        <Button size="small" disabled={busy} onclick={previewPolicy}
+        <Button size="sm" disabled={busy} onclick={previewPolicy}
           >Preview policy</Button
         >
         {#if policyPreview}
@@ -855,21 +877,25 @@
             </div>
           </dl>
           {#if policyPreview.backlog_exceeds_budget}
-            <Feedback
-              tone="warning"
-              title="Due work exceeds this budget"
-              compact
-            >
-              <p>Meiki will still show every due review.</p>
-            </Feedback>
+            <Alert.Root role="status" class="bg-muted/40">
+              <Alert.Title>Due work exceeds this budget</Alert.Title>
+              <Alert.Description>
+                Meiki will still show every due review.
+              </Alert.Description>
+            </Alert.Root>
           {/if}
           <pre aria-label="Policy explanation">{policyPreview.explanation}</pre>
         {:else}
-          <Feedback title="Preview required" compact>
-            <p>Preview these settings to enable Save preferences.</p>
-          </Feedback>
+          <Alert.Root role="status">
+            <Alert.Title>Preview required</Alert.Title>
+            <Alert.Description>
+              Preview these settings to enable Save preferences.
+            </Alert.Description>
+          </Alert.Root>
         {/if}
       </div>
+
+      <Separator />
 
       <div class="setting-row">
         <div>
@@ -879,10 +905,9 @@
             start automatically.
           </p>
         </div>
-        <label class="toggle">
-          <input
+        <label class="toggle" for="autoplay-prompt-audio">
+          <Switch
             id="autoplay-prompt-audio"
-            type="checkbox"
             bind:checked={autoplayPromptAudio}
             disabled={busy}
           />
@@ -898,9 +923,9 @@
         <span class="value">On this device</span>
       </div>
     </div>
-  </SurfaceCard>
+  </Card.Root>
 
-  <SurfaceCard>
+  <Card.Root class="p-6">
     <div class="portability">
       <div>
         <span class="eyebrow">Data portability</span>
@@ -912,12 +937,12 @@
         </p>
       </div>
       <div class="scheduler-actions">
-        <Button size="small" disabled={busy} onclick={exportArchive}
+        <Button size="sm" disabled={busy} onclick={exportArchive}
           >Export full collection</Button
         >
         <Button
-          variant="primary"
-          size="small"
+          variant="default"
+          size="sm"
           disabled={busy}
           onclick={chooseArchive}>Preview an import</Button
         >
@@ -939,8 +964,8 @@
                 <small>{formatBytes(backup.byte_size)}</small>
               </span>
               <Button
-                variant="danger"
-                size="small"
+                variant="destructive"
+                size="sm"
                 disabled={busy}
                 onclick={() => {
                   restoreTarget = backup;
@@ -954,92 +979,126 @@
         {/if}
       </div>
     </div>
-  </SurfaceCard>
+  </Card.Root>
 </section>
 
-<Dialog
+<Dialog.Root
   open={Boolean(importPreview)}
-  title="Preview archive import"
-  description="Review the validated contents before importing."
-  onClose={() => {
-    importPreview = null;
-    importConfirmation = "";
+  onOpenChange={(open) => {
+    if (!open) {
+      importPreview = null;
+      importConfirmation = "";
+    }
   }}
 >
-  {#if importPreview}
-    <div class="dialog-stack">
-      <p>{importPreview.summary}</p>
-      <dl class="scheduler-status">
-        <div>
-          <dt>Format</dt>
-          <dd>Version {importPreview.format_version}</dd>
-        </div>
-        <div>
-          <dt>Notes</dt>
-          <dd>{importPreview.notes}</dd>
-        </div>
-        <div>
-          <dt>Cards</dt>
-          <dd>{importPreview.cards}</dd>
-        </div>
-        <div>
-          <dt>Reviews</dt>
-          <dd>{importPreview.review_events}</dd>
-        </div>
-        <div>
-          <dt>Media</dt>
-          <dd>{importPreview.media_objects}</dd>
-        </div>
-        <div>
-          <dt>Media reused</dt>
-          <dd>{importPreview.duplicate_media_objects}</dd>
-        </div>
-      </dl>
-      {#if importPreview.can_import}
-        <label>
-          <strong>Type {importPreview.confirmation} to confirm</strong>
-          <input bind:value={importConfirmation} autocomplete="off" />
-        </label>
-      {/if}
-    </div>
-  {/if}
-  {#snippet actions()}
-    <Button
-      variant="primary"
-      disabled={busy ||
-        !importPreview?.can_import ||
-        importConfirmation !== importPreview?.confirmation}
-      onclick={runImport}>Import archive</Button
-    >
-  {/snippet}
-</Dialog>
+  <Dialog.Content>
+    <Dialog.Header>
+      <Dialog.Title>Preview archive import</Dialog.Title>
+      <Dialog.Description>
+        Review the validated contents before importing.
+      </Dialog.Description>
+    </Dialog.Header>
+    {#if importPreview}
+      <div class="dialog-stack">
+        <p>{importPreview.summary}</p>
+        <dl class="scheduler-status">
+          <div>
+            <dt>Format</dt>
+            <dd>Version {importPreview.format_version}</dd>
+          </div>
+          <div>
+            <dt>Notes</dt>
+            <dd>{importPreview.notes}</dd>
+          </div>
+          <div>
+            <dt>Cards</dt>
+            <dd>{importPreview.cards}</dd>
+          </div>
+          <div>
+            <dt>Reviews</dt>
+            <dd>{importPreview.review_events}</dd>
+          </div>
+          <div>
+            <dt>Media</dt>
+            <dd>{importPreview.media_objects}</dd>
+          </div>
+          <div>
+            <dt>Media reused</dt>
+            <dd>{importPreview.duplicate_media_objects}</dd>
+          </div>
+        </dl>
+        {#if importPreview.can_import}
+          <label>
+            <strong>Type {importPreview.confirmation} to confirm</strong>
+            <input bind:value={importConfirmation} autocomplete="off" />
+          </label>
+        {/if}
+      </div>
+    {/if}
+    <Dialog.Footer>
+      <Button
+        variant="default"
+        disabled={busy ||
+          !importPreview?.can_import ||
+          importConfirmation !== importPreview?.confirmation}
+        onclick={runImport}>Import archive</Button
+      >
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
 
-<Dialog
+<Dialog.Root
   open={Boolean(restoreTarget)}
-  title="Restore rolling backup"
-  description="This replaces the current database after creating a new recovery backup."
-  onClose={() => {
-    restoreTarget = null;
-    restoreConfirmation = "";
+  onOpenChange={(open) => {
+    if (!open) {
+      restoreTarget = null;
+      restoreConfirmation = "";
+    }
   }}
 >
-  {#if restoreTarget}
-    <div class="dialog-stack">
-      <p>{restoreTarget.file_name}</p>
-      <label>
-        <strong>Type the exact filename to confirm</strong>
-        <input bind:value={restoreConfirmation} autocomplete="off" />
-      </label>
-    </div>
-  {/if}
-  {#snippet actions()}
-    <Button
-      variant="danger"
-      disabled={busy || restoreConfirmation !== restoreTarget?.file_name}
-      onclick={restoreBackup}>Restore backup</Button
-    >
-  {/snippet}
-</Dialog>
+  <Dialog.Content>
+    <Dialog.Header>
+      <Dialog.Title>Restore rolling backup</Dialog.Title>
+      <Dialog.Description>
+        This replaces the current database after creating a new recovery backup.
+      </Dialog.Description>
+    </Dialog.Header>
+    {#if restoreTarget}
+      <div class="dialog-stack">
+        <p>{restoreTarget.file_name}</p>
+        <label>
+          <strong>Type the exact filename to confirm</strong>
+          <input bind:value={restoreConfirmation} autocomplete="off" />
+        </label>
+      </div>
+    {/if}
+    <Dialog.Footer>
+      <Button
+        variant="destructive"
+        disabled={busy || restoreConfirmation !== restoreTarget?.file_name}
+        onclick={restoreBackup}>Restore backup</Button
+      >
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
+<AlertDialog.Root bind:open={deleteDeckDialogOpen}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Delete this deck?</AlertDialog.Title>
+      <AlertDialog.Description>
+        {deleteDeckDescription}
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action
+        class="bg-destructive/10 text-destructive hover:bg-destructive/20"
+        onclick={() => void confirmDeleteDeck()}>Delete deck</AlertDialog.Action
+      >
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
 
 <style>
   .settings-screen {
@@ -1047,7 +1106,7 @@
   }
 
   .settings-screen > :global(* + *) {
-    margin-top: var(--space-5);
+    margin-top: 1.25rem;
   }
 
   .settings-list {
@@ -1055,37 +1114,37 @@
   }
 
   .settings-list > :global(*) {
-    padding-block: var(--space-5);
+    padding-block: 1.25rem;
   }
 
   .settings-list > :global(* + *) {
-    border-top: var(--border-width) solid var(--color-border);
+    border-top: 1px solid var(--border);
   }
 
   .segmented,
   .scheduler-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-2);
+    gap: 0.5rem;
   }
 
   .deck-management {
     display: grid;
-    gap: var(--space-3);
+    gap: 0.75rem;
   }
 
   .deck-action-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: var(--space-3);
+    gap: 0.75rem;
     align-items: end;
   }
 
   .deck-action-row label,
   .deck-management > label {
     display: grid;
-    gap: var(--space-1);
-    color: var(--color-text-muted);
+    gap: 0.25rem;
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
     font-weight: 700;
   }
@@ -1093,13 +1152,13 @@
   .control-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-    gap: var(--space-5);
+    gap: 1.25rem;
   }
 
   .budget-control,
   .policy-preview {
     display: grid;
-    gap: var(--space-3);
+    gap: 0.75rem;
   }
 
   .budget-control {
@@ -1110,13 +1169,13 @@
   .duration-inputs {
     display: grid;
     grid-template-columns: repeat(2, minmax(5.5rem, 8rem));
-    gap: var(--space-3);
+    gap: 0.75rem;
   }
 
   .duration-inputs label {
     display: grid;
-    gap: var(--space-1);
-    color: var(--color-text-muted);
+    gap: 0.25rem;
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
     font-weight: 700;
   }
@@ -1126,37 +1185,37 @@
   }
 
   .policy-preview {
-    padding: var(--space-4);
-    border: var(--border-width) solid var(--color-border);
-    border-radius: var(--radius-control);
-    background: var(--color-surface-raised);
+    padding: 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--muted);
   }
 
   .policy-preview p,
   .policy-preview dt {
-    color: var(--color-text);
+    color: var(--foreground);
   }
 
   input:not([type="checkbox"]) {
     width: 100%;
-    min-height: var(--control-height);
-    padding-inline: var(--space-3);
-    border: var(--border-width) solid var(--color-border-strong);
-    border-radius: var(--radius-control);
-    color: var(--color-text);
-    background: var(--color-surface);
+    min-height: 2.75rem;
+    padding-inline: 0.75rem;
+    border: 1px solid var(--input);
+    border-radius: var(--radius-lg);
+    color: var(--foreground);
+    background: var(--card);
     font: inherit;
   }
 
   select {
     width: 100%;
-    min-height: var(--control-height);
-    margin-top: var(--space-2);
-    padding-inline: var(--space-3);
-    border: var(--border-width) solid var(--color-border-strong);
-    border-radius: var(--radius-control);
-    color: var(--color-text);
-    background: var(--color-surface);
+    min-height: 2.75rem;
+    margin-top: 0.5rem;
+    padding-inline: 0.75rem;
+    border: 1px solid var(--input);
+    border-radius: var(--radius-lg);
+    color: var(--foreground);
+    background: var(--card);
     font: inherit;
   }
 
@@ -1164,7 +1223,7 @@
   .backup-list,
   .dialog-stack {
     display: grid;
-    gap: var(--space-4);
+    gap: 1rem;
   }
 
   .portability h2,
@@ -1175,33 +1234,33 @@
   }
 
   .portability h2 {
-    margin-block: var(--space-1) var(--space-2);
-    font-family: var(--font-display);
+    margin-block: 0.25rem 0.5rem;
+    font-family: var(--font-sans);
     font-size: var(--text-xl);
   }
 
   .portability p,
   .backup-list p,
   .backup-row small {
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     font-size: var(--text-sm);
   }
 
   .backup-list {
-    padding-top: var(--space-4);
-    border-top: var(--border-width) solid var(--color-border);
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
   }
 
   .backup-row {
     display: flex;
-    gap: var(--space-4);
+    gap: 1rem;
     align-items: center;
     justify-content: space-between;
   }
 
   .backup-row span {
     display: grid;
-    gap: var(--space-1);
+    gap: 0.25rem;
     min-width: 0;
   }
 
@@ -1211,7 +1270,7 @@
 
   .setting-row {
     display: flex;
-    gap: var(--space-6);
+    gap: 1.5rem;
     align-items: center;
     justify-content: space-between;
   }
@@ -1219,57 +1278,50 @@
   .toggle {
     display: inline-flex;
     flex: 0 0 auto;
-    gap: var(--space-2);
+    gap: 0.5rem;
     align-items: center;
     font-size: var(--text-sm);
     font-weight: 650;
   }
 
-  .toggle input {
-    width: 1.1rem;
-    height: 1.1rem;
-    accent-color: var(--color-accent);
-  }
-
-  strong,
-  summary {
+  strong {
     font-size: var(--text-sm);
   }
 
   p {
-    margin: var(--space-1) 0 0;
-    color: var(--color-text-muted);
+    margin: 0.25rem 0 0;
+    color: var(--muted-foreground);
     font-size: var(--text-sm);
     line-height: 1.5;
   }
 
   .value {
     flex: 0 0 auto;
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     font-size: var(--text-sm);
     font-weight: 650;
   }
 
   .advanced {
     display: grid;
-    gap: var(--space-5);
-    padding-block: var(--space-5) var(--space-2);
+    gap: 1.25rem;
+    padding-block: 1.25rem 0.5rem;
   }
 
   .scheduler-status {
     display: grid;
-    gap: var(--space-3);
+    gap: 0.75rem;
     margin: 0;
   }
 
   .scheduler-status div {
     display: grid;
     grid-template-columns: minmax(6rem, 0.25fr) 1fr;
-    gap: var(--space-4);
+    gap: 1rem;
   }
 
   dt {
-    color: var(--color-text-muted);
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
     font-weight: 700;
   }
@@ -1285,10 +1337,10 @@
   pre {
     max-width: 100%;
     margin: 0;
-    padding: var(--space-3);
+    padding: 0.75rem;
     overflow: auto;
-    border-radius: var(--radius-control);
-    background: var(--color-surface-raised);
+    border-radius: var(--radius-lg);
+    background: var(--muted);
     font-size: var(--text-xs);
     white-space: pre-wrap;
   }

@@ -100,10 +100,10 @@
 
 <style>
   .limited-markdown {
-    padding: var(--space-4);
+    padding: 1rem;
     overflow-wrap: anywhere;
-    border-radius: var(--radius-control);
-    background: var(--color-surface-raised);
+    border-radius: var(--radius-lg);
+    background: var(--muted);
     font-size: var(--text-sm);
     line-height: 1.6;
   }
@@ -117,12 +117,12 @@
   p + ul,
   ul + p,
   ul + ul {
-    margin-top: var(--space-2);
+    margin-top: 0.5rem;
   }
 
   code {
     padding: 0.1em 0.3em;
-    border-radius: var(--radius-xs);
-    background: var(--color-surface-muted);
+    border-radius: var(--radius-sm);
+    background: var(--muted);
   }
 </style>
