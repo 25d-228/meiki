@@ -42,7 +42,7 @@ jobs:
         if: matrix.name == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
       - name: Install locked dependencies
         run: npm ci
       - name: Validate release inputs
@@ -53,6 +53,19 @@ jobs:
           cargo test --workspace
       - name: Build platform bundles
         run: npm run tauri --workspace @meiki/desktop -- build --bundles ${{ matrix.bundles }}
+      - name: Smoke launch Linux package
+        if: matrix.name == 'linux'
+        run: xvfb-run --auto-servernum python scripts/package-launch-smoke.py
+      - name: Smoke launch desktop package
+        if: matrix.name != 'linux'
+        run: python scripts/package-launch-smoke.py
+      - name: Upload package smoke failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meiki-${{ matrix.name }}-smoke-failure
+          path: target/release/bundle
+          if-no-files-found: ignore
       - name: Write artifact checksums
         run: python scripts/hash-artifacts.py
       - uses: actions/upload-artifact@v4

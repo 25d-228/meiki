@@ -29,6 +29,15 @@ jobs:
         run: ./scripts/check
       - name: Verify generated contracts are committed
         run: git diff --exit-code -- apps/desktop/src/lib/generated
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failure-artifacts
+          path: |
+            apps/desktop/test-results
+            apps/desktop/playwright-report
+          if-no-files-found: ignore
 
   platform-smoke:
     strategy:
@@ -56,10 +65,12 @@ jobs:
           npm run bindings
           npm run typecheck
           npm run build
-      - name: Test Rust workspace and generated contracts
+      - name: Test core Rust integration, desktop contracts, and generated contracts
         shell: bash
         run: |
           cargo test --workspace
+          cargo test -p meiki-application --test real_journeys
+          cargo test -p meiki-desktop --lib
           git diff --exit-code -- apps/desktop/src/lib/generated
 
   performance:

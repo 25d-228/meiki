@@ -198,6 +198,49 @@ test("offers UI retries for interrupted command responses", async ({
   ).toBeVisible();
 });
 
+test("replays a pending review request from a restart fixture", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "meiki-active-study-queue",
+      JSON.stringify({
+        version: 2,
+        deckId: "__all_decks__",
+        entries: [
+          {
+            card_id: "due-card",
+            card_content_version: 0,
+            schedule_version: 0,
+          },
+          {
+            card_id: "new-card",
+            card_content_version: 0,
+            schedule_version: 0,
+          },
+        ],
+        position: 0,
+        startedAtMs: 1_700_000_000_000,
+        pendingReview: {
+          review_event_id: "pending-on-restart",
+          card_id: "due-card",
+          card_content_version: 0,
+          schedule_version: 0,
+          raw_response: "行きます",
+          chosen_grade: "good",
+          response_duration_ms: 1_000,
+        },
+      }),
+    );
+  });
+  await page.goto("/?reconcile=second");
+  await page.getByRole("button", { name: "Resume study" }).click();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  expect((await lastRequest(page, "grade_review"))?.args).toMatchObject({
+    request: { review_event_id: "pending-on-restart" },
+  });
+});
+
 test("maps edit and suspend controls while retaining the reveal UI", async ({
   page,
 }) => {

@@ -6,12 +6,12 @@ workflow pass for the tagged commit.
 
 ## Supported matrix
 
-| Boundary                                                       | Required coverage                                                                                                            |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Rust domain, text, scheduler, storage, media, and archive code | Unit, property, fixture, transaction, and integration tests on Linux, macOS, and Windows                                     |
-| Desktop frontend                                               | Strict TypeScript check and production build on Linux, macOS, and Windows                                                    |
-| Browser behavior                                               | Chromium end-to-end suite on Linux, including keyboard, IME, bidi, accessibility, recovery, and the personal release journey |
-| Packages                                                       | Tauri bundle smoke build for Linux, macOS, and Windows from a version tag or manual release run                              |
+| Boundary                                                       | Required coverage                                                                                                                 |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Rust domain, text, scheduler, storage, media, and archive code | Unit, property, fixture, transaction, and integration tests on Linux, macOS, and Windows                                          |
+| Desktop frontend                                               | Strict TypeScript check and production build on Linux, macOS, and Windows                                                         |
+| Browser behavior                                               | Chromium UI-contract suite on Linux, including request mapping, keyboard, IME, bidi, accessibility, responsive, and visual checks |
+| Packages                                                       | Tauri bundle build and executable launch smoke on Linux, macOS, and Windows from a version tag or manual release run              |
 
 Rust 1.85, Node.js 24, `Cargo.lock`, and `package-lock.json` are pinned inputs.
 The package workflow produces SHA-256 sums and GitHub build provenance. Native
@@ -32,11 +32,14 @@ The release journey must work without an account or content network:
 6. Validate and restore it into a clean collection.
 7. Continue review when media is missing, unsupported, or corrupt.
 
-The browser suite covers Japanese IME, Arabic/Persian RTL, Devanagari
-combining text, Latin diacritics, CJK without spaces, mixed direction, mixed
-script and punctuation, and multi-code-point emoji. Storage and archive tests
-cover atomic review commits, compensating undo events, migrations, rolling
-backups, checksum failures, and restore.
+The real `ApplicationService` journeys execute this release path through
+SQLite, text, scheduler, media, backup, and archive production code. The
+browser suite covers UI request mapping and rendering for Japanese IME,
+Arabic/Persian RTL, Devanagari combining text, Latin diacritics, CJK without
+spaces, mixed direction, mixed script and punctuation, and multi-code-point
+emoji. It uses static DTO scenarios and does not reimplement business rules.
+The detailed layer and failure matrix is in
+[test architecture](testing.md).
 
 An open defect blocks release when it can cause data loss, an incorrect or
 duplicated review commit, accidental IME submission, unreadable bidi content,

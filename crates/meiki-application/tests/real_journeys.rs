@@ -483,3 +483,169 @@ fn full_archive_replacement_preserves_history_media_and_continued_study() {
         target_stored.schedule.due_at_ms,
     );
 }
+
+#[test]
+fn missing_and_corrupt_media_are_reported_without_blocking_the_card() {
+    let fixture = authored_collection();
+    let media_path = fixture
+        .service
+        .get_authoring_draft_for_card(&fixture.card_id)
+        .expect("load the ready media fixture")
+        .clozes[0]
+        .media[0]
+        .asset_path
+        .clone()
+        .expect("ready media exposes its local object path");
+
+    fs::write(&media_path, b"corrupt object").expect("corrupt the local object");
+    let corrupt = fixture
+        .service
+        .get_authoring_draft_for_card(&fixture.card_id)
+        .expect("a corrupt object does not block editing");
+    assert_eq!(
+        corrupt.clozes[0].media[0].availability,
+        MediaAvailabilityDto::Corrupt
+    );
+
+    fs::remove_file(&media_path).expect("remove the local object");
+    let missing = fixture
+        .service
+        .get_authoring_draft_for_card(&fixture.card_id)
+        .expect("a missing object does not block editing");
+    assert_eq!(
+        missing.clozes[0].media[0].availability,
+        MediaAvailabilityDto::Missing
+    );
+    assert_eq!(
+        accepted_reveal(&fixture).answer_media[0].availability,
+        MediaAvailabilityDto::Missing
+    );
+}
+
+#[test]
+fn corrupt_archive_and_stale_review_fail_without_partial_state() {
+    let fixture = authored_collection();
+    let request = grade_request(&fixture, "accepted-review", GradeDto::Good);
+    fixture
+        .service
+        .grade_review(&request)
+        .expect("commit the current version");
+    let mut stale = request;
+    stale.review_event_id = "stale-review".into();
+    let stale_error = fixture
+        .service
+        .grade_review(&stale)
+        .expect_err("reject the stale observed schedule");
+    assert!(stale_error.to_string().contains("changed"));
+    assert_eq!(
+        Storage::open(&fixture.collection_path)
+            .expect("reopen after stale request")
+            .review_events(&fixture.card_id)
+            .expect("load history after stale request")
+            .len(),
+        1
+    );
+
+    let before_archive = Storage::open(&fixture.collection_path)
+        .expect("open fixture before corrupt archive")
+        .load_study_card(&fixture.card_id)
+        .expect("load fixture before corrupt archive");
+    let exported = fixture
+        .service
+        .export_archive(&ArchiveExportRequest { now_ms: NOW_MS + 2 })
+        .expect("export before corrupting the fixture");
+    fs::write(&exported.path, b"not a meiki archive").expect("corrupt the archive");
+    fixture
+        .service
+        .preview_archive(&exported.path)
+        .expect_err("reject corrupt archive bytes");
+    let after = Storage::open(&fixture.collection_path)
+        .expect("reopen after corrupt archive")
+        .load_study_card(&fixture.card_id)
+        .expect("load after corrupt archive");
+    assert_eq!(after, before_archive);
+}
+
+#[test]
+fn backup_failure_leaves_the_live_collection_unchanged() {
+    let source = authored_collection();
+    let exported = source
+        .service
+        .export_archive(&ArchiveExportRequest { now_ms: NOW_MS + 3 })
+        .expect("export a valid source archive");
+
+    let target_directory = tempdir().expect("create backup-failure target");
+    let target_path = target_directory.path().join("collection.db");
+    let target_clock = FixedClock::new(NOW_MS);
+    let target_ids = SequentialIds::default();
+    let target = service(&target_path, &target_clock, &target_ids);
+    let survivor = target
+        .create_deck(&CreateDeckRequest {
+            name: "Survives backup failure".into(),
+            now_ms: NOW_MS,
+        })
+        .expect("seed the target collection");
+    fs::write(target_directory.path().join("backups"), b"not a directory")
+        .expect("block the backup directory");
+
+    target
+        .import_archive(&ArchiveImportRequest {
+            path: exported.path,
+            confirmation: "REPLACE".into(),
+        })
+        .expect_err("the required recovery backup must fail closed");
+    assert!(
+        target
+            .list_decks()
+            .expect("reopen the unchanged target")
+            .iter()
+            .any(|deck| deck.id == survivor.id)
+    );
+}
+
+#[test]
+fn media_write_failure_after_backup_does_not_replace_the_database() {
+    let source = authored_collection();
+    let exported = source
+        .service
+        .export_archive(&ArchiveExportRequest { now_ms: NOW_MS + 4 })
+        .expect("export a valid archive with media");
+
+    let target_directory = tempdir().expect("create media-failure target");
+    let target_path = target_directory.path().join("collection.db");
+    let target_clock = FixedClock::new(NOW_MS);
+    let target_ids = SequentialIds::default();
+    let target = service(&target_path, &target_clock, &target_ids);
+    let survivor = target
+        .create_deck(&CreateDeckRequest {
+            name: "Survives media failure".into(),
+            now_ms: NOW_MS,
+        })
+        .expect("seed the target collection");
+    let media_root = target_path.with_extension("media");
+    fs::create_dir_all(&media_root).expect("create target media root");
+    fs::write(media_root.join("objects"), b"not a directory")
+        .expect("inject a bounded object-store write failure");
+
+    target
+        .import_archive(&ArchiveImportRequest {
+            path: exported.path,
+            confirmation: "REPLACE".into(),
+        })
+        .expect_err("media write failure must abort before database replacement");
+    assert_eq!(
+        target
+            .list_backups()
+            .expect("the pre-import recovery backup exists")
+            .len(),
+        1
+    );
+    assert!(
+        target
+            .list_decks()
+            .expect("reopen the unchanged live database")
+            .iter()
+            .any(|deck| deck.id == survivor.id)
+    );
+    assert!(target.get_study_card(&source.card_id).is_err());
+}

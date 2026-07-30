@@ -20,6 +20,8 @@ SQL or scheduling behavior in the UI.
 
 ## Consequences
 
-Contributors need Rust, Node.js, and platform prerequisites for Tauri.
-Browser-level tests use an injected command adapter; Rust integration tests
-cover the real application and SQLite path.
+Contributors need Rust, Node.js, and platform prerequisites for Tauri. Tauri
+macros are one-call adapters over plain Rust command functions. Browser tests
+use static DTO scenarios only; real `ApplicationService` journeys cover
+SQLite, scheduling, text, media, backup, and archive behavior. See the
+[test architecture](../testing.md).

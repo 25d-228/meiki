@@ -369,7 +369,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let collection_path = app.path().app_data_dir()?.join("collection.db");
+            let data_directory = std::env::var_os("MEIKI_DATA_DIR")
+                .map(PathBuf::from)
+                .map_or_else(|| app.path().app_data_dir(), Ok)?;
+            let collection_path = data_directory.join("collection.db");
             app.manage(AppContext { collection_path });
             Ok(())
         })
