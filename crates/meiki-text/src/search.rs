@@ -37,4 +37,37 @@ mod tests {
         assert!(!search_contains("नमस्ते", ""));
         assert_eq!(normalize_for_search("  A\t\nＢ  "), "a b");
     }
+
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    fn release_budget_multiscript_search_fixture() {
+        let values = [
+            "日曜日は図書館に行きます",
+            "أنا أقرأ كتابًا في المكتبة",
+            "मैं पुस्तक पढ़ता हूँ",
+            "Réviser le café",
+            "Meetingは الساعة 三時",
+            "👨‍👩‍👧‍👦 family",
+        ];
+        let records = (0..250_000)
+            .map(|index| format!("{} {index}", values[index % values.len()]))
+            .collect::<Vec<_>>();
+
+        let started = std::time::Instant::now();
+        let matches = records
+            .iter()
+            .filter(|record| search_contains(record, "كتاب"))
+            .count();
+        let elapsed = started.elapsed();
+
+        assert_eq!(matches, 41_667);
+        assert!(
+            elapsed <= std::time::Duration::from_secs(5),
+            "250,000-record multilingual search exceeded 5 s: {elapsed:?}"
+        );
+        eprintln!(
+            "release-budget multiscript_search_250000 elapsed_ms={}",
+            elapsed.as_millis()
+        );
+    }
 }

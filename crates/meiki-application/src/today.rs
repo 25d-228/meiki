@@ -509,4 +509,32 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, ApplicationError::InvalidToday(_)));
     }
+
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    fn release_budget_one_million_card_today_queue() {
+        let candidates = (0..1_000_000)
+            .map(|index| {
+                let repetitions = u32::from(index % 4 != 0);
+                candidate(
+                    &format!("card-{index:07}"),
+                    i64::from(index % 86_400_000),
+                    repetitions,
+                )
+            })
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let plan = plan_today(&candidates, &[], &request(), 20, Some(60));
+        let elapsed = started.elapsed();
+
+        assert_eq!(plan.due_reviews, 750_000);
+        assert!(
+            elapsed <= std::time::Duration::from_secs(15),
+            "one-million-card Today queue exceeded 15 s: {elapsed:?}"
+        );
+        eprintln!(
+            "release-budget today_queue_one_million elapsed_ms={}",
+            elapsed.as_millis()
+        );
+    }
 }

@@ -21,7 +21,6 @@ rust-version = "1.85"
 [workspace.dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 hex = "0.4"
-ico = "0.5"
 infer = "0.19"
 rusqlite = { version = "0.37", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }

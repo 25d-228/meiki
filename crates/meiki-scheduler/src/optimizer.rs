@@ -360,4 +360,41 @@ mod tests {
         assert_eq!(diagnostics.training_reviews, 160);
         assert_eq!(diagnostics.holdout_reviews, 40);
     }
+
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    fn release_budget_multi_year_optimizer_history() {
+        let engine = Fsrs7Engine::new(SchedulerConfig::default()).unwrap();
+        let mut history = Vec::with_capacity(50_000);
+        for review in 0..500 {
+            for card in 0..100 {
+                history.push(ReviewHistoryEntry {
+                    card_id: format!("card-{card:03}"),
+                    reviewed_at_ms: i64::from(review) * 3 * 86_400_000 + i64::from(card),
+                    grade: if (review + card) % 13 == 0 {
+                        Grade::Again
+                    } else {
+                        Grade::Good
+                    },
+                });
+            }
+        }
+
+        let started = std::time::Instant::now();
+        let result = engine.optimize(&history);
+        let elapsed = started.elapsed();
+
+        assert!(matches!(
+            result,
+            OptimizationResult::Adopted { .. } | OptimizationResult::Rejected { .. }
+        ));
+        assert!(
+            elapsed <= std::time::Duration::from_secs(10),
+            "50,000-review optimizer run exceeded 10 s: {elapsed:?}"
+        );
+        eprintln!(
+            "release-budget optimizer_50000_reviews elapsed_ms={}",
+            elapsed.as_millis()
+        );
+    }
 }

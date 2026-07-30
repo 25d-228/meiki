@@ -3,10 +3,16 @@ node_modules/
 /.venv/
 /apps/desktop/dist/
 /apps/desktop/src-tauri/gen/
-/apps/desktop/src-tauri/icons/
+/apps/desktop/src-tauri/icons/*
+!/apps/desktop/src-tauri/icons/32x32.png
+!/apps/desktop/src-tauri/icons/128x128.png
+!/apps/desktop/src-tauri/icons/128x128@2x.png
+!/apps/desktop/src-tauri/icons/icon.icns
+!/apps/desktop/src-tauri/icons/icon.ico
 /apps/desktop/test-results/
 /apps/desktop/playwright-report/
 *.db
+!/crates/meiki-storage/fixtures/released/*.db
 *.db-shm
 *.db-wal
 .DS_Store

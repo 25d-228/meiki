@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+"$project_root/scripts/dev-env" cargo test --release \
+  -p meiki-application \
+  -p meiki-media \
+  -p meiki-scheduler \
+  -p meiki-storage \
+  -p meiki-text \
+  release_budget -- --ignored --nocapture --test-threads=1

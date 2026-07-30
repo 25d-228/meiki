@@ -18,9 +18,11 @@
     "format": "prettier --write . && cargo fmt --all",
     "format:check": "prettier --check . && npm run cargo:format",
     "lint": "eslint . && npm run cargo:lint",
+    "performance": "./scripts/performance",
+    "release:check": "python scripts/check-release.py",
     "test": "npm run cargo:test",
     "typecheck": "npm run check --workspace @meiki/desktop",
-    "verify": "npm run audit && npm run bindings && npm run boundaries && npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test && npm run e2e"
+    "verify": "npm run audit && npm run bindings && npm run boundaries && npm run release:check && npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test && npm run e2e"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
