@@ -84,7 +84,9 @@ budget without documenting the regression and its user impact here.
 `npm run release:check` enforces one version across Cargo, npm, and Tauri,
 contiguous database migrations, the published archive version, bundle
 metadata, icons, and release documentation. v0.1 publishes database schema 7
-and `.meiki` archive version 1. Future releases must keep migration fixtures
+and `.meiki` archive version 1. Current development uses database schema 8 and
+archive version 2 while retaining the released schema-7 migration fixture and
+version-1 archive import coverage. Future releases must keep migration fixtures
 from every released database schema and import fixtures from every published
 archive version.
 

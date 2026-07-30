@@ -28,7 +28,8 @@ const FSRS7_SCHEDULER_MIGRATION: &str = include_str!("../migrations/0004_fsrs7_s
 const STUDY_SESSION_MIGRATION: &str = include_str!("../migrations/0005_study_session.sql");
 const MEDIA_PIPELINE_MIGRATION: &str = include_str!("../migrations/0006_media_pipeline.sql");
 const LIBRARY_MIGRATION: &str = include_str!("../migrations/0007_library.sql");
-const LATEST_SCHEMA_VERSION: u32 = 7;
+const CARD_LIFECYCLE_MIGRATION: &str = include_str!("../migrations/0008_card_lifecycle.sql");
+const LATEST_SCHEMA_VERSION: u32 = 8;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -180,6 +181,9 @@ impl Storage {
         }
         if current < 7 {
             transaction.execute_batch(LIBRARY_MIGRATION)?;
+        }
+        if current < 8 {
+            transaction.execute_batch(CARD_LIFECYCLE_MIGRATION)?;
         }
         transaction.commit()?;
         Ok(())
@@ -384,20 +388,20 @@ impl Storage {
         )?;
         transaction.execute(
             "INSERT OR IGNORE INTO schedule_states(
-                card_id, version, due_at_ms, ideal_due_at_ms,
+                card_id, version, lifecycle, due_at_ms, ideal_due_at_ms,
                 interval_milliseconds, interval_seconds, repetitions,
                 stability_milliseconds, difficulty_millipoints,
                 last_reviewed_at_ms, last_review_event_id
-             ) VALUES (?1, 0, ?2, ?2, 0, 0, 0, 0, 0, NULL, NULL)",
+             ) VALUES (?1, 0, 'unseen', ?2, ?2, 0, 0, 0, 0, 0, NULL, NULL)",
             params![SAMPLE_CARD_ID, now_ms],
         )?;
         transaction.execute(
             "INSERT OR IGNORE INTO schedule_baselines(
-                card_id, version, due_at_ms, ideal_due_at_ms,
+                card_id, version, lifecycle, due_at_ms, ideal_due_at_ms,
                 interval_milliseconds, interval_seconds, repetitions,
                 stability_milliseconds, difficulty_millipoints,
                 last_reviewed_at_ms, last_review_event_id
-             ) VALUES (?1, 0, ?2, ?2, 0, 0, 0, 0, 0, NULL, NULL)",
+             ) VALUES (?1, 0, 'unseen', ?2, ?2, 0, 0, 0, 0, 0, NULL, NULL)",
             params![SAMPLE_CARD_ID, now_ms],
         )?;
         transaction.commit()?;

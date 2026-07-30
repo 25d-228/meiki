@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use meiki_domain::{
-    Annotation, Card, Cloze, Deck, LocalizedText, MediaKind, MediaReference, MediaRole,
-    OptimizerStatus, ScheduleState, SchedulerParameterSet, SchedulerProfile, SegmentContent,
-    SemanticSegment, SourceItem, StudyIntensity, Tag,
+    Annotation, Card, CardLifecycle, Cloze, Deck, LocalizedText, MediaKind, MediaReference,
+    MediaRole, OptimizerStatus, ScheduleState, SchedulerParameterSet, SchedulerProfile,
+    SegmentContent, SemanticSegment, SourceItem, StudyIntensity, Tag,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -2241,6 +2241,7 @@ fn insert_schedule(
         "INSERT INTO {table}(
             card_id,
             version,
+            lifecycle,
             due_at_ms,
             ideal_due_at_ms,
             interval_milliseconds,
@@ -2250,13 +2251,14 @@ fn insert_schedule(
             difficulty_millipoints,
             last_reviewed_at_ms,
             last_review_event_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
     );
     connection.execute(
         &sql,
         params![
             schedule.card_id,
             schedule.version,
+            card_lifecycle_to_database(schedule.lifecycle),
             schedule.due_at_ms,
             schedule.ideal_due_at_ms,
             schedule.interval_milliseconds,
@@ -2278,7 +2280,7 @@ pub(crate) fn load_schedule_row(
 ) -> Result<Option<ScheduleState>, StorageError> {
     let sql = format!(
         "SELECT
-            card_id, version, due_at_ms, ideal_due_at_ms,
+            card_id, version, lifecycle, due_at_ms, ideal_due_at_ms,
             interval_milliseconds, interval_seconds, repetitions,
             stability_milliseconds, difficulty_millipoints,
             last_reviewed_at_ms, last_review_event_id
@@ -2290,18 +2292,42 @@ pub(crate) fn load_schedule_row(
             Ok(ScheduleState {
                 card_id: row.get(0)?,
                 version: row.get(1)?,
-                due_at_ms: row.get(2)?,
-                ideal_due_at_ms: row.get(3)?,
-                interval_milliseconds: row.get(4)?,
-                interval_seconds: row.get(5)?,
-                repetitions: row.get(6)?,
-                stability_milliseconds: row.get(7)?,
-                difficulty_millipoints: row.get(8)?,
-                last_reviewed_at_ms: row.get(9)?,
-                last_review_event_id: row.get(10)?,
+                lifecycle: card_lifecycle_from_database(&row.get::<_, String>(2)?)
+                    .map_err(database_decode_error)?,
+                due_at_ms: row.get(3)?,
+                ideal_due_at_ms: row.get(4)?,
+                interval_milliseconds: row.get(5)?,
+                interval_seconds: row.get(6)?,
+                repetitions: row.get(7)?,
+                stability_milliseconds: row.get(8)?,
+                difficulty_millipoints: row.get(9)?,
+                last_reviewed_at_ms: row.get(10)?,
+                last_review_event_id: row.get(11)?,
             })
         })
         .optional()?)
+}
+
+pub(crate) const fn card_lifecycle_to_database(value: CardLifecycle) -> &'static str {
+    match value {
+        CardLifecycle::Unseen => "unseen",
+        CardLifecycle::Introduced => "introduced",
+    }
+}
+
+pub(crate) fn card_lifecycle_from_database(value: &str) -> Result<CardLifecycle, StorageError> {
+    match value {
+        "unseen" => Ok(CardLifecycle::Unseen),
+        "introduced" => Ok(CardLifecycle::Introduced),
+        _ => Err(StorageError::InvalidStoredValue {
+            field: "card lifecycle",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+fn database_decode_error(error: StorageError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(error))
 }
 
 fn localized_text_columns(

@@ -1,8 +1,8 @@
 use meiki_domain::{
-    Annotation, Card, Cloze, ComparisonResult, Deck, Direction, Grade, LocalizedText,
-    MatchingPolicy, MediaKind, MediaReference, MediaRole, ReviewEvent, ReviewEventKind,
-    ScheduleState, SchedulerParameterSet, SegmentContent, SemanticSegment, SourceItem,
-    StudySettingsOverride, Tag,
+    Annotation, Card, CardLifecycle, Cloze, ComparisonResult, Deck, Direction, Grade,
+    LocalizedText, MatchingPolicy, MediaKind, MediaReference, MediaRole, ReviewEvent,
+    ReviewEventKind, ScheduleState, SchedulerParameterSet, SegmentContent, SemanticSegment,
+    SourceItem, StudySettingsOverride, Tag,
 };
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -19,6 +19,7 @@ fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent
     let stored = storage.load_study_card(SAMPLE_CARD_ID).unwrap();
     let mut next = stored.schedule.clone();
     next.version += 1;
+    next.lifecycle = CardLifecycle::Introduced;
     next.due_at_ms = reviewed_at_ms + 259_200_000;
     next.ideal_due_at_ms = next.due_at_ms;
     next.interval_milliseconds = 259_200_000;
@@ -355,7 +356,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     std::fs::write(&path, RELEASED_V0_1_SCHEMA).unwrap();
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 7);
+    assert_eq!(storage.schema_version().unwrap(), 8);
     assert_eq!(storage.get_deck(DEFAULT_DECK_ID).unwrap().name, "Default");
 }
 
@@ -380,6 +381,7 @@ fn review_append_projection_and_queue_update_are_atomic() {
 
     let committed = storage.commit_review(&event).unwrap();
     assert_eq!(committed.version, 1);
+    assert_eq!(committed.lifecycle, CardLifecycle::Introduced);
     assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
     assert_eq!(storage.review_events(SAMPLE_CARD_ID).unwrap(), vec![event]);
     let queue_updated_at_ms = storage
@@ -408,6 +410,8 @@ fn undo_appends_a_compensating_event_and_restores_the_projection() {
     let initial = storage.load_schedule(SAMPLE_CARD_ID).unwrap();
     let review = sample_event(&storage, "review-1", 10_000);
     let reviewed = storage.commit_review(&review).unwrap();
+    assert_eq!(initial.lifecycle, CardLifecycle::Unseen);
+    assert_eq!(reviewed.lifecycle, CardLifecycle::Introduced);
 
     let undone = storage
         .undo_last_review(SAMPLE_CARD_ID, "review-1", "undo-1", 11_000)
@@ -416,6 +420,7 @@ fn undo_appends_a_compensating_event_and_restores_the_projection() {
     assert_eq!(undone.due_at_ms, initial.due_at_ms);
     assert_eq!(undone.interval_milliseconds, initial.interval_milliseconds);
     assert_eq!(undone.repetitions, initial.repetitions);
+    assert_eq!(undone.lifecycle, CardLifecycle::Unseen);
     assert_eq!(undone.last_reviewed_at_ms, initial.last_reviewed_at_ms);
     assert_eq!(undone.last_review_event_id.as_deref(), Some("undo-1"));
     assert_eq!(storage.load_schedule(SAMPLE_CARD_ID).unwrap(), undone);
@@ -452,6 +457,25 @@ fn undo_appends_a_compensating_event_and_restores_the_projection() {
         storage.undo_last_review(SAMPLE_CARD_ID, "review-1", "undo-2", 12_000),
         Err(StorageError::NothingToUndo(card_id)) if card_id == SAMPLE_CARD_ID
     ));
+}
+
+#[test]
+fn undoing_latest_of_multiple_reviews_keeps_the_card_introduced() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let first = sample_event(&storage, "review-1", 10_000);
+    let after_first = storage.commit_review(&first).unwrap();
+    let second = sample_event(&storage, "review-2", 20_000);
+    let after_second = storage.commit_review(&second).unwrap();
+
+    let restored = storage
+        .undo_last_review(SAMPLE_CARD_ID, "review-2", "undo-2", 21_000)
+        .unwrap();
+
+    assert_eq!(after_first.lifecycle, CardLifecycle::Introduced);
+    assert_eq!(after_second.lifecycle, CardLifecycle::Introduced);
+    assert_eq!(restored.lifecycle, CardLifecycle::Introduced);
+    assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
 }
 
 #[test]
@@ -502,10 +526,12 @@ fn schedule_projection_rebuilds_from_immutable_events() {
 
     let rebuilt = storage.rebuild_schedule_projection(SAMPLE_CARD_ID).unwrap();
     assert_eq!(rebuilt, expected);
+    assert_eq!(rebuilt.lifecycle, CardLifecycle::Introduced);
     assert_eq!(storage.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn version_one_collection_migrates_to_the_core_model() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("v1.db");
@@ -529,7 +555,7 @@ fn version_one_collection_migrates_to_the_core_model() {
                  INSERT INTO schedule_states(
                     card_id, version, due_at_ms, interval_seconds, repetitions,
                     last_review_event_id
-                 ) VALUES ('legacy-card', 1, 2000, 1, 1, 'legacy-review');
+                 ) VALUES ('legacy-card', 2, 3000, 1, 0, 'legacy-lapse');
                  INSERT INTO review_events(
                     id,
                     card_id,
@@ -568,13 +594,52 @@ fn version_one_collection_migrates_to_the_core_model() {
                     2000,
                     1,
                     1
+                 );
+                 INSERT INTO review_events(
+                    id,
+                    card_id,
+                    card_content_version,
+                    raw_response,
+                    normalized_response,
+                    comparison,
+                    suggested_grade,
+                    chosen_grade,
+                    reviewed_at_ms,
+                    scheduler_version,
+                    previous_schedule_version,
+                    previous_due_at_ms,
+                    previous_interval_seconds,
+                    previous_repetitions,
+                    next_schedule_version,
+                    next_due_at_ms,
+                    next_interval_seconds,
+                    next_repetitions
+                 ) VALUES (
+                    'legacy-lapse',
+                    'legacy-card',
+                    0,
+                    '',
+                    '',
+                    'incorrect',
+                    'again',
+                    'again',
+                    2500,
+                    'legacy-scheduler',
+                    1,
+                    2000,
+                    1,
+                    1,
+                    2,
+                    3000,
+                    1,
+                    0
                  );",
             )
             .unwrap();
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 7);
+    assert_eq!(storage.schema_version().unwrap(), 8);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "v1.db.migration-v1-"),
         1
@@ -585,15 +650,35 @@ fn version_one_collection_migrates_to_the_core_model() {
     assert_eq!(restored.source_item.direction, Direction::RightToLeft);
     assert_eq!(restored.cloze.answer, "کتاب");
     let legacy_events = storage.review_events("legacy-card").unwrap();
+    assert_eq!(legacy_events.len(), 2);
     assert_eq!(legacy_events[0].kind, ReviewEventKind::Review);
     assert_eq!(legacy_events[0].response_duration_ms, 0);
     assert!(!legacy_events[0].grade_overridden);
+    assert_eq!(
+        legacy_events[0].previous_schedule.lifecycle,
+        CardLifecycle::Unseen
+    );
+    assert_eq!(
+        legacy_events[0].next_schedule.lifecycle,
+        CardLifecycle::Introduced
+    );
+    assert_eq!(
+        legacy_events[1].previous_schedule.lifecycle,
+        CardLifecycle::Introduced
+    );
+    assert_eq!(
+        legacy_events[1].next_schedule.lifecycle,
+        CardLifecycle::Introduced
+    );
     let baseline = storage
         .rebuildable_baseline_for_test("legacy-card")
         .unwrap();
     assert_eq!(baseline.version, 0);
     assert_eq!(baseline.due_at_ms, 1_000);
+    assert_eq!(baseline.lifecycle, CardLifecycle::Unseen);
     let before = storage.load_schedule("legacy-card").unwrap();
+    assert_eq!(before.repetitions, 0);
+    assert_eq!(before.lifecycle, CardLifecycle::Introduced);
     assert_eq!(
         storage.rebuild_schedule_projection("legacy-card").unwrap(),
         before
@@ -631,7 +716,7 @@ fn version_five_media_migrates_to_roles_and_technical_metadata() {
     drop(connection);
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 7);
+    assert_eq!(storage.schema_version().unwrap(), 8);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "legacy-media.db.migration-v5-"),
         5
@@ -730,6 +815,7 @@ fn portable_history_restore_preserves_events_and_projection() {
         .unwrap();
 
     assert_eq!(target.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
+    assert_eq!(expected.lifecycle, CardLifecycle::Introduced);
     assert_eq!(target.review_events(SAMPLE_CARD_ID).unwrap(), events);
 }
 
@@ -851,6 +937,7 @@ fn multilingual_aggregate_round_trips_and_cloze_ids_survive_surrounding_edits() 
         let schedule = ScheduleState {
             card_id: card.id.clone(),
             version: 0,
+            lifecycle: CardLifecycle::Unseen,
             due_at_ms: 1_000,
             ideal_due_at_ms: 1_000,
             interval_milliseconds: 0,

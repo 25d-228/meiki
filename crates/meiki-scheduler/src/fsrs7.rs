@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use meiki_domain::{Grade, ScheduleState};
+use meiki_domain::{CardLifecycle, Grade, ScheduleState};
 
 use crate::{
     ENGINE_VERSION, OptimizationResult, ReviewHistoryEntry, ScheduleDecision, SchedulerEngine,
@@ -271,6 +271,7 @@ impl Fsrs7Engine {
         ScheduleState {
             card_id: current.card_id.clone(),
             version: current.version.saturating_add(1),
+            lifecycle: CardLifecycle::Introduced,
             due_at_ms: ideal_due_at_ms,
             ideal_due_at_ms,
             interval_milliseconds,
@@ -297,6 +298,7 @@ impl SchedulerEngine for Fsrs7Engine {
         ScheduleState {
             card_id: card_id.to_owned(),
             version: 0,
+            lifecycle: CardLifecycle::Unseen,
             due_at_ms: created_at_ms,
             ideal_due_at_ms: created_at_ms,
             interval_milliseconds: 0,
@@ -351,7 +353,7 @@ impl SchedulerEngine for Fsrs7Engine {
 
     fn serialize_state(&self, state: &ScheduleState) -> String {
         format!(
-            "fsrs-7|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "fsrs-7|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             encode_text(&state.card_id),
             state.version,
             state.due_at_ms,
@@ -367,20 +369,44 @@ impl SchedulerEngine for Fsrs7Engine {
             state
                 .last_review_event_id
                 .as_deref()
-                .map_or_else(|| "-".to_owned(), encode_text)
+                .map_or_else(|| "-".to_owned(), encode_text),
+            match state.lifecycle {
+                CardLifecycle::Unseen => "unseen",
+                CardLifecycle::Introduced => "introduced",
+            }
         )
     }
 
     fn deserialize_state(&self, serialized: &str) -> Result<ScheduleState, SchedulerError> {
         let fields = serialized.split('|').collect::<Vec<_>>();
-        if fields.len() != 12 || fields[0] != ENGINE_VERSION {
+        if !matches!(fields.len(), 12 | 13) || fields[0] != ENGINE_VERSION {
             return Err(SchedulerError::InvalidSerialization(
                 "state version or field count is invalid",
             ));
         }
+        let lifecycle = if let Some(lifecycle) = fields.get(12) {
+            match *lifecycle {
+                "unseen" => CardLifecycle::Unseen,
+                "introduced" => CardLifecycle::Introduced,
+                _ => {
+                    return Err(SchedulerError::InvalidSerialization(
+                        "card lifecycle is invalid",
+                    ));
+                }
+            }
+        } else if parse_field::<u32>(fields[7])? > 0
+            || parse_field::<u64>(fields[8])? > 0
+            || parse_field::<u32>(fields[9])? > 0
+            || fields[10] != "-"
+        {
+            CardLifecycle::Introduced
+        } else {
+            CardLifecycle::Unseen
+        };
         let state = ScheduleState {
             card_id: decode_text(fields[1])?,
             version: parse_field(fields[2])?,
+            lifecycle,
             due_at_ms: parse_field(fields[3])?,
             ideal_due_at_ms: parse_field(fields[4])?,
             interval_milliseconds: parse_field(fields[5])?,
@@ -592,7 +618,7 @@ fn validate_parameters(parameters: &[f64; PARAMETER_COUNT]) -> Result<(), Schedu
 
 #[cfg(test)]
 mod tests {
-    use meiki_domain::Grade;
+    use meiki_domain::{CardLifecycle, Grade};
 
     use crate::{SchedulerEngine, SchedulerError};
 
@@ -697,6 +723,7 @@ mod tests {
             Fsrs7Engine::memory_from_schedule(&meiki_domain::ScheduleState {
                 card_id: "card-1".to_owned(),
                 version: 0,
+                lifecycle: CardLifecycle::Unseen,
                 due_at_ms: 0,
                 ideal_due_at_ms: 0,
                 interval_milliseconds: 0,
@@ -737,10 +764,41 @@ mod tests {
                 .unwrap(),
             unicode
         );
+        let current = engine.serialize_state(&unicode);
+        let legacy = current
+            .rsplit_once('|')
+            .expect("serialized lifecycle suffix")
+            .0;
+        assert_eq!(engine.deserialize_state(legacy).unwrap(), unicode);
         assert_eq!(
             engine.review(&initial, Grade::Good, 2_000).unwrap(),
             engine.review(&initial, Grade::Good, 2_000).unwrap()
         );
+    }
+
+    #[test]
+    fn first_review_and_lapse_keep_lifecycle_independent_from_repetitions() {
+        let engine = Fsrs7Engine::new(SchedulerConfig::default()).unwrap();
+        let initial = engine.initial_schedule("card-1", 1_000);
+        assert_eq!(initial.lifecycle, CardLifecycle::Unseen);
+
+        let first_again = engine
+            .review(&initial, Grade::Again, 2_000)
+            .unwrap()
+            .next_state;
+        assert_eq!(first_again.repetitions, 0);
+        assert_eq!(first_again.lifecycle, CardLifecycle::Introduced);
+
+        let mature = engine
+            .review(&initial, Grade::Good, 2_000)
+            .unwrap()
+            .next_state;
+        let lapsed = engine
+            .review(&mature, Grade::Again, mature.due_at_ms)
+            .unwrap()
+            .next_state;
+        assert_eq!(lapsed.repetitions, 0);
+        assert_eq!(lapsed.lifecycle, CardLifecycle::Introduced);
     }
 
     #[test]

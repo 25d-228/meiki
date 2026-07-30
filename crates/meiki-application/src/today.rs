@@ -1,4 +1,4 @@
-use meiki_domain::{ReviewEvent, StudySettings, StudySettingsOverride};
+use meiki_domain::{CardLifecycle, ReviewEvent, StudySettings, StudySettingsOverride};
 use meiki_storage::{DeckRepository, SchedulerProfileRepository};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -61,7 +61,7 @@ struct QueueCandidate {
     deck_id: String,
     due_at_ms: i64,
     ideal_due_at_ms: i64,
-    repetitions: u32,
+    lifecycle: CardLifecycle,
     created_at_ms: i64,
 }
 
@@ -106,7 +106,7 @@ impl ApplicationService {
                 deck_id: stored.source_item.deck_id,
                 due_at_ms: stored.schedule.due_at_ms,
                 ideal_due_at_ms: stored.schedule.ideal_due_at_ms,
-                repetitions: stored.schedule.repetitions,
+                lifecycle: stored.schedule.lifecycle,
                 created_at_ms: stored.card.created_at_ms,
             })
             .collect::<Vec<_>>();
@@ -136,7 +136,7 @@ impl ApplicationService {
             new_cards: desktop_count(
                 plan.cards
                     .iter()
-                    .filter(|card| card.repetitions == 0)
+                    .filter(|card| card.lifecycle == CardLifecycle::Unseen)
                     .count(),
                 "new card count",
             )?,
@@ -159,8 +159,9 @@ impl ApplicationService {
                         deck_id: card.deck_id,
                         due_at: timestamp_string(card.due_at_ms)?,
                         ideal_due_at: timestamp_string(card.ideal_due_at_ms)?,
-                        overdue: card.repetitions > 0 && card.due_at_ms < request.day_start_ms,
-                        is_new: card.repetitions == 0,
+                        overdue: card.lifecycle == CardLifecycle::Introduced
+                            && card.due_at_ms < request.day_start_ms,
+                        is_new: card.lifecycle == CardLifecycle::Unseen,
                     })
                 })
                 .collect::<Result<Vec<_>, ApplicationError>>()?,
@@ -196,13 +197,15 @@ fn plan_today(
         .filter(|event| {
             event.reviewed_at_ms >= request.day_start_ms
                 && event.reviewed_at_ms < request.day_end_ms
-                && event.previous_schedule.repetitions == 0
+                && event.previous_schedule.lifecycle == CardLifecycle::Unseen
         })
         .count();
 
     let mut due = candidates
         .iter()
-        .filter(|card| card.repetitions > 0 && card.due_at_ms < request.day_end_ms)
+        .filter(|card| {
+            card.lifecycle == CardLifecycle::Introduced && card.due_at_ms < request.day_end_ms
+        })
         .cloned()
         .collect::<Vec<_>>();
     due.sort_by(|left, right| {
@@ -217,7 +220,7 @@ fn plan_today(
 
     let mut new = candidates
         .iter()
-        .filter(|card| card.repetitions == 0)
+        .filter(|card| card.lifecycle == CardLifecycle::Unseen)
         .cloned()
         .collect::<Vec<_>>();
     new.sort_by(|left, right| {
@@ -255,7 +258,10 @@ fn plan_today(
         .collect::<std::collections::HashSet<_>>();
     let next_due_at_ms = candidates
         .iter()
-        .filter(|card| card.repetitions > 0 && !queued_ids.contains(card.card_id.as_str()))
+        .filter(|card| {
+            card.lifecycle == CardLifecycle::Introduced
+                && !queued_ids.contains(card.card_id.as_str())
+        })
         .map(|card| card.due_at_ms)
         .min();
 
@@ -300,19 +306,19 @@ fn desktop_count(value: usize, field: &'static str) -> Result<u32, ApplicationEr
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use meiki_domain::{ComparisonResult, Grade, ReviewEventKind, ScheduleState};
+    use meiki_domain::{CardLifecycle, ComparisonResult, Grade, ReviewEventKind, ScheduleState};
     use meiki_storage::{SAMPLE_CARD_ID, Storage};
     use tempfile::tempdir;
 
     use super::{ApplicationError, ApplicationService, QueueCandidate, TodayRequest, plan_today};
 
-    fn candidate(id: &str, due_at_ms: i64, repetitions: u32) -> QueueCandidate {
+    fn candidate(id: &str, due_at_ms: i64, lifecycle: CardLifecycle) -> QueueCandidate {
         QueueCandidate {
             card_id: id.to_owned(),
             deck_id: "deck".to_owned(),
             due_at_ms,
             ideal_due_at_ms: due_at_ms,
-            repetitions,
+            lifecycle,
             created_at_ms: due_at_ms,
         }
     }
@@ -326,6 +332,11 @@ mod tests {
         let previous = ScheduleState {
             card_id: id.to_owned(),
             version: 0,
+            lifecycle: if previous_repetitions == 0 {
+                CardLifecycle::Unseen
+            } else {
+                CardLifecycle::Introduced
+            },
             due_at_ms: reviewed_at_ms,
             ideal_due_at_ms: reviewed_at_ms,
             interval_milliseconds: 0,
@@ -338,6 +349,7 @@ mod tests {
         };
         let mut next = previous.clone();
         next.version = 1;
+        next.lifecycle = CardLifecycle::Introduced;
         next.repetitions += 1;
         next.last_review_event_id = Some(format!("review-{id}"));
         meiki_domain::ReviewEvent {
@@ -375,10 +387,10 @@ mod tests {
     fn queue_is_deterministic_and_never_defers_due_reviews_for_budget() {
         let plan = plan_today(
             &[
-                candidate("new-b", 2, 0),
-                candidate("due-b", 90_000, 3),
-                candidate("due-a", -1, 2),
-                candidate("new-a", 1, 0),
+                candidate("new-b", 2, CardLifecycle::Unseen),
+                candidate("due-b", 90_000, CardLifecycle::Introduced),
+                candidate("due-a", -1, CardLifecycle::Introduced),
+                candidate("new-a", 1, CardLifecycle::Unseen),
             ],
             &[],
             &request(),
@@ -401,17 +413,20 @@ mod tests {
     #[test]
     fn daily_limit_history_and_time_budget_cap_only_new_intake() {
         let request = request();
+        let mut lapsed = review("lapsed", 60_000, 0, 0);
+        lapsed.previous_schedule.lifecycle = CardLifecycle::Introduced;
         let history = vec![
             review("studied-new", 50_000, 10_000, 0),
+            lapsed,
             review("reviewed", -1, 30_000, 2),
             review("outlier", -2, 900_000, 2),
         ];
         let plan = plan_today(
             &[
-                candidate("due", 99_000, 2),
-                candidate("new-a", 1, 0),
-                candidate("new-b", 2, 0),
-                candidate("new-c", 3, 0),
+                candidate("due", 99_000, CardLifecycle::Introduced),
+                candidate("new-a", 1, CardLifecycle::Unseen),
+                candidate("new-b", 2, CardLifecycle::Unseen),
+                candidate("new-c", 3, CardLifecycle::Unseen),
             ],
             &history,
             &request,
@@ -435,7 +450,7 @@ mod tests {
     #[test]
     fn empty_queue_reports_the_next_future_due_timestamp() {
         let plan = plan_today(
-            &[candidate("later", 90_000_000, 2)],
+            &[candidate("later", 90_000_000, CardLifecycle::Introduced)],
             &[],
             &request(),
             20,
@@ -448,7 +463,11 @@ mod tests {
     #[test]
     fn queue_includes_reviews_due_later_in_the_local_day() {
         let plan = plan_today(
-            &[candidate("later-today", 1_000_000, 2)],
+            &[candidate(
+                "later-today",
+                1_000_000,
+                CardLifecycle::Introduced,
+            )],
             &[],
             &request(),
             20,
@@ -456,6 +475,26 @@ mod tests {
         );
         assert_eq!(plan.due_reviews, 1);
         assert_eq!(plan.cards[0].card_id, "later-today");
+    }
+
+    #[test]
+    fn lapsed_introduced_card_is_due_and_never_consumes_new_quota() {
+        let plan = plan_today(
+            &[
+                candidate("lapsed", 50_000, CardLifecycle::Introduced),
+                candidate("unseen", 1, CardLifecycle::Unseen),
+            ],
+            &[],
+            &request(),
+            0,
+            None,
+        );
+
+        assert_eq!(plan.due_reviews, 1);
+        assert_eq!(plan.deferred_new_cards, 1);
+        assert_eq!(plan.cards.len(), 1);
+        assert_eq!(plan.cards[0].card_id, "lapsed");
+        assert_eq!(plan.cards[0].lifecycle, CardLifecycle::Introduced);
     }
 
     #[test]
@@ -515,11 +554,15 @@ mod tests {
     fn release_budget_one_million_card_today_queue() {
         let candidates = (0..1_000_000)
             .map(|index| {
-                let repetitions = u32::from(index % 4 != 0);
+                let lifecycle = if index % 4 == 0 {
+                    CardLifecycle::Unseen
+                } else {
+                    CardLifecycle::Introduced
+                };
                 candidate(
                     &format!("card-{index:07}"),
                     i64::from(index % 86_400_000),
-                    repetitions,
+                    lifecycle,
                 )
             })
             .collect::<Vec<_>>();

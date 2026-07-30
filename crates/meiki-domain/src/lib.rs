@@ -273,10 +273,25 @@ pub enum ReviewEventKind {
     Undo,
 }
 
+/// Whether a card has ever been introduced by an active graded review.
+///
+/// This lifecycle is independent from scheduler memory and success counters:
+/// a lapse never makes an introduced card unseen. Compensating the first and
+/// only active review restores the unseen baseline.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CardLifecycle {
+    #[default]
+    Unseen,
+    Introduced,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ScheduleState {
     pub card_id: String,
     pub version: u64,
+    #[serde(default)]
+    pub lifecycle: CardLifecycle,
     pub due_at_ms: i64,
     pub ideal_due_at_ms: i64,
     pub interval_milliseconds: u64,

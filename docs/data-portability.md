@@ -1,6 +1,6 @@
 # Data portability
 
-## `.meiki` archive version 1
+## `.meiki` archive version 2
 
 A `.meiki` file is a ZIP container with these exact entries:
 
@@ -18,9 +18,14 @@ oversized data, invalid relationships, inconsistent review projections,
 non-canonical checksums, and corrupt media. Archive paths are never used as
 filesystem extraction paths.
 
-Version 1 is a published schema. Its Rust reader and round-trip fixtures stay
-in the test suite; future writers can advance independently while readers
-retain an explicit version-1 import path.
+Version 2 records each card's explicit `unseen` or `introduced` lifecycle in
+the baseline, current projection, and immutable event snapshots. Lifecycle is
+independent from the scheduler's resettable repetition counter.
+
+Version 1 is the published v0.1 schema. Its import path deterministically
+derives lifecycle from immutable review history and initialized memory fields
+before validating the projection chain. Version-1 fixtures stay in the test
+suite while the writer emits version 2.
 
 ## Export and import behavior
 
