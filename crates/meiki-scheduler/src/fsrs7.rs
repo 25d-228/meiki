@@ -384,8 +384,8 @@ impl SchedulerEngine for Fsrs7Engine {
                 "state version or field count is invalid",
             ));
         }
-        let lifecycle = if fields.len() == 13 {
-            match fields[12] {
+        let lifecycle = if let Some(lifecycle) = fields.get(12) {
+            match *lifecycle {
                 "unseen" => CardLifecycle::Unseen,
                 "introduced" => CardLifecycle::Introduced,
                 _ => {
