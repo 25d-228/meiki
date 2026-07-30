@@ -11,7 +11,61 @@ async function openStudy(page: Page, url: string): Promise<void> {
   await page.getByRole("button", { name: "Study", exact: true }).click();
 }
 
-test("checks, grades, and restores the walking-skeleton card", async ({
+async function seedPendingReview(page: Page, eventId: string): Promise<void> {
+  await page.evaluate((reviewEventId) => {
+    const key = "meiki-active-study-queue";
+    const queue = JSON.parse(localStorage.getItem(key) ?? "null") as {
+      entries: Array<{
+        card_id: string;
+        card_content_version: number;
+        schedule_version: number;
+      }>;
+      position: number;
+      pendingReview: unknown;
+    };
+    const current = queue.entries[queue.position];
+    queue.pendingReview = {
+      review_event_id: reviewEventId,
+      card_id: current.card_id,
+      card_content_version: current.card_content_version,
+      schedule_version: current.schedule_version,
+      raw_response: "行きます",
+      chosen_grade: "good",
+      response_duration_ms: 1_000,
+    };
+    localStorage.setItem(key, JSON.stringify(queue));
+  }, eventId);
+}
+
+async function invokePendingReview(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const queue = JSON.parse(
+      localStorage.getItem("meiki-active-study-queue") ?? "null",
+    ) as { pendingReview: unknown };
+    await window.__MEIKI_TEST_INVOKE__?.("grade_review", {
+      request: queue.pendingReview,
+    });
+  });
+}
+
+async function expectOneReviewAndNextCard(page: Page): Promise<void> {
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByText("1 card remaining")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          Object.keys(
+            JSON.parse(
+              localStorage.getItem("meiki-e2e-review-events") ?? "{}",
+            ) as Record<string, unknown>,
+          ).length,
+      ),
+    )
+    .toBe(1);
+}
+
+test("checks, grades, and resumes at the next eligible card", async ({
   page,
 }) => {
   await openStudy(page, "/");
@@ -29,7 +83,7 @@ test("checks, grades, and restores the walking-skeleton card", async ({
 
   await page.reload();
   await page.getByRole("button", { name: "Study", exact: true }).click();
-  await expect(page.getByText("1 review saved")).toBeVisible();
+  await expectOneReviewAndNextCard(page);
 });
 
 test("plays prompt and answer audio, reveals an image, and tolerates missing media", async ({
@@ -151,7 +205,14 @@ test("completes and undoes a review with keyboard-only controls", async ({
 
   await page.keyboard.press("ControlOrMeta+z");
   await expect(page.getByText("Last review undone.")).toBeVisible();
-  await expect(page.getByText("0 reviews saved")).toBeVisible();
+  await expect(page.getByText("2 cards remaining")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        JSON.parse(localStorage.getItem("meiki-e2e-state") ?? "{}")
+          .completedReviews,
+    ),
+  ).toBe(0);
   await expect(page.getByLabel("Your answer")).toBeFocused();
 });
 
@@ -207,4 +268,88 @@ test("edits and suspends the active card without losing the reveal", async ({
   await expect(
     page.getByRole("heading", { name: "Card suspended" }),
   ).toBeVisible();
+});
+
+test("recovers a persisted review command before it was sent", async ({
+  page,
+}) => {
+  await openStudy(page, "/?fixture=cjk");
+  await seedPendingReview(page, "crash-before-send");
+
+  await page.reload();
+  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await expectOneReviewAndNextCard(page);
+});
+
+test("recovers after send but before the review commit", async ({ page }) => {
+  await openStudy(page, "/?fixture=cjk&failure=grade");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByText("The review commit was interrupted."),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        JSON.parse(localStorage.getItem("meiki-active-study-queue") ?? "{}")
+          .pendingReview?.review_event_id,
+    ),
+  ).toBeTruthy();
+
+  await page.goto("/?fixture=cjk");
+  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await expectOneReviewAndNextCard(page);
+});
+
+test("recovers after commit but before the response", async ({ page }) => {
+  await openStudy(page, "/?fixture=cjk&failure=grade-response");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByText("The review response was interrupted."),
+  ).toBeVisible();
+
+  await page.reload();
+  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await expectOneReviewAndNextCard(page);
+});
+
+test("recovers after a response but before local queue advancement", async ({
+  page,
+}) => {
+  await openStudy(page, "/?fixture=cjk");
+  await seedPendingReview(page, "crash-after-response");
+  await invokePendingReview(page);
+  expect(
+    await page.evaluate(
+      () =>
+        JSON.parse(localStorage.getItem("meiki-active-study-queue") ?? "{}")
+          .position,
+    ),
+  ).toBe(0);
+
+  await page.reload();
+  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await expectOneReviewAndNextCard(page);
+});
+
+test("recovers after local advancement but before the next render", async ({
+  page,
+}) => {
+  await openStudy(page, "/?fixture=cjk");
+  await seedPendingReview(page, "crash-after-advance");
+  await invokePendingReview(page);
+  await page.evaluate(() => {
+    const key = "meiki-active-study-queue";
+    const queue = JSON.parse(localStorage.getItem(key) ?? "{}");
+    queue.position += 1;
+    queue.pendingReview = null;
+    localStorage.setItem(key, JSON.stringify(queue));
+  });
+
+  await page.reload();
+  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await expectOneReviewAndNextCard(page);
 });

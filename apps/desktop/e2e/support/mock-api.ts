@@ -566,6 +566,10 @@ export async function installMockApi(page: Page): Promise<void> {
         ) => ({
           card_id: cardId,
           deck_id: request.deck_id,
+          card_content_version: 0,
+          schedule_version: cardId.startsWith("new-card")
+            ? 0
+            : state.scheduleVersion,
           due_at: overdue
             ? "2026-07-28T09:00:00+00:00"
             : "2026-07-30T09:00:00+00:00",
@@ -649,6 +653,41 @@ export async function installMockApi(page: Page): Promise<void> {
           queue: [...due, ...newCards],
         };
       }
+      if (command === "reconcile_study_queue") {
+        const request = (
+          args as {
+            request: {
+              entries: Array<{
+                card_id: string;
+                card_content_version: number;
+                schedule_version: number;
+              }>;
+            };
+          }
+        ).request;
+        const knownCards = new Set([
+          "overdue-card",
+          "due-card",
+          "new-card",
+          "new-card-2",
+          "new-card-3",
+        ]);
+        const seen = new Set<string>();
+        return request.entries.filter((entry) => {
+          if (seen.has(entry.card_id) || !knownCards.has(entry.card_id)) {
+            return false;
+          }
+          seen.add(entry.card_id);
+          const current = entry.card_id.startsWith("new-card")
+            ? initialState
+            : state;
+          return (
+            entry.card_content_version === 0 &&
+            entry.schedule_version === current.scheduleVersion &&
+            !current.suspended
+          );
+        });
+      }
       if (command === "initialize_collection" || command === "get_study_card") {
         if (fixtureName === "error") {
           throw new Error("The local collection is temporarily unavailable.");
@@ -660,16 +699,17 @@ export async function installMockApi(page: Page): Promise<void> {
           command === "get_study_card"
             ? (args as { cardId: string }).cardId
             : "sample-card";
+        const cardState = cardId.startsWith("new-card") ? initialState : state;
         return {
           card_id: cardId,
           card_content_version: 0,
-          schedule_version: state.scheduleVersion,
+          schedule_version: cardState.scheduleVersion,
           prompt: promptForCard(cardId, fixture),
           language_tag: fixture.languageTag,
           direction: fixture.direction,
-          due_at: state.dueAt,
-          completed_reviews: state.completedReviews,
-          suspended: state.suspended ?? false,
+          due_at: cardState.dueAt,
+          completed_reviews: cardState.completedReviews,
+          suspended: cardState.suspended ?? false,
           hint: null,
           prompt_media: requestedMedia
             ? [
@@ -741,6 +781,42 @@ export async function installMockApi(page: Page): Promise<void> {
         };
       }
       if (command === "grade_review") {
+        const request = (
+          args as {
+            request: {
+              review_event_id: string;
+              card_id: string;
+              card_content_version: number;
+              schedule_version: number;
+              raw_response: string;
+              chosen_grade: string;
+              response_duration_ms: number;
+            };
+          }
+        ).request;
+        const storedEvents = JSON.parse(
+          localStorage.getItem("meiki-e2e-review-events") ?? "{}",
+        ) as Record<
+          string,
+          {
+            request: typeof request;
+            result: {
+              review_event_id: string;
+              schedule_version: number;
+              due_at: string;
+              interval_seconds: number;
+            };
+          }
+        >;
+        const existing = storedEvents[request.review_event_id];
+        if (existing) {
+          if (JSON.stringify(existing.request) !== JSON.stringify(request)) {
+            throw new Error(
+              "The review command conflicts with stored history.",
+            );
+          }
+          return existing.result;
+        }
         if (
           new URLSearchParams(location.search).get("failure") === "grade" &&
           !failedGrade
@@ -752,8 +828,6 @@ export async function installMockApi(page: Page): Promise<void> {
           "meiki-e2e-last-grade-request",
           JSON.stringify((args as { request: unknown }).request),
         );
-        const request = (args as { request: { review_event_id: string } })
-          .request;
         const nextState = {
           scheduleVersion: state.scheduleVersion + 1,
           completedReviews: state.completedReviews + 1,
@@ -761,12 +835,29 @@ export async function installMockApi(page: Page): Promise<void> {
           suspended: false,
         };
         localStorage.setItem("meiki-e2e-state", JSON.stringify(nextState));
-        return {
+        const gradeResult = {
           review_event_id: request.review_event_id,
           schedule_version: nextState.scheduleVersion,
           due_at: nextState.dueAt,
           interval_seconds: 259200,
         };
+        storedEvents[request.review_event_id] = {
+          request,
+          result: gradeResult,
+        };
+        localStorage.setItem(
+          "meiki-e2e-review-events",
+          JSON.stringify(storedEvents),
+        );
+        if (
+          new URLSearchParams(location.search).get("failure") ===
+            "grade-response" &&
+          localStorage.getItem("meiki-e2e-lost-grade-response") !== "true"
+        ) {
+          localStorage.setItem("meiki-e2e-lost-grade-response", "true");
+          throw new Error("The review response was interrupted.");
+        }
+        return gradeResult;
       }
       if (command === "suspend_card") {
         const request = (args as { request: { card_id: string } }).request;

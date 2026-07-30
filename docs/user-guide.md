@@ -19,6 +19,9 @@ matching policy.
 
 Open **Today** and choose **Start study**. Type the missing text and press
 Enter. After the answer is revealed, Enter accepts the suggested grade.
+Scheduled reviews appear only when their exact due time has arrived. The local
+day boundary controls daily limits; it does not make a later review available
+early. Today shows the next scheduled time when no review is currently due.
 
 | Key           | Action                                                |
 | ------------- | ----------------------------------------------------- |
@@ -48,9 +51,12 @@ creates another recovery point for the collection being replaced.
 
 ## Recovery and media
 
-If an action is interrupted, Meiki keeps the current answer and presents
-**Try again**. Review commits are atomic, so a retry cannot partially save a
-grade. Missing or corrupt media is reported without blocking study.
+If an action is interrupted, Meiki keeps the complete pending review command
+and presents **Try again**. A restart retries the same command identity, so a
+saved review is not duplicated when its response was lost. Before displaying
+the next cached card, Meiki checks the current database schedule and skips
+cards that were changed, suspended, moved, deleted, or rescheduled. Missing or
+corrupt media is reported without blocking study.
 
 Keep exported `.meiki` archives on another device or backup volume. The
 runtime SQLite database is not the portable format.
