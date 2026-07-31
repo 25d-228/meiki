@@ -65,7 +65,7 @@ jobs:
         run: dbus-run-session -- xvfb-run --auto-servernum python scripts/package-launch-smoke.py
       - name: Smoke launch desktop package
         if: matrix.name != 'linux'
-        run: python scripts/package-launch-smoke.py
+        run: python scripts/package-launch-smoke.py --timeout 30
       - name: Upload package smoke failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
