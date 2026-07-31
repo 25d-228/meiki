@@ -579,10 +579,10 @@ fn pristine_deck_collision_and_injected_failure_leave_no_partial_deck() {
     let original_cloze_id = cloze_collision.notes[0].note.clozes[0].id.clone();
     cloze_collision.notes[0].note.clozes[0].id = SAMPLE_CLOZE_ID.into();
     for segment in &mut cloze_collision.notes[0].note.source_item.segments {
-        if let SegmentContent::Cloze { cloze_id, .. } = &mut segment.content
-            && *cloze_id == original_cloze_id
-        {
-            *cloze_id = SAMPLE_CLOZE_ID.into();
+        if let SegmentContent::Cloze { cloze_id, .. } = &mut segment.content {
+            if *cloze_id == original_cloze_id {
+                *cloze_id = SAMPLE_CLOZE_ID.into();
+            }
         }
     }
     cloze_collision.notes[0].cards[0].card.cloze_id = SAMPLE_CLOZE_ID.into();
