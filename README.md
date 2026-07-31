@@ -95,13 +95,15 @@ Settings exports the complete collection as a `.meiki` archive. The versioned
 archive contains canonical UTF-8 structured data, immutable review history and
 current projections, scheduler metadata, a manifest, and checksum-addressed
 media. It does not contain SQLite. Import validates a complete collection,
-creates a recovery backup, and then replaces the local collection after
-explicit typed confirmation.
+then offers two local actions. A pristine single-deck archive can be added
+without changing existing decks, history, schedules, or collection policy. A
+full archive can replace the local collection after explicit typed
+confirmation.
 
 Meiki keeps the newest five backups for each automatic backup category.
-Migrations, replacement imports, and restores create a backup before changing
-durable collection state. Settings lists these backups and requires the exact
-filename before restore. Pruning is lexical by the
+Migrations, deck additions, replacement imports, and restores create a backup
+before changing durable collection state. Settings lists these backups and
+requires the exact filename before restore. Pruning is lexical by the
 timestamp-and-sequence filename, so it remains deterministic even when
 multiple backups are created within one millisecond. Application recovery
 points include a checksum-verified media-store companion.

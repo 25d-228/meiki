@@ -30,6 +30,8 @@ import type { StudyMediaDto } from "./generated/StudyMediaDto";
 import type { TodayOverviewDto } from "./generated/TodayOverviewDto";
 import type { TodayRequest } from "./generated/TodayRequest";
 import type { ArchiveExportRequest } from "./generated/ArchiveExportRequest";
+import type { ArchiveAddDeckRequest } from "./generated/ArchiveAddDeckRequest";
+import type { ArchiveAddDeckResultDto } from "./generated/ArchiveAddDeckResultDto";
 import type { ArchiveImportRequest } from "./generated/ArchiveImportRequest";
 import type { ArchiveImportResultDto } from "./generated/ArchiveImportResultDto";
 import type { BackupDto } from "./generated/BackupDto";
@@ -102,6 +104,12 @@ export const api = {
 
   previewArchive(path: string): Promise<PortableArchivePreviewDto> {
     return invoke("preview_archive", { path });
+  },
+
+  addArchiveDeck(
+    request: ArchiveAddDeckRequest,
+  ): Promise<ArchiveAddDeckResultDto> {
+    return invoke("add_archive_deck", { request });
   },
 
   importArchive(

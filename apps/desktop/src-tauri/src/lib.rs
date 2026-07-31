@@ -1,15 +1,16 @@
 use std::path::PathBuf;
 
 use meiki_application::{
-    ApplicationService, ArchiveExportRequest, ArchiveImportRequest, ArchiveImportResultDto,
-    AuthoringDraftDto, AuthoringPreviewDto, BackupDto, CheckAnswerRequest, CreateDeckRequest,
-    DeckDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
-    ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
-    LibraryOverviewDto, LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto,
-    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
-    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
-    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
-    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
+    ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
+    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckDto, DeleteDeckRequest,
+    DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
+    ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto, LibraryOverviewDto,
+    LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
+    ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
+    RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto,
+    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
+    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
     UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
@@ -27,6 +28,7 @@ macro_rules! desktop_commands {
             apply_library_bulk_action,
             export_archive,
             preview_archive,
+            add_archive_deck,
             import_archive,
             list_backups,
             restore_backup,
@@ -148,6 +150,15 @@ fn preview_archive(
     state: State<'_, AppContext>,
 ) -> Result<PortableArchivePreviewDto, String> {
     commands::preview_archive(&state.service(), &path)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn add_archive_deck(
+    request: ArchiveAddDeckRequest,
+    state: State<'_, AppContext>,
+) -> Result<ArchiveAddDeckResultDto, String> {
+    commands::add_archive_deck(&state.service(), &request)
 }
 
 #[tauri::command]
@@ -400,6 +411,7 @@ mod tests {
         "apply_library_bulk_action",
         "export_archive",
         "preview_archive",
+        "add_archive_deck",
         "import_archive",
         "list_backups",
         "restore_backup",

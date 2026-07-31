@@ -59,9 +59,15 @@ Open **Settings → Archives and recovery** to export the complete collection.
 A `.meiki` archive preserves review history, schedule metadata, Unicode text,
 and checksum-addressed media.
 
-Always preview an import. Meiki accepts only a complete collection, requires
-typing `REPLACE`, and creates a recovery backup immediately before replacing
-the current collection.
+Always preview an import. When an archive contains exactly one pristine deck,
+choose **Add deck** to keep every existing deck, review, schedule, and
+collection setting. The added deck starts unseen, uses Automatic scheduling,
+and inherits the current collection budget. Importing the same deck again is
+rejected as already installed.
+
+Use **Replace collection** only when you intend to replace everything. It
+accepts a complete collection archive and requires typing `REPLACE`. Both add
+and replace create a recovery backup before changing durable collection data.
 
 Settings lists rolling backups. Restoring one requires its exact filename and
 creates another recovery point for the collection being replaced.

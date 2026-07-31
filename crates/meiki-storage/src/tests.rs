@@ -1,8 +1,8 @@
 use meiki_domain::{
     Annotation, Card, CardLifecycle, Cloze, ComparisonResult, Deck, Direction, Grade,
     LocalizedText, MatchingPolicy, MediaKind, MediaReference, MediaRole, ReviewEvent,
-    ReviewEventKind, ScheduleState, SchedulerParameterSet, SegmentContent, SemanticSegment,
-    SourceItem, StudySettingsOverride, Tag,
+    ReviewEventKind, ScheduleState, SchedulerParameterSet, SchedulingMode, SegmentContent,
+    SemanticSegment, SourceItem, StudySettingsOverride, Tag,
 };
 use rusqlite::Connection;
 use tempfile::tempdir;
@@ -11,9 +11,11 @@ use super::{
     AUTHORING_DEFAULTS_MIGRATION, AnnotationRepository, CARD_LIFECYCLE_MIGRATION,
     CORE_MODEL_MIGRATION, CardRepository, ClozeRepository, DEFAULT_DECK_ID, DeckRepository,
     FOUNDATION_MIGRATION, FSRS7_SCHEDULER_MIGRATION, LIBRARY_MIGRATION, MEDIA_PIPELINE_MIGRATION,
-    MediaRepository, PROJECTION_INTEGRITY_MIGRATION, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID,
-    STUDY_SESSION_MIGRATION, SchedulerParameterSetRepository, SchedulerProfileRepository,
-    SourceNoteRepository, Storage, StorageError, StoredSourceNote, TagRepository,
+    MediaRepository, PROJECTION_INTEGRITY_MIGRATION, PristineDeckCard, PristineDeckImport,
+    PristineDeckImportStatus, PristineDeckNote, PristineDeckRepository, SAMPLE_CARD_ID,
+    SAMPLE_CLOZE_ID, SAMPLE_SOURCE_ID, STUDY_SESSION_MIGRATION, SchedulerParameterSetRepository,
+    SchedulerProfileRepository, SourceNoteRepository, Storage, StorageError, StoredSourceNote,
+    TagRepository,
 };
 
 fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent {
@@ -476,6 +478,165 @@ fn mixed_note() -> StoredSourceNote {
         },
         clozes: vec![japanese_cloze(), persian_cloze()],
     }
+}
+
+fn pristine_deck_import() -> PristineDeckImport {
+    let deck = Deck {
+        settings: StudySettingsOverride::default(),
+        ..deck("deck-mixed")
+    };
+    let note = mixed_note();
+    let cards = note
+        .clozes
+        .iter()
+        .enumerate()
+        .map(|(index, cloze)| {
+            let card = Card {
+                id: format!("pristine-card-{index}"),
+                cloze_id: cloze.id.clone(),
+                content_version: 0,
+                suspended: false,
+                created_at_ms: 2_000,
+                updated_at_ms: 2_000,
+            };
+            PristineDeckCard {
+                initial_schedule: ScheduleState {
+                    card_id: card.id.clone(),
+                    version: 0,
+                    lifecycle: CardLifecycle::Unseen,
+                    due_at_ms: 2_000,
+                    ideal_due_at_ms: 2_000,
+                    interval_milliseconds: 0,
+                    interval_seconds: 0,
+                    repetitions: 0,
+                    stability_milliseconds: 0,
+                    difficulty_millipoints: 0,
+                    last_reviewed_at_ms: None,
+                    last_review_event_id: None,
+                },
+                card,
+            }
+        })
+        .collect();
+    PristineDeckImport {
+        deck,
+        notes: vec![PristineDeckNote { note, cards }],
+    }
+}
+
+#[test]
+fn pristine_deck_import_is_atomic_and_uses_inherited_automatic_scheduling() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let import = pristine_deck_import();
+    assert_eq!(
+        storage.validate_pristine_deck_import(&import).unwrap(),
+        PristineDeckImportStatus::Ready
+    );
+    assert_eq!(
+        storage.import_pristine_deck(&import).unwrap(),
+        PristineDeckImportStatus::Ready
+    );
+
+    assert_eq!(storage.get_deck(&import.deck.id).unwrap(), import.deck);
+    let profile = storage.get_scheduler_profile(&import.deck.id).unwrap();
+    assert_eq!(profile.scheduling_mode, SchedulingMode::Automatic);
+    assert_eq!(profile.deck_daily_time_budget_minutes, None);
+    assert_eq!(
+        profile.active_parameter_set_id,
+        super::DEFAULT_SCHEDULER_PARAMETER_SET_ID
+    );
+    let stored = storage
+        .library_notes()
+        .unwrap()
+        .into_iter()
+        .find(|note| note.note.source_item.deck_id == import.deck.id)
+        .unwrap();
+    assert_eq!(stored.note, import.notes[0].note);
+    assert_eq!(stored.cards.len(), 2);
+    assert!(
+        stored
+            .cards
+            .iter()
+            .all(|card| card.schedule.lifecycle == CardLifecycle::Unseen)
+    );
+}
+
+#[test]
+fn pristine_deck_collision_and_injected_failure_leave_no_partial_deck() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+
+    let mut source_collision = pristine_deck_import();
+    source_collision.notes[0]
+        .note
+        .source_item
+        .id
+        .clone_from(&SAMPLE_SOURCE_ID.into());
+    for cloze in &mut source_collision.notes[0].note.clozes {
+        cloze.source_item_id = SAMPLE_SOURCE_ID.into();
+    }
+    let mut cloze_collision = pristine_deck_import();
+    let original_cloze_id = cloze_collision.notes[0].note.clozes[0].id.clone();
+    cloze_collision.notes[0].note.clozes[0].id = SAMPLE_CLOZE_ID.into();
+    for segment in &mut cloze_collision.notes[0].note.source_item.segments {
+        if let SegmentContent::Cloze { cloze_id, .. } = &mut segment.content
+            && *cloze_id == original_cloze_id
+        {
+            *cloze_id = SAMPLE_CLOZE_ID.into();
+        }
+    }
+    cloze_collision.notes[0].cards[0].card.cloze_id = SAMPLE_CLOZE_ID.into();
+    let mut card_collision = pristine_deck_import();
+    card_collision.notes[0].cards[0].card.id = SAMPLE_CARD_ID.into();
+    card_collision.notes[0].cards[0].initial_schedule.card_id = SAMPLE_CARD_ID.into();
+    for (collision, entity) in [
+        (source_collision, "source note"),
+        (cloze_collision, "cloze"),
+        (card_collision, "card"),
+    ] {
+        assert!(matches!(
+            storage.validate_pristine_deck_import(&collision),
+            Err(StorageError::InvalidAggregate(message))
+                if message.contains(entity) && message.contains("already exists")
+        ));
+        assert!(matches!(
+            storage.get_deck(&collision.deck.id),
+            Err(StorageError::EntityNotFound { .. })
+        ));
+    }
+
+    let media_collision = pristine_deck_import();
+    storage
+        .create_media_reference(&media_collision.notes[0].note.source_item.media[0])
+        .unwrap();
+    assert!(matches!(
+        storage.validate_pristine_deck_import(&media_collision),
+        Err(StorageError::InvalidAggregate(message))
+            if message.contains("media reference") && message.contains("already exists")
+    ));
+    storage
+        .delete_media_reference(&media_collision.notes[0].note.source_item.media[0].id)
+        .unwrap();
+
+    let import = pristine_deck_import();
+    assert!(matches!(
+        storage.import_pristine_deck_failing_before_commit(&import),
+        Err(StorageError::InjectedTestFailure(
+            "pristine deck transaction before commit"
+        ))
+    ));
+    assert!(matches!(
+        storage.get_deck(&import.deck.id),
+        Err(StorageError::EntityNotFound { .. })
+    ));
+    assert_eq!(storage.library_notes().unwrap().len(), 1);
+    assert_eq!(
+        storage
+            .connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
 }
 
 #[test]

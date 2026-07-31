@@ -51,8 +51,8 @@ pub use library::{
     LibrarySuspendedFilterDto, LibraryTagDto, LibraryTrashFilterDto,
 };
 pub use portable::{
-    ArchiveExportRequest, ArchiveImportRequest, ArchiveImportResultDto, BackupDto,
-    PortableArchivePreviewDto, PortableExportResultDto,
+    ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest, ArchiveImportRequest,
+    ArchiveImportResultDto, BackupDto, PortableArchivePreviewDto, PortableExportResultDto,
 };
 pub use today::{
     ALL_DECKS_ID, StudyAvailabilityDto, StudyPlanDto, TodayDeckDto, TodayOverviewDto,
@@ -637,16 +637,18 @@ impl ApplicationService {
                 .as_ref()
                 .or(stored.source_item.explanation.as_ref())
                 .map(localized_text_dto),
-            answer_media: self
-                .study_media(&stored.cloze.media)
-                .into_iter()
-                .filter(|media| {
-                    matches!(
-                        media.role,
-                        MediaRoleDto::AnswerAudio | MediaRoleDto::RevealImage
-                    )
-                })
-                .collect(),
+            answer_media: self.study_media(
+                &stored
+                    .source_item
+                    .media
+                    .iter()
+                    .chain(&stored.cloze.media)
+                    .filter(|media| {
+                        matches!(media.role, MediaRole::AnswerAudio | MediaRole::RevealImage)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
         })
     }
 
@@ -1756,6 +1758,8 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     LibraryBulkResultDto::export_all_to(output)?;
     ArchiveExportRequest::export_all_to(output)?;
     PortableExportResultDto::export_all_to(output)?;
+    ArchiveAddDeckRequest::export_all_to(output)?;
+    ArchiveAddDeckResultDto::export_all_to(output)?;
     ArchiveImportRequest::export_all_to(output)?;
     PortableArchivePreviewDto::export_all_to(output)?;
     ArchiveImportResultDto::export_all_to(output)?;
