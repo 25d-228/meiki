@@ -1170,13 +1170,13 @@ fn collect_pristine_child_identities<'a>(
             .iter()
             .flat_map(|cloze| cloze.media.iter()),
     ) {
-        if let Some(existing) = identities.media.insert(media.id.as_str(), media)
-            && existing != media
-        {
-            return Err(StorageError::InvalidAggregate(format!(
-                "media reference identity {} has conflicting imported metadata",
-                media.id
-            )));
+        if let Some(existing) = identities.media.insert(media.id.as_str(), media) {
+            if existing != media {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "media reference identity {} has conflicting imported metadata",
+                    media.id
+                )));
+            }
         }
     }
     collect_pristine_tags(&source.tags, identities)
@@ -1187,23 +1187,24 @@ fn collect_pristine_tags<'a>(
     identities: &mut PristineImportIdentities<'a>,
 ) -> Result<(), StorageError> {
     for tag in tags {
-        if let Some(existing) = identities.tags.insert(tag.id.as_str(), tag)
-            && existing != tag
-        {
-            return Err(StorageError::InvalidAggregate(format!(
-                "tag identity {} has conflicting imported metadata",
-                tag.id
-            )));
+        if let Some(existing) = identities.tags.insert(tag.id.as_str(), tag) {
+            if existing != tag {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "tag identity {} has conflicting imported metadata",
+                    tag.id
+                )));
+            }
         }
         if let Some(existing_id) = identities
             .tag_names
             .insert(tag.name.as_str(), tag.id.as_str())
-            && existing_id != tag.id
         {
-            return Err(StorageError::InvalidAggregate(format!(
-                "tag name {:?} is duplicated by different imported identities",
-                tag.name
-            )));
+            if existing_id != tag.id {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "tag name {:?} is duplicated by different imported identities",
+                    tag.name
+                )));
+            }
         }
     }
     Ok(())
