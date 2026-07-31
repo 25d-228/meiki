@@ -7,8 +7,8 @@ mod review;
 
 pub use repository::{
     AnnotationRepository, CardRepository, ClozeRepository, DeckRepository, MediaRepository,
-    SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository,
-    TagRepository,
+    PristineDeckRepository, SchedulerParameterSetRepository, SchedulerProfileRepository,
+    SourceNoteRepository, TagRepository,
 };
 
 use std::{
@@ -16,7 +16,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use meiki_domain::{Card, Cloze, Direction, MatchingPolicy, ScheduleState, SourceItem};
+use meiki_domain::{Card, Cloze, Deck, Direction, MatchingPolicy, ScheduleState, SourceItem};
 #[cfg(any(test, feature = "test-fixtures"))]
 use rusqlite::params;
 use rusqlite::{Connection, MAIN_DB, OptionalExtension};
@@ -111,6 +111,30 @@ pub struct StoredLibraryNote {
     pub note: StoredSourceNote,
     pub cards: Vec<StoredLibraryCard>,
     pub deleted_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PristineDeckCard {
+    pub card: Card,
+    pub initial_schedule: ScheduleState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PristineDeckNote {
+    pub note: StoredSourceNote,
+    pub cards: Vec<PristineDeckCard>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PristineDeckImport {
+    pub deck: Deck,
+    pub notes: Vec<PristineDeckNote>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PristineDeckImportStatus {
+    Ready,
+    AlreadyInstalled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

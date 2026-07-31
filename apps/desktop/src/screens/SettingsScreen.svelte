@@ -350,6 +350,30 @@
     }
   }
 
+  async function addDeck(): Promise<void> {
+    if (!importPreview?.can_add_deck) return;
+    busy = true;
+    notice = "";
+    error = "";
+    try {
+      const result = await api.addArchiveDeck({
+        path: archivePath,
+        now_ms: Date.now(),
+      });
+      const cardLabel = result.imported_cards === 1 ? "card" : "cards";
+      notice = `Added deck “${result.deck_name}” with ${result.imported_cards} ${cardLabel}. Recovery backup: ${result.backup_path}`;
+      importPreview = null;
+      archivePath = "";
+      importConfirmation = "";
+      await loadDecks(result.deck_id);
+      await Promise.all([loadSettings(), loadBackups()]);
+    } catch (cause) {
+      error = message(cause);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function runImport(): Promise<void> {
     if (!importPreview?.can_import) return;
     busy = true;
@@ -1000,11 +1024,15 @@
     </Dialog.Header>
     {#if importPreview}
       <div class="dialog-stack">
-        <p>{importPreview.summary}</p>
+        <p>{importPreview.add_deck_summary}</p>
         <dl class="scheduler-status">
           <div>
             <dt>Format</dt>
             <dd>Version {importPreview.format_version}</dd>
+          </div>
+          <div>
+            <dt>Deck</dt>
+            <dd>{importPreview.deck_name ?? "Multiple decks"}</dd>
           </div>
           <div>
             <dt>Notes</dt>
@@ -1029,19 +1057,30 @@
         </dl>
         {#if importPreview.can_import}
           <label>
-            <strong>Type {importPreview.confirmation} to confirm</strong>
+            <strong
+              >Type {importPreview.confirmation} to replace collection</strong
+            >
             <input bind:value={importConfirmation} autocomplete="off" />
           </label>
         {/if}
+        <p class="advanced-note">
+          Replacing the collection is separate from adding a pristine deck.
+          {importPreview.summary}
+        </p>
       </div>
     {/if}
     <Dialog.Footer>
       <Button
         variant="default"
+        disabled={busy || !importPreview?.can_add_deck}
+        onclick={addDeck}>Add deck</Button
+      >
+      <Button
+        variant="destructive"
         disabled={busy ||
           !importPreview?.can_import ||
           importConfirmation !== importPreview?.confirmation}
-        onclick={runImport}>Import archive</Button
+        onclick={runImport}>Replace collection</Button
       >
     </Dialog.Footer>
   </Dialog.Content>

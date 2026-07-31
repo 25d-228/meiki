@@ -1,13 +1,14 @@
 use meiki_application::{
-    ApplicationService, ArchiveExportRequest, ArchiveImportRequest, ArchiveImportResultDto,
-    AuthoringDraftDto, AuthoringPreviewDto, BackupDto, CheckAnswerRequest, CreateDeckRequest,
-    DeckDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
-    ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
-    LibraryOverviewDto, LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto,
-    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
-    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
-    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
-    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
+    ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
+    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckDto, DeleteDeckRequest,
+    DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
+    ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto, LibraryOverviewDto,
+    LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
+    ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
+    RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto,
+    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
+    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
     UpdateSchedulerSettingsRequest,
 };
 
@@ -71,6 +72,13 @@ pub(crate) fn preview_archive(
     path: &str,
 ) -> CommandResult<PortableArchivePreviewDto> {
     map_error(service.preview_archive(path))
+}
+
+pub(crate) fn add_archive_deck(
+    service: &ApplicationService,
+    request: &ArchiveAddDeckRequest,
+) -> CommandResult<ArchiveAddDeckResultDto> {
+    map_error(service.add_archive_deck(request))
 }
 
 pub(crate) fn import_archive(

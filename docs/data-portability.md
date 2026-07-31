@@ -36,17 +36,31 @@ readable through the same bounded reader.
 Export always includes the complete collection: every deck, note, scheduler
 profile, parameter set used by profiles or history, and referenced media.
 
-Import always re-reads and validates the archive after preview and accepts
-only a full collection. It populates a temporary SQLite database first. The
-live database is unchanged if validation or staging fails, and the same
-archive can be retried. Immediately before replacement, Meiki creates a
-managed recovery backup. Media identities remain content hashes, so equal
-bytes deduplicate. Checksum validation happens both before and during import.
+Import always re-reads and validates the archive after preview. A full
+collection archive has two possible actions:
+
+- **Add deck** is available only when the archive contains exactly one
+  non-trashed deck, no review events, and only untouched version-zero unseen
+  cards. It preserves all existing decks, history, schedules, backups, and
+  collection settings. The new deck uses Automatic scheduling, the current
+  default scheduler parameters, the current collection budget, and the import
+  time for its initial timestamps. Archive scheduler policy and controller
+  diagnostics are ignored.
+- **Replace collection** populates a temporary SQLite database and then
+  replaces the live collection after the user types `REPLACE`.
+
+Both actions create a managed recovery backup immediately before durable
+changes. Adding a deck preflights every imported identity and commits its
+database rows in one transaction. A repeated deck identity reports **Deck
+already installed**. The live database is unchanged if validation, media
+staging, or the database transaction fails, so the archive can be retried.
+Media identities remain content hashes, equal bytes deduplicate, and checksum
+validation happens both before and during import.
 
 ## Rolling backup policy
 
-Meiki creates managed database backups before schema migrations, collection
-replacement imports, and restores. Application-level recovery
+Meiki creates managed database backups before schema migrations, pristine deck
+imports, collection replacement imports, and restores. Application-level recovery
 points pair the SQLite backup with a checksum-verified `.media` directory;
 media objects are merged back before database restore and are never
 overwritten. Migration backups need no media copy because migrations do not

@@ -241,6 +241,7 @@ export async function installMockApi(page: Page): Promise<void> {
 
       if (command === "export_archive") return clone(dtos.archiveExport);
       if (command === "preview_archive") return clone(dtos.archivePreview);
+      if (command === "add_archive_deck") return clone(dtos.archiveAddDeck);
       if (command === "import_archive") return clone(dtos.archiveImport);
       if (command === "list_backups") return [];
       if (command === "restore_backup") {

@@ -8,10 +8,10 @@ use meiki_domain::{
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::{
-    DEFAULT_SCHEDULER_PARAMETER_SET_ID, SchedulingWorkload, Storage, StorageError,
-    StoredLibraryCard, StoredLibraryNote, StoredSourceNote, StoredStudyCard,
-    direction_from_database, direction_to_database, entity_not_found,
-    matching_policy_from_database, matching_policy_to_database,
+    DEFAULT_SCHEDULER_PARAMETER_SET_ID, PristineDeckImport, PristineDeckImportStatus,
+    SchedulingWorkload, Storage, StorageError, StoredLibraryCard, StoredLibraryNote,
+    StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
+    entity_not_found, matching_policy_from_database, matching_policy_to_database,
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
@@ -152,6 +152,24 @@ pub trait CardRepository {
     fn get_card_for_cloze(&self, cloze_id: &str) -> Result<Card, StorageError>;
     fn update_card(&mut self, card: &Card) -> Result<(), StorageError>;
     fn delete_card(&mut self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Persistence operations for adding one validated pristine archive deck.
+///
+/// # Errors
+///
+/// Methods return [`StorageError`] when imported identities collide, the
+/// aggregate is invalid, or the transaction cannot be committed.
+#[allow(clippy::missing_errors_doc)]
+pub trait PristineDeckRepository {
+    fn validate_pristine_deck_import(
+        &self,
+        import: &PristineDeckImport,
+    ) -> Result<PristineDeckImportStatus, StorageError>;
+    fn import_pristine_deck(
+        &mut self,
+        import: &PristineDeckImport,
+    ) -> Result<PristineDeckImportStatus, StorageError>;
 }
 
 impl DeckRepository for Storage {
@@ -912,27 +930,7 @@ impl CardRepository for Storage {
             ));
         }
         let transaction = self.connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO cards(
-                id,
-                cloze_id,
-                content_version,
-                suspended,
-                created_at_ms,
-                updated_at_ms,
-                queue_updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-            params![
-                card.id,
-                card.cloze_id,
-                card.content_version,
-                card.suspended,
-                card.created_at_ms,
-                card.updated_at_ms,
-            ],
-        )?;
-        insert_schedule(&transaction, "schedule_states", initial_schedule)?;
-        insert_schedule(&transaction, "schedule_baselines", initial_schedule)?;
+        insert_card_with_schedule(&transaction, card, initial_schedule)?;
         transaction.commit()?;
         Ok(())
     }
@@ -984,6 +982,386 @@ impl CardRepository for Storage {
             .execute("DELETE FROM cards WHERE id = ?1", [id])?;
         ensure_changed(changed, "card", id)
     }
+}
+
+impl PristineDeckRepository for Storage {
+    fn validate_pristine_deck_import(
+        &self,
+        import: &PristineDeckImport,
+    ) -> Result<PristineDeckImportStatus, StorageError> {
+        validate_pristine_deck_import(&self.connection, import)
+    }
+
+    fn import_pristine_deck(
+        &mut self,
+        import: &PristineDeckImport,
+    ) -> Result<PristineDeckImportStatus, StorageError> {
+        let transaction = self.connection.transaction()?;
+        let status = validate_pristine_deck_import(&transaction, import)?;
+        if status == PristineDeckImportStatus::AlreadyInstalled {
+            return Ok(status);
+        }
+        persist_pristine_deck_import(&transaction, import)?;
+        transaction.commit()?;
+        Ok(PristineDeckImportStatus::Ready)
+    }
+}
+
+impl Storage {
+    /// Exercises rollback after all pristine-deck writes but before commit.
+    ///
+    /// This bounded fault is available only to local tests and fixture builds.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`StorageError::InjectedTestFailure`] after issuing the
+    /// same database writes as
+    /// [`PristineDeckRepository::import_pristine_deck`] inside an uncommitted
+    /// transaction.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn import_pristine_deck_failing_before_commit(
+        &mut self,
+        import: &PristineDeckImport,
+    ) -> Result<PristineDeckImportStatus, StorageError> {
+        let transaction = self.connection.transaction()?;
+        let status = validate_pristine_deck_import(&transaction, import)?;
+        if status == PristineDeckImportStatus::AlreadyInstalled {
+            return Ok(status);
+        }
+        persist_pristine_deck_import(&transaction, import)?;
+        Err(StorageError::InjectedTestFailure(
+            "pristine deck transaction before commit",
+        ))
+    }
+}
+
+fn validate_pristine_deck_import(
+    connection: &Connection,
+    import: &PristineDeckImport,
+) -> Result<PristineDeckImportStatus, StorageError> {
+    if entity_id_exists(
+        connection,
+        "SELECT 1 FROM decks WHERE id = ?1",
+        &import.deck.id,
+    )? {
+        return Ok(PristineDeckImportStatus::AlreadyInstalled);
+    }
+
+    let mut identities = PristineImportIdentities::default();
+    for imported_note in &import.notes {
+        validate_pristine_note(imported_note, &import.deck.id, &mut identities)?;
+    }
+    ensure_pristine_identities_available(connection, &identities)?;
+
+    Ok(PristineDeckImportStatus::Ready)
+}
+
+#[derive(Default)]
+struct PristineImportIdentities<'a> {
+    aggregate: HashSet<&'a str>,
+    annotations: HashSet<&'a str>,
+    media: HashMap<&'a str, &'a MediaReference>,
+    tags: HashMap<&'a str, &'a Tag>,
+    tag_names: HashMap<&'a str, &'a str>,
+}
+
+fn validate_pristine_note<'a>(
+    imported: &'a crate::PristineDeckNote,
+    deck_id: &str,
+    identities: &mut PristineImportIdentities<'a>,
+) -> Result<(), StorageError> {
+    validate_note(&imported.note)?;
+    let source = &imported.note.source_item;
+    if source.deck_id != deck_id {
+        return Err(StorageError::InvalidAggregate(format!(
+            "source note {} belongs to a different imported deck",
+            source.id
+        )));
+    }
+    insert_import_identity(&mut identities.aggregate, &source.id, "source note")?;
+    for segment in &source.segments {
+        insert_import_identity(&mut identities.aggregate, &segment.id, "semantic segment")?;
+    }
+    for cloze in &imported.note.clozes {
+        insert_import_identity(&mut identities.aggregate, &cloze.id, "cloze")?;
+    }
+    validate_pristine_cards(imported, &mut identities.aggregate)?;
+    collect_pristine_child_identities(imported, identities)
+}
+
+fn validate_pristine_cards<'a>(
+    imported: &'a crate::PristineDeckNote,
+    aggregate_ids: &mut HashSet<&'a str>,
+) -> Result<(), StorageError> {
+    let source_id = &imported.note.source_item.id;
+    let cloze_ids = imported
+        .note
+        .clozes
+        .iter()
+        .map(|cloze| cloze.id.as_str())
+        .collect::<HashSet<_>>();
+    if imported.cards.len() != cloze_ids.len() {
+        return Err(pristine_card_count_error(source_id));
+    }
+    let mut card_cloze_ids = HashSet::new();
+    for imported_card in &imported.cards {
+        let card = &imported_card.card;
+        let schedule = &imported_card.initial_schedule;
+        insert_import_identity(aggregate_ids, &card.id, "card")?;
+        if !card_cloze_ids.insert(card.cloze_id.as_str())
+            || !cloze_ids.contains(card.cloze_id.as_str())
+            || card.suspended
+            || !is_pristine_schedule(schedule, &card.id)
+        {
+            return Err(StorageError::InvalidAggregate(format!(
+                "card {} is not a pristine unseen card",
+                card.id
+            )));
+        }
+    }
+    if card_cloze_ids != cloze_ids {
+        return Err(pristine_card_count_error(source_id));
+    }
+    Ok(())
+}
+
+fn is_pristine_schedule(schedule: &ScheduleState, card_id: &str) -> bool {
+    schedule.card_id == card_id
+        && schedule.version == 0
+        && schedule.lifecycle == CardLifecycle::Unseen
+        && schedule.interval_milliseconds == 0
+        && schedule.interval_seconds == 0
+        && schedule.repetitions == 0
+        && schedule.stability_milliseconds == 0
+        && schedule.difficulty_millipoints == 0
+        && schedule.last_reviewed_at_ms.is_none()
+        && schedule.last_review_event_id.is_none()
+}
+
+fn pristine_card_count_error(source_id: &str) -> StorageError {
+    StorageError::InvalidAggregate(format!(
+        "source note {source_id} must contain one pristine card per cloze"
+    ))
+}
+
+fn collect_pristine_child_identities<'a>(
+    imported: &'a crate::PristineDeckNote,
+    identities: &mut PristineImportIdentities<'a>,
+) -> Result<(), StorageError> {
+    let source = &imported.note.source_item;
+    for annotation in source.annotations.iter().chain(
+        imported
+            .note
+            .clozes
+            .iter()
+            .flat_map(|cloze| cloze.annotations.iter()),
+    ) {
+        if !identities.annotations.insert(annotation.id.as_str()) {
+            return Err(StorageError::InvalidAggregate(format!(
+                "annotation identity {} is duplicated in the imported deck",
+                annotation.id
+            )));
+        }
+    }
+    for media in source.media.iter().chain(
+        imported
+            .note
+            .clozes
+            .iter()
+            .flat_map(|cloze| cloze.media.iter()),
+    ) {
+        if let Some(existing) = identities.media.insert(media.id.as_str(), media) {
+            if existing != media {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "media reference identity {} has conflicting imported metadata",
+                    media.id
+                )));
+            }
+        }
+    }
+    collect_pristine_tags(&source.tags, identities)
+}
+
+fn collect_pristine_tags<'a>(
+    tags: &'a [Tag],
+    identities: &mut PristineImportIdentities<'a>,
+) -> Result<(), StorageError> {
+    for tag in tags {
+        if let Some(existing) = identities.tags.insert(tag.id.as_str(), tag) {
+            if existing != tag {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "tag identity {} has conflicting imported metadata",
+                    tag.id
+                )));
+            }
+        }
+        if let Some(existing_id) = identities
+            .tag_names
+            .insert(tag.name.as_str(), tag.id.as_str())
+        {
+            if existing_id != tag.id {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "tag name {:?} is duplicated by different imported identities",
+                    tag.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_pristine_identities_available(
+    connection: &Connection,
+    identities: &PristineImportIdentities<'_>,
+) -> Result<(), StorageError> {
+    for id in &identities.aggregate {
+        if let Some(entity) = existing_aggregate_identity(connection, id)? {
+            return Err(StorageError::InvalidAggregate(format!(
+                "imported {entity} identity {id} already exists"
+            )));
+        }
+    }
+    ensure_ids_available(
+        connection,
+        &identities.annotations,
+        "annotations",
+        "annotation",
+    )?;
+    ensure_ids_available(
+        connection,
+        &identities.media.keys().copied().collect(),
+        "media_references",
+        "media reference",
+    )?;
+    ensure_pristine_tags_available(connection, identities.tags.values().copied())
+}
+
+fn ensure_ids_available(
+    connection: &Connection,
+    ids: &HashSet<&str>,
+    table: &str,
+    entity: &str,
+) -> Result<(), StorageError> {
+    let sql = format!("SELECT 1 FROM {table} WHERE id = ?1");
+    for id in ids {
+        if entity_id_exists(connection, &sql, id)? {
+            return Err(StorageError::InvalidAggregate(format!(
+                "imported {entity} identity {id} already exists"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_pristine_tags_available<'a>(
+    connection: &Connection,
+    tags: impl Iterator<Item = &'a Tag>,
+) -> Result<(), StorageError> {
+    for tag in tags {
+        if connection
+            .query_row(
+                "SELECT 1 FROM tags WHERE id = ?1 OR name = ?2",
+                params![tag.id, tag.name],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some()
+        {
+            return Err(StorageError::InvalidAggregate(format!(
+                "imported tag identity {} or name {:?} already exists",
+                tag.id, tag.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn persist_pristine_deck_import(
+    transaction: &Transaction<'_>,
+    import: &PristineDeckImport,
+) -> Result<(), StorageError> {
+    insert_deck(transaction, &import.deck)?;
+    insert_default_scheduler_profile(transaction, &import.deck.id, import.deck.created_at_ms)?;
+    for imported_note in &import.notes {
+        insert_source(transaction, &imported_note.note.source_item)?;
+        insert_note_children(transaction, &imported_note.note)?;
+        for imported_card in &imported_note.cards {
+            insert_card_with_schedule(
+                transaction,
+                &imported_card.card,
+                &imported_card.initial_schedule,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn insert_import_identity<'a>(
+    identities: &mut HashSet<&'a str>,
+    id: &'a str,
+    entity: &str,
+) -> Result<(), StorageError> {
+    if id.trim().is_empty() || !identities.insert(id) {
+        return Err(StorageError::InvalidAggregate(format!(
+            "{entity} identity {id:?} is empty or duplicated in the imported deck"
+        )));
+    }
+    Ok(())
+}
+
+fn existing_aggregate_identity(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<&'static str>, StorageError> {
+    for (entity, sql) in [
+        ("source note", "SELECT 1 FROM source_items WHERE id = ?1"),
+        (
+            "semantic segment",
+            "SELECT 1 FROM semantic_segments WHERE id = ?1",
+        ),
+        ("cloze", "SELECT 1 FROM clozes WHERE id = ?1"),
+        ("card", "SELECT 1 FROM cards WHERE id = ?1"),
+    ] {
+        if entity_id_exists(connection, sql, id)? {
+            return Ok(Some(entity));
+        }
+    }
+    Ok(None)
+}
+
+fn entity_id_exists(connection: &Connection, sql: &str, id: &str) -> Result<bool, StorageError> {
+    Ok(connection
+        .query_row(sql, [id], |_| Ok(()))
+        .optional()?
+        .is_some())
+}
+
+fn insert_card_with_schedule(
+    connection: &Connection,
+    card: &Card,
+    initial_schedule: &ScheduleState,
+) -> Result<(), StorageError> {
+    connection.execute(
+        "INSERT INTO cards(
+            id,
+            cloze_id,
+            content_version,
+            suspended,
+            created_at_ms,
+            updated_at_ms,
+            queue_updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            card.id,
+            card.cloze_id,
+            card.content_version,
+            card.suspended,
+            card.created_at_ms,
+            card.updated_at_ms,
+        ],
+    )?;
+    insert_schedule(connection, "schedule_states", initial_schedule)?;
+    insert_schedule(connection, "schedule_baselines", initial_schedule)
 }
 
 impl Storage {

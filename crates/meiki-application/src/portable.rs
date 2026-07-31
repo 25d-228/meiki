@@ -5,14 +5,16 @@ use std::{
 };
 
 use crate::{ApplicationError, ApplicationService};
+use meiki_domain::{CardLifecycle, MediaReference, StudySettingsOverride};
 use meiki_portable::{
     ArchiveMediaSource, ArchiveScope, PortableCard, PortableCollection, PortableNote,
     ValidatedArchive, read_archive, write_archive,
 };
 use meiki_storage::{
     CardRepository, DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckRepository,
-    SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository, Storage,
-    StoredSourceNote,
+    PristineDeckCard, PristineDeckImport, PristineDeckImportStatus, PristineDeckNote,
+    PristineDeckRepository, SchedulerParameterSetRepository, SchedulerProfileRepository,
+    SourceNoteRepository, Storage, StorageError, StoredSourceNote,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -48,9 +50,17 @@ pub struct ArchiveImportRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct ArchiveAddDeckRequest {
+    pub path: String,
+    #[ts(type = "number")]
+    pub now_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct PortableArchivePreviewDto {
     pub path: String,
     pub format_version: u32,
+    pub deck_name: Option<String>,
     #[ts(type = "number")]
     pub decks: u64,
     #[ts(type = "number")]
@@ -63,9 +73,26 @@ pub struct PortableArchivePreviewDto {
     pub media_objects: u64,
     #[ts(type = "number")]
     pub duplicate_media_objects: u64,
+    pub can_add_deck: bool,
+    pub add_deck_summary: String,
     pub can_import: bool,
     pub confirmation: String,
     pub summary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct ArchiveAddDeckResultDto {
+    pub backup_path: String,
+    pub deck_id: String,
+    pub deck_name: String,
+    #[ts(type = "number")]
+    pub imported_notes: u64,
+    #[ts(type = "number")]
+    pub imported_cards: u64,
+    #[ts(type = "number")]
+    pub imported_media_objects: u64,
+    #[ts(type = "number")]
+    pub deduplicated_media_objects: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -135,6 +162,73 @@ impl ApplicationService {
         preview_validated_archive(self, path, &archive)
     }
 
+    /// Adds one validated pristine archive deck without replacing the current
+    /// collection.
+    ///
+    /// The current collection receives a recovery backup before media or
+    /// database state changes. Imported content is timestamped at the request
+    /// time, uses the current default scheduler parameters, and is committed in
+    /// one database transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request time is invalid, the archive is not a
+    /// pristine single-deck archive, an identity collides, media staging fails,
+    /// or the database transaction cannot be committed.
+    pub fn add_archive_deck(
+        &self,
+        request: &ArchiveAddDeckRequest,
+    ) -> Result<ArchiveAddDeckResultDto, ApplicationError> {
+        if request.now_ms < 0 {
+            return Err(ApplicationError::InvalidPortable(
+                "archive deck import timestamp is invalid".into(),
+            ));
+        }
+
+        let archive = read_archive(Path::new(&request.path))?;
+        let deck = pristine_archive_deck(&archive.collection)
+            .map_err(ApplicationError::InvalidPortable)?;
+        let deck_id = deck.id.clone();
+        let deck_name = deck.name.clone();
+        let pristine_import = build_pristine_deck_import(&archive.collection, request.now_ms);
+        let mut storage = self.open_storage()?;
+        match storage.validate_pristine_deck_import(&pristine_import)? {
+            PristineDeckImportStatus::Ready => {}
+            PristineDeckImportStatus::AlreadyInstalled => {
+                return Err(ApplicationError::InvalidPortable(
+                    "Deck already installed".into(),
+                ));
+            }
+        }
+
+        let backup_path = self.create_recovery_backup(&storage, "pre-add-deck")?;
+        let media_import = import_archive_media(&archive, &self.media_store())?;
+        let import_status = storage.import_pristine_deck(&pristine_import);
+        match import_status {
+            Ok(PristineDeckImportStatus::Ready) => {}
+            Ok(PristineDeckImportStatus::AlreadyInstalled) => {
+                rollback_archive_media(&self.media_store(), &media_import.new_hashes)?;
+                return Err(ApplicationError::InvalidPortable(
+                    "Deck already installed".into(),
+                ));
+            }
+            Err(error) => {
+                rollback_archive_media(&self.media_store(), &media_import.new_hashes)?;
+                return Err(ApplicationError::Storage(error));
+            }
+        }
+
+        Ok(ArchiveAddDeckResultDto {
+            backup_path: backup_path.to_string_lossy().into_owned(),
+            deck_id,
+            deck_name,
+            imported_notes: archive.manifest.counts.notes,
+            imported_cards: archive.manifest.counts.cards,
+            imported_media_objects: media_import.imported,
+            deduplicated_media_objects: media_import.deduplicated,
+        })
+    }
+
     /// Imports a previously previewable archive through a staging database.
     ///
     /// The current collection is backed up immediately before its database is
@@ -168,21 +262,20 @@ impl ApplicationService {
         populate_staging(&mut staging, &archive.collection)?;
 
         let backup_path = self.create_recovery_backup(&current, "pre-import")?;
-        let (imported_media_objects, deduplicated_media_objects) =
-            import_archive_media(&archive, &self.media_store())?;
+        let media_import = import_archive_media(&archive, &self.media_store())?;
         drop(staging);
         drop(current);
-        drop(Storage::replace_from_backup(
-            &staging_path,
-            &self.collection_path,
-        )?);
+        if let Err(error) = Storage::replace_from_backup(&staging_path, &self.collection_path) {
+            rollback_archive_media(&self.media_store(), &media_import.new_hashes)?;
+            return Err(ApplicationError::Storage(error));
+        }
 
         Ok(ArchiveImportResultDto {
             backup_path: backup_path.to_string_lossy().into_owned(),
             imported_notes: archive.manifest.counts.notes,
             imported_cards: archive.manifest.counts.cards,
-            imported_media_objects,
-            deduplicated_media_objects,
+            imported_media_objects: media_import.imported,
+            deduplicated_media_objects: media_import.deduplicated,
         })
     }
 
@@ -456,6 +549,114 @@ fn media_sources(
     Ok(sources)
 }
 
+fn pristine_archive_deck(collection: &PortableCollection) -> Result<&meiki_domain::Deck, String> {
+    let [deck] = collection.decks.as_slice() else {
+        return Err("Add deck requires an archive containing exactly one deck.".into());
+    };
+    if collection
+        .notes
+        .iter()
+        .any(|note| note.deleted_at_ms.is_some())
+    {
+        return Err("Add deck is unavailable because the archive contains trashed notes.".into());
+    }
+    for portable in collection.notes.iter().flat_map(|note| note.cards.iter()) {
+        if !portable.review_events.is_empty() {
+            return Err(
+                "Add deck is unavailable because the archive contains review history.".into(),
+            );
+        }
+        let schedule = &portable.schedule;
+        if portable.card.suspended
+            || portable.baseline != *schedule
+            || schedule.version != 0
+            || schedule.lifecycle != CardLifecycle::Unseen
+            || schedule.interval_milliseconds != 0
+            || schedule.interval_seconds != 0
+            || schedule.repetitions != 0
+            || schedule.stability_milliseconds != 0
+            || schedule.difficulty_millipoints != 0
+            || schedule.last_reviewed_at_ms.is_some()
+            || schedule.last_review_event_id.is_some()
+        {
+            return Err(
+                "Add deck is unavailable because the archive contains scheduled or modified cards."
+                    .into(),
+            );
+        }
+    }
+    Ok(deck)
+}
+
+fn build_pristine_deck_import(
+    collection: &PortableCollection,
+    imported_at_ms: i64,
+) -> PristineDeckImport {
+    let mut deck = collection.decks[0].clone();
+    deck.settings = StudySettingsOverride::default();
+    deck.created_at_ms = imported_at_ms;
+    deck.updated_at_ms = imported_at_ms;
+
+    let notes = collection
+        .notes
+        .iter()
+        .map(|portable_note| {
+            let mut source_item = portable_note.source_item.clone();
+            source_item.created_at_ms = imported_at_ms;
+            source_item.updated_at_ms = imported_at_ms;
+            for tag in &mut source_item.tags {
+                tag.created_at_ms = imported_at_ms;
+                tag.updated_at_ms = imported_at_ms;
+            }
+            for media in &mut source_item.media {
+                media.created_at_ms = imported_at_ms;
+            }
+            let mut clozes = portable_note.clozes.clone();
+            for cloze in &mut clozes {
+                cloze.created_at_ms = imported_at_ms;
+                cloze.updated_at_ms = imported_at_ms;
+                for media in &mut cloze.media {
+                    media.created_at_ms = imported_at_ms;
+                }
+            }
+            let cards = portable_note
+                .cards
+                .iter()
+                .map(|portable_card| {
+                    let mut card = portable_card.card.clone();
+                    card.suspended = false;
+                    card.created_at_ms = imported_at_ms;
+                    card.updated_at_ms = imported_at_ms;
+                    let mut initial_schedule = portable_card.baseline.clone();
+                    initial_schedule.version = 0;
+                    initial_schedule.lifecycle = CardLifecycle::Unseen;
+                    initial_schedule.due_at_ms = imported_at_ms;
+                    initial_schedule.ideal_due_at_ms = imported_at_ms;
+                    initial_schedule.interval_milliseconds = 0;
+                    initial_schedule.interval_seconds = 0;
+                    initial_schedule.repetitions = 0;
+                    initial_schedule.stability_milliseconds = 0;
+                    initial_schedule.difficulty_millipoints = 0;
+                    initial_schedule.last_reviewed_at_ms = None;
+                    initial_schedule.last_review_event_id = None;
+                    PristineDeckCard {
+                        card,
+                        initial_schedule,
+                    }
+                })
+                .collect();
+            PristineDeckNote {
+                note: StoredSourceNote {
+                    source_item,
+                    clozes,
+                },
+                cards,
+            }
+        })
+        .collect();
+    PristineDeckImport { deck, notes }
+}
+
 fn preview_validated_archive(
     service: &ApplicationService,
     path: &str,
@@ -475,6 +676,34 @@ fn preview_validated_archive(
         .len();
     let duplicate_media_objects = u64::try_from(duplicate_media_objects)
         .map_err(|_| ApplicationError::NumericRange("duplicate media object count"))?;
+    let deck_name =
+        (archive.collection.decks.len() == 1).then(|| archive.collection.decks[0].name.clone());
+    let (can_add_deck, add_deck_summary) = match pristine_archive_deck(&archive.collection) {
+        Ok(deck) => {
+            let pristine_import = build_pristine_deck_import(&archive.collection, 0);
+            let storage = service.open_storage()?;
+            match storage.validate_pristine_deck_import(&pristine_import) {
+                Ok(PristineDeckImportStatus::Ready) => (
+                    true,
+                    format!(
+                        "Ready to add deck {:?} with {} note(s), {} card(s), and {} media object(s).",
+                        deck.name,
+                        archive.manifest.counts.notes,
+                        archive.manifest.counts.cards,
+                        archive.manifest.counts.media_objects
+                    ),
+                ),
+                Ok(PristineDeckImportStatus::AlreadyInstalled) => {
+                    (false, "Deck already installed".into())
+                }
+                Err(StorageError::InvalidAggregate(reason)) => {
+                    (false, format!("Cannot add deck: {reason}"))
+                }
+                Err(error) => return Err(ApplicationError::Storage(error)),
+            }
+        }
+        Err(reason) => (false, reason),
+    };
     let can_import = replacement_is_full;
     let summary = if replacement_is_full {
         format!(
@@ -489,12 +718,15 @@ fn preview_validated_archive(
     Ok(PortableArchivePreviewDto {
         path: path.to_owned(),
         format_version: archive.manifest.version,
+        deck_name,
         decks: archive.manifest.counts.decks,
         notes: archive.manifest.counts.notes,
         cards: archive.manifest.counts.cards,
         review_events: archive.manifest.counts.review_events,
         media_objects: archive.manifest.counts.media_objects,
         duplicate_media_objects,
+        can_add_deck,
+        add_deck_summary,
         can_import,
         confirmation: REPLACE_CONFIRMATION.into(),
         summary,
@@ -542,68 +774,600 @@ fn populate_staging(
     Ok(())
 }
 
+#[derive(Default)]
+struct ArchiveMediaImport {
+    imported: u64,
+    deduplicated: u64,
+    new_hashes: Vec<String>,
+}
+
 fn import_archive_media(
     archive: &ValidatedArchive,
     store: &meiki_media::MediaStore,
-) -> Result<(u64, u64), ApplicationError> {
-    let mut imported = 0_u64;
-    let mut deduplicated = 0_u64;
+) -> Result<ArchiveMediaImport, ApplicationError> {
+    let mut import = ArchiveMediaImport::default();
     for media in &archive.media_objects {
-        let result = store.import_file(&media.path)?;
-        if result.content_hash != media.content_hash || result.byte_size != media.byte_size {
+        let result = match store.import_file(&media.path) {
+            Ok(result) => result,
+            Err(error) => {
+                rollback_archive_media(store, &import.new_hashes)?;
+                return Err(ApplicationError::Media(error));
+            }
+        };
+        if result.deduplicated {
+            import.deduplicated += 1;
+        } else {
+            import.imported += 1;
+            import.new_hashes.push(result.content_hash.clone());
+        }
+        if let Err(error) = validate_imported_archive_media(archive, media, &result) {
+            rollback_archive_media(store, &import.new_hashes)?;
+            return Err(error);
+        }
+    }
+    Ok(import)
+}
+
+fn validate_imported_archive_media(
+    archive: &ValidatedArchive,
+    media: &meiki_portable::ValidatedMediaObject,
+    result: &meiki_media::ImportedMedia,
+) -> Result<(), ApplicationError> {
+    if result.content_hash != media.content_hash || result.byte_size != media.byte_size {
+        return Err(ApplicationError::InvalidPortable(format!(
+            "media metadata changed during import for {}",
+            media.content_hash
+        )));
+    }
+    for reference in archive
+        .collection
+        .notes
+        .iter()
+        .flat_map(|note| {
+            note.source_item
+                .media
+                .iter()
+                .chain(note.clozes.iter().flat_map(|cloze| cloze.media.iter()))
+        })
+        .filter(|reference| reference.content_hash == media.content_hash)
+    {
+        if !imported_media_metadata_matches(reference, result) {
             return Err(ApplicationError::InvalidPortable(format!(
-                "media metadata changed during import for {}",
+                "media technical metadata does not match {}",
                 media.content_hash
             )));
         }
-        for reference in archive
-            .collection
-            .notes
-            .iter()
-            .flat_map(|note| {
-                note.source_item
-                    .media
-                    .iter()
-                    .chain(note.clozes.iter().flat_map(|cloze| cloze.media.iter()))
-            })
-            .filter(|reference| reference.content_hash == media.content_hash)
-        {
-            let detected_kind = match result.kind {
-                meiki_media::DetectedMediaKind::Audio => meiki_domain::MediaKind::Audio,
-                meiki_media::DetectedMediaKind::Image => meiki_domain::MediaKind::Image,
-            };
-            if reference.kind != detected_kind
-                || reference.media_type != result.media_type
-                || reference.byte_size != result.byte_size
-                || reference.width != result.width
-                || reference.height != result.height
-                || reference.duration_ms != result.duration_ms
-            {
-                return Err(ApplicationError::InvalidPortable(format!(
-                    "media technical metadata does not match {}",
-                    media.content_hash
-                )));
-            }
-        }
-        if result.deduplicated {
-            deduplicated += 1;
-        } else {
-            imported += 1;
-        }
     }
-    Ok((imported, deduplicated))
+    Ok(())
+}
+
+fn imported_media_metadata_matches(
+    reference: &MediaReference,
+    result: &meiki_media::ImportedMedia,
+) -> bool {
+    let detected_kind = match result.kind {
+        meiki_media::DetectedMediaKind::Audio => meiki_domain::MediaKind::Audio,
+        meiki_media::DetectedMediaKind::Image => meiki_domain::MediaKind::Image,
+    };
+    reference.kind == detected_kind
+        && reference.media_type == result.media_type
+        && reference.byte_size == result.byte_size
+        && reference.width == result.width
+        && reference.height == result.height
+        // The local detector currently measures WAV duration but deliberately
+        // leaves compressed-audio duration unknown. A checksum-validated
+        // archive may carry that optional duration without being rejected.
+        && (result.duration_ms.is_none() || reference.duration_ms == result.duration_ms)
+}
+
+fn rollback_archive_media(
+    store: &meiki_media::MediaStore,
+    new_hashes: &[String],
+) -> Result<(), ApplicationError> {
+    for hash in new_hashes.iter().rev() {
+        store.remove(hash)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use meiki_storage::{DeckRepository, SAMPLE_CARD_ID, Storage};
+    use std::path::{Path, PathBuf};
+
+    use meiki_domain::{CardLifecycle, SchedulerParameterSet, SchedulingMode};
+    use meiki_media::{DetectedMediaKind, ImportedMedia, MediaError};
+    use meiki_portable::{ArchiveMediaSource, PortableCollection, read_archive, write_archive};
+    use meiki_storage::{
+        CardRepository, DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckRepository,
+        SAMPLE_CARD_ID, SAMPLE_SOURCE_ID, SchedulerParameterSetRepository,
+        SchedulerProfileRepository, SourceNoteRepository, Storage,
+    };
     use tempfile::tempdir;
 
-    use super::{ArchiveExportRequest, ArchiveImportRequest};
-    use crate::{
-        ApplicationService, GradeDto, GradeReviewRequest, SchedulingModeDto,
-        UpdateSchedulerSettingsRequest,
+    use super::{
+        ArchiveAddDeckRequest, ArchiveExportRequest, ArchiveImportRequest, build_collection,
+        imported_media_metadata_matches,
     };
+    use crate::{
+        ApplicationService, BudgetSourceDto, CheckAnswerRequest, GradeDto, GradeReviewRequest,
+        MediaRoleDto, SchedulingModeDto, TodayRequest, UpdateSchedulerSettingsRequest,
+    };
+
+    const FIXTURE_DECK_ID: &str = "fixture-deck-ja-foundation";
+    const FIXTURE_SOURCE_ID: &str = "fixture-source-ja-001";
+    const FIXTURE_CARD_ID: &str = "fixture-card-ja-001";
+    const IMPORTED_AT_MS: i64 = 300_000;
+    const PRISTINE_FIXTURE: &[u8] = include_bytes!("../fixtures/pristine-deck-v4.meiki");
+
+    fn copy_pristine_fixture(directory: &Path, name: &str) -> PathBuf {
+        let path = directory.join(name);
+        std::fs::write(&path, PRISTINE_FIXTURE).unwrap();
+        path
+    }
+
+    fn write_fixture_variant(
+        directory: &Path,
+        name: &str,
+        mutate: impl FnOnce(&mut PortableCollection),
+    ) -> PathBuf {
+        let fixture_path = copy_pristine_fixture(directory, &format!("{name}-source.meiki"));
+        let archive = read_archive(&fixture_path).unwrap();
+        let mut collection = archive.collection.clone();
+        mutate(&mut collection);
+        let media = archive
+            .media_objects
+            .iter()
+            .map(|object| ArchiveMediaSource {
+                content_hash: object.content_hash.clone(),
+                path: object.path.clone(),
+            })
+            .collect::<Vec<_>>();
+        let destination = directory.join(format!("{name}.meiki"));
+        write_archive(&destination, &collection, &media, 10_000).unwrap();
+        destination
+    }
+
+    #[test]
+    fn compressed_audio_can_keep_archive_duration_when_local_detection_is_unknown() {
+        let reference = meiki_domain::MediaReference {
+            id: "compressed-audio".into(),
+            content_hash: "sha256:fixture".into(),
+            kind: meiki_domain::MediaKind::Audio,
+            role: meiki_domain::MediaRole::PromptAudio,
+            media_type: "audio/mpeg".into(),
+            byte_size: 46_125,
+            original_file_name: Some("fixture.mp3".into()),
+            alt_text: None,
+            width: None,
+            height: None,
+            duration_ms: Some(2_800),
+            language_tag: Some("ja-JP".into()),
+            direction: meiki_domain::Direction::Auto,
+            created_at_ms: 0,
+        };
+        let mut detected = ImportedMedia {
+            content_hash: reference.content_hash.clone(),
+            kind: DetectedMediaKind::Audio,
+            media_type: reference.media_type.clone(),
+            byte_size: reference.byte_size,
+            original_file_name: "fixture.mp3".into(),
+            width: None,
+            height: None,
+            duration_ms: None,
+            object_path: PathBuf::from("fixture"),
+            deduplicated: false,
+        };
+        assert!(imported_media_metadata_matches(&reference, &detected));
+        detected.duration_ms = Some(2_799);
+        assert!(!imported_media_metadata_matches(&reference, &detected));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn pristine_deck_add_preserves_collection_and_uses_local_policy_and_media() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let card = service.seed_test_collection(100_000).unwrap();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "review-before-deck-add".into(),
+                    card_id: card.card_id.clone(),
+                    card_content_version: card.card_content_version,
+                    schedule_version: card.schedule_version,
+                    raw_response: "行きます".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 1_000,
+                },
+                100_000,
+            )
+            .unwrap();
+        service
+            .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
+                deck_id: DEFAULT_DECK_ID.into(),
+                scheduling_mode: SchedulingModeDto::Expert,
+                collection_daily_time_budget_minutes: 1,
+                deck_daily_time_budget_minutes: None,
+                target_retention_basis_points: 9_500,
+                new_cards_per_day: 50,
+                maximum_interval_days: 20_000,
+                day_boundary_minutes: 240,
+                now_ms: 110_000,
+                day_start_ms: 0,
+            })
+            .unwrap();
+
+        let before = {
+            let storage = Storage::open(&collection_path).unwrap();
+            build_collection(&storage).unwrap()
+        };
+        let archive_path = write_fixture_variant(
+            directory.path(),
+            "pristine-with-ignored-policy",
+            |collection| {
+                collection
+                    .collection_scheduling_settings
+                    .daily_time_budget_minutes = 777;
+                let profile = &mut collection.scheduler_profiles[0];
+                profile.scheduling_mode = SchedulingMode::Expert;
+                profile.deck_daily_time_budget_minutes = Some(321);
+                profile.controller_review_count = 44;
+                profile.controller_unseen_count = 55;
+                profile.controller_backlog_exceeds_budget = true;
+                profile.controller_explanation = "archived diagnostic".into();
+                let mut extra = collection.scheduler_parameter_sets[0].clone();
+                extra.id = "archived-default-copy".into();
+                collection
+                    .scheduler_parameter_sets
+                    .push(SchedulerParameterSet { ..extra });
+            },
+        );
+        let archive = read_archive(&archive_path).unwrap();
+        let imported_fixture_media = service
+            .media_store()
+            .import_file(&archive.media_objects[0].path)
+            .unwrap();
+        assert!(!imported_fixture_media.deduplicated);
+        drop(archive);
+
+        let preview = service
+            .preview_archive(&archive_path.to_string_lossy())
+            .unwrap();
+        assert!(preview.can_add_deck);
+        assert!(preview.can_import);
+        assert_eq!(
+            preview.deck_name.as_deref(),
+            Some("Japanese Foundation Fixture")
+        );
+        assert_eq!(
+            (preview.notes, preview.cards, preview.media_objects),
+            (1, 1, 1)
+        );
+        assert_eq!(preview.duplicate_media_objects, 1);
+
+        let added = service
+            .add_archive_deck(&ArchiveAddDeckRequest {
+                path: archive_path.to_string_lossy().into_owned(),
+                now_ms: IMPORTED_AT_MS,
+            })
+            .unwrap();
+        assert_eq!(added.deck_id, FIXTURE_DECK_ID);
+        assert_eq!(added.imported_notes, 1);
+        assert_eq!(added.imported_cards, 1);
+        assert_eq!(added.imported_media_objects, 0);
+        assert_eq!(added.deduplicated_media_objects, 1);
+        assert!(Path::new(&added.backup_path).is_file());
+        assert_eq!(service.list_backups().unwrap().len(), 1);
+
+        let storage = Storage::open(&collection_path).unwrap();
+        let after = build_collection(&storage).unwrap();
+        assert_eq!(
+            after
+                .notes
+                .iter()
+                .find(|note| note.source_item.id == SAMPLE_SOURCE_ID),
+            before
+                .notes
+                .iter()
+                .find(|note| note.source_item.id == SAMPLE_SOURCE_ID)
+        );
+        assert_eq!(
+            after.decks.iter().find(|deck| deck.id == DEFAULT_DECK_ID),
+            before.decks.iter().find(|deck| deck.id == DEFAULT_DECK_ID)
+        );
+        assert_eq!(
+            storage.review_events(SAMPLE_CARD_ID).unwrap(),
+            before.notes[0].cards[0].review_events
+        );
+        assert_eq!(
+            after.collection_scheduling_settings,
+            before.collection_scheduling_settings
+        );
+        assert_eq!(
+            storage.get_scheduler_profile(DEFAULT_DECK_ID).unwrap(),
+            before.scheduler_profiles[0]
+        );
+        assert_eq!(
+            storage
+                .get_scheduler_parameter_set(DEFAULT_SCHEDULER_PARAMETER_SET_ID)
+                .unwrap(),
+            before.scheduler_parameter_sets[0]
+        );
+        assert!(
+            storage
+                .get_scheduler_parameter_set("archived-default-copy")
+                .is_err()
+        );
+
+        let imported_deck = storage.get_deck(FIXTURE_DECK_ID).unwrap();
+        assert_eq!(imported_deck.created_at_ms, IMPORTED_AT_MS);
+        assert_eq!(imported_deck.updated_at_ms, IMPORTED_AT_MS);
+        assert_eq!(
+            imported_deck.settings,
+            meiki_domain::StudySettingsOverride::default()
+        );
+        let imported_note = storage.get_source_note(FIXTURE_SOURCE_ID).unwrap();
+        assert_eq!(imported_note.source_item.created_at_ms, IMPORTED_AT_MS);
+        assert_eq!(imported_note.source_item.updated_at_ms, IMPORTED_AT_MS);
+        assert!(
+            imported_note
+                .source_item
+                .media
+                .iter()
+                .all(|media| media.created_at_ms == IMPORTED_AT_MS)
+        );
+        assert_eq!(imported_note.clozes[0].created_at_ms, IMPORTED_AT_MS);
+        assert_eq!(imported_note.clozes[0].updated_at_ms, IMPORTED_AT_MS);
+        let imported_card = storage.get_card(FIXTURE_CARD_ID).unwrap();
+        assert_eq!(imported_card.content_version, 1);
+        assert_eq!(imported_card.created_at_ms, IMPORTED_AT_MS);
+        assert_eq!(imported_card.updated_at_ms, IMPORTED_AT_MS);
+        let schedule = storage.load_schedule(FIXTURE_CARD_ID).unwrap();
+        assert_eq!(schedule.version, 0);
+        assert_eq!(schedule.lifecycle, CardLifecycle::Unseen);
+        assert_eq!(schedule.due_at_ms, IMPORTED_AT_MS);
+        assert_eq!(schedule.ideal_due_at_ms, IMPORTED_AT_MS);
+        let imported_portable = after
+            .notes
+            .iter()
+            .find(|note| note.source_item.id == FIXTURE_SOURCE_ID)
+            .unwrap();
+        assert_eq!(
+            imported_portable.cards[0].baseline,
+            imported_portable.cards[0].schedule
+        );
+        drop(storage);
+
+        let imported_settings = service.get_scheduler_settings(FIXTURE_DECK_ID).unwrap();
+        assert_eq!(
+            imported_settings.scheduling_mode,
+            SchedulingModeDto::Automatic
+        );
+        assert_eq!(imported_settings.collection_daily_time_budget_minutes, 1);
+        assert_eq!(imported_settings.deck_daily_time_budget_minutes, None);
+        assert_eq!(
+            imported_settings.budget_source,
+            BudgetSourceDto::CollectionBudget
+        );
+        let today = service
+            .get_today_overview(&TodayRequest {
+                deck_id: FIXTURE_DECK_ID.into(),
+                now_ms: IMPORTED_AT_MS,
+                day_start_ms: IMPORTED_AT_MS,
+                day_end_ms: IMPORTED_AT_MS + 86_400_000,
+            })
+            .unwrap();
+        assert_eq!(today.daily_time_budget_minutes, Some(1));
+        assert_eq!(today.budget_source, BudgetSourceDto::CollectionBudget);
+        assert_eq!(today.new_cards + today.deferred_new_cards, 1);
+        assert_eq!(today.queue.len(), usize::try_from(today.new_cards).unwrap());
+        assert!(
+            today
+                .queue
+                .iter()
+                .all(|queued| queued.card_id == FIXTURE_CARD_ID)
+        );
+
+        let study = service.get_study_card(FIXTURE_CARD_ID).unwrap();
+        assert_eq!(study.prompt_media.len(), 1);
+        assert_eq!(study.prompt_media[0].role, MediaRoleDto::PromptAudio);
+        let reveal = service
+            .check_answer(&CheckAnswerRequest {
+                card_id: study.card_id,
+                card_content_version: study.card_content_version,
+                schedule_version: study.schedule_version,
+                raw_response: "晴れです".into(),
+            })
+            .unwrap();
+        assert_eq!(reveal.answer_media.len(), 1);
+        assert_eq!(reveal.answer_media[0].role, MediaRoleDto::AnswerAudio);
+        assert_eq!(
+            reveal.answer_media[0].content_hash,
+            study.prompt_media[0].content_hash
+        );
+
+        let repeat_preview = service
+            .preview_archive(&archive_path.to_string_lossy())
+            .unwrap();
+        assert!(!repeat_preview.can_add_deck);
+        assert_eq!(repeat_preview.add_deck_summary, "Deck already installed");
+        assert!(
+            service
+                .add_archive_deck(&ArchiveAddDeckRequest {
+                    path: archive_path.to_string_lossy().into_owned(),
+                    now_ms: IMPORTED_AT_MS + 1,
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("Deck already installed")
+        );
+        assert_eq!(service.list_backups().unwrap().len(), 1);
+        assert_eq!(
+            Storage::open(&collection_path)
+                .unwrap()
+                .list_decks()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn add_deck_rejects_reviewed_scheduled_trashed_and_malformed_archives() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+
+        let reviewed_path = {
+            let source = ApplicationService::new(directory.path().join("reviewed.db"));
+            let card = source.seed_test_collection(1_000).unwrap();
+            source
+                .grade_review_at(
+                    &GradeReviewRequest {
+                        review_event_id: "fixture-review".into(),
+                        card_id: card.card_id,
+                        card_content_version: card.card_content_version,
+                        schedule_version: card.schedule_version,
+                        raw_response: "行きます".into(),
+                        chosen_grade: GradeDto::Good,
+                        response_duration_ms: 1_000,
+                    },
+                    1_000,
+                )
+                .unwrap();
+            PathBuf::from(
+                source
+                    .export_archive(&ArchiveExportRequest { now_ms: 2_000 })
+                    .unwrap()
+                    .path,
+            )
+        };
+        let scheduled_path = write_fixture_variant(directory.path(), "scheduled", |collection| {
+            let card = &mut collection.notes[0].cards[0];
+            card.baseline.lifecycle = CardLifecycle::Introduced;
+            card.schedule.lifecycle = CardLifecycle::Introduced;
+        });
+        let trashed_path = write_fixture_variant(directory.path(), "trashed", |collection| {
+            collection.notes[0].deleted_at_ms = Some(9_000);
+        });
+        let malformed_path = directory.path().join("malformed.meiki");
+        std::fs::write(&malformed_path, b"not a portable archive").unwrap();
+
+        for (path, expected) in [
+            (reviewed_path, "review history"),
+            (scheduled_path, "scheduled or modified"),
+            (trashed_path, "trashed notes"),
+        ] {
+            let preview = service.preview_archive(&path.to_string_lossy()).unwrap();
+            assert!(!preview.can_add_deck);
+            assert!(preview.add_deck_summary.contains(expected));
+            assert!(
+                service
+                    .add_archive_deck(&ArchiveAddDeckRequest {
+                        path: path.to_string_lossy().into_owned(),
+                        now_ms: IMPORTED_AT_MS,
+                    })
+                    .is_err()
+            );
+        }
+        assert!(
+            service
+                .add_archive_deck(&ArchiveAddDeckRequest {
+                    path: malformed_path.to_string_lossy().into_owned(),
+                    now_ms: IMPORTED_AT_MS,
+                })
+                .is_err()
+        );
+        assert!(service.list_backups().unwrap().is_empty());
+        assert_eq!(service.list_decks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn add_deck_preflights_identity_collisions_without_writes() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        service.seed_test_collection(1_000).unwrap();
+        let collision_path =
+            write_fixture_variant(directory.path(), "card-collision", |collection| {
+                let card = &mut collection.notes[0].cards[0];
+                card.card.id = SAMPLE_CARD_ID.into();
+                card.baseline.card_id = SAMPLE_CARD_ID.into();
+                card.schedule.card_id = SAMPLE_CARD_ID.into();
+            });
+
+        let preview = service
+            .preview_archive(&collision_path.to_string_lossy())
+            .unwrap();
+        assert!(!preview.can_add_deck);
+        assert!(preview.add_deck_summary.contains("card"));
+        assert!(preview.add_deck_summary.contains("already exists"));
+        assert!(
+            service
+                .add_archive_deck(&ArchiveAddDeckRequest {
+                    path: collision_path.to_string_lossy().into_owned(),
+                    now_ms: IMPORTED_AT_MS,
+                })
+                .is_err()
+        );
+        assert!(service.list_backups().unwrap().is_empty());
+        assert_eq!(
+            Storage::open(&collection_path)
+                .unwrap()
+                .library_notes()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            service
+                .media_store()
+                .resolve("sha256:4f8734c5e13ac599e168cf247a51c1dd0758537ce00bf16d7fed1a3d14d07041")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn add_deck_rolls_back_new_media_when_technical_metadata_is_invalid() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let invalid_media_path =
+            write_fixture_variant(directory.path(), "invalid-media", |collection| {
+                for media in &mut collection.notes[0].source_item.media {
+                    media.media_type = "audio/mpeg".into();
+                }
+            });
+        let hash = read_archive(&invalid_media_path).unwrap().media_objects[0]
+            .content_hash
+            .clone();
+        assert!(
+            service
+                .preview_archive(&invalid_media_path.to_string_lossy())
+                .unwrap()
+                .can_add_deck
+        );
+
+        let error = service
+            .add_archive_deck(&ArchiveAddDeckRequest {
+                path: invalid_media_path.to_string_lossy().into_owned(),
+                now_ms: IMPORTED_AT_MS,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("technical metadata"));
+        assert!(matches!(
+            service.media_store().resolve(&hash),
+            Err(MediaError::MissingObject(_))
+        ));
+        assert!(
+            Storage::open(&collection_path)
+                .unwrap()
+                .get_deck(FIXTURE_DECK_ID)
+                .is_err()
+        );
+        assert_eq!(service.list_backups().unwrap().len(), 1);
+    }
 
     #[test]
     fn empty_collection_exports_previews_and_replaces_without_learning_data() {

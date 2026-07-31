@@ -8,11 +8,11 @@ use std::{
 };
 
 use meiki_application::{
-    AnnotationDraftDto, ApplicationRuntime, ApplicationService, ArchiveExportRequest,
-    ArchiveImportRequest, CheckAnswerRequest, Clock, ComparisonResultDto, CreateDeckRequest,
-    DirectionDto, GradeDto, GradeReviewRequest, IdSource, ImportMediaRequest, MakeClozeRequest,
-    MatchingPolicyDto, MediaAvailabilityDto, MediaRoleDto, SchedulingModeDto, StudyAvailabilityDto,
-    TodayRequest, UndoReviewRequest, UpdateSchedulerSettingsRequest,
+    AnnotationDraftDto, ApplicationRuntime, ApplicationService, ArchiveAddDeckRequest,
+    ArchiveExportRequest, ArchiveImportRequest, CheckAnswerRequest, Clock, ComparisonResultDto,
+    CreateDeckRequest, DirectionDto, GradeDto, GradeReviewRequest, IdSource, ImportMediaRequest,
+    MakeClozeRequest, MatchingPolicyDto, MediaAvailabilityDto, MediaRoleDto, SchedulingModeDto,
+    StudyAvailabilityDto, TodayRequest, UndoReviewRequest, UpdateSchedulerSettingsRequest,
 };
 use meiki_storage::Storage;
 use tempfile::{TempDir, tempdir};
@@ -50,7 +50,7 @@ impl IdSource for SequentialIds {
 }
 
 struct AuthoredCollection {
-    _directory: TempDir,
+    directory: TempDir,
     collection_path: PathBuf,
     clock: FixedClock,
     ids: SequentialIds,
@@ -188,7 +188,7 @@ fn authored_collection() -> AuthoredCollection {
     let card_id = saved.clozes[0].card_id.clone();
 
     let mut fixture = AuthoredCollection {
-        _directory: directory,
+        directory,
         collection_path,
         clock,
         ids,
@@ -482,6 +482,98 @@ fn full_archive_replacement_preserves_history_media_and_continued_study() {
         &target_clock,
         target_stored.schedule.due_at_ms,
     );
+}
+
+#[test]
+fn pristine_archive_add_survives_restart_without_changing_existing_history() {
+    const PRISTINE_DECK: &[u8] = include_bytes!("../fixtures/pristine-deck-v4.meiki");
+    const IMPORTED_DECK_ID: &str = "fixture-deck-ja-foundation";
+    const IMPORTED_CARD_ID: &str = "fixture-card-ja-001";
+
+    let mut fixture = authored_collection();
+    fixture
+        .service
+        .grade_review(&grade_request(
+            &fixture,
+            "existing-review-before-add",
+            GradeDto::Good,
+        ))
+        .expect("create existing immutable history");
+    let existing_before = Storage::open(&fixture.collection_path)
+        .expect("open existing collection")
+        .load_study_card(&fixture.card_id)
+        .expect("load existing study aggregate");
+    let history_before = Storage::open(&fixture.collection_path)
+        .expect("open existing history")
+        .review_events(&fixture.card_id)
+        .expect("load existing history");
+    let archive_path = fixture.directory.path().join("pristine-deck.meiki");
+    fs::write(&archive_path, PRISTINE_DECK).expect("copy the committed pristine fixture");
+
+    let preview = fixture
+        .service
+        .preview_archive(&archive_path.to_string_lossy())
+        .expect("preview the pristine deck");
+    assert!(preview.can_add_deck);
+    let added = fixture
+        .service
+        .add_archive_deck(&ArchiveAddDeckRequest {
+            path: archive_path.to_string_lossy().into_owned(),
+            now_ms: NOW_MS + 10_000,
+        })
+        .expect("add the pristine deck through the production service");
+    assert_eq!(added.deck_id, IMPORTED_DECK_ID);
+    assert_eq!((added.imported_notes, added.imported_cards), (1, 1));
+    assert!(Path::new(&added.backup_path).is_file());
+
+    fixture.restart();
+    let existing_after = Storage::open(&fixture.collection_path)
+        .expect("reopen after deck add")
+        .load_study_card(&fixture.card_id)
+        .expect("reload the existing study aggregate");
+    let history_after = Storage::open(&fixture.collection_path)
+        .expect("reopen existing history")
+        .review_events(&fixture.card_id)
+        .expect("reload existing history");
+    assert_eq!(existing_after, existing_before);
+    assert_eq!(history_after, history_before);
+    assert!(
+        fixture
+            .service
+            .list_decks()
+            .expect("list both persisted decks")
+            .iter()
+            .any(|deck| deck.id == IMPORTED_DECK_ID)
+    );
+
+    let imported = fixture
+        .service
+        .get_study_card(IMPORTED_CARD_ID)
+        .expect("load the imported card after restart");
+    assert_eq!(imported.prompt_media.len(), 1);
+    assert_eq!(imported.prompt_media[0].role, MediaRoleDto::PromptAudio);
+    let reveal = fixture
+        .service
+        .check_answer(&CheckAnswerRequest {
+            card_id: imported.card_id,
+            card_content_version: imported.card_content_version,
+            schedule_version: imported.schedule_version,
+            raw_response: "晴れです".into(),
+        })
+        .expect("reveal imported source-level answer media");
+    assert_eq!(reveal.answer_media.len(), 1);
+    assert_eq!(reveal.answer_media[0].role, MediaRoleDto::AnswerAudio);
+    assert_eq!(
+        reveal.answer_media[0].content_hash,
+        imported.prompt_media[0].content_hash
+    );
+
+    let repeat = fixture
+        .service
+        .preview_archive(&archive_path.to_string_lossy())
+        .expect("preview the already installed deck");
+    assert!(!repeat.can_add_deck);
+    assert_eq!(repeat.add_deck_summary, "Deck already installed");
 }
 
 #[test]
