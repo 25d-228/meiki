@@ -2099,6 +2099,7 @@ fn insert_default_scheduler_profile(
     deck_id: &str,
     created_at_ms: i64,
 ) -> Result<(), StorageError> {
+    ensure_bundled_default_scheduler_parameter_set(connection, created_at_ms)?;
     connection.execute(
         "INSERT INTO scheduler_profiles(
             deck_id,
@@ -2108,6 +2109,23 @@ fn insert_default_scheduler_profile(
             updated_at_ms
          ) VALUES (?1, 'fsrs-7', ?2, 240, ?3)",
         params![deck_id, DEFAULT_SCHEDULER_PARAMETER_SET_ID, created_at_ms],
+    )?;
+    Ok(())
+}
+
+fn ensure_bundled_default_scheduler_parameter_set(
+    connection: &Connection,
+    created_at_ms: i64,
+) -> Result<(), StorageError> {
+    connection.execute(
+        "INSERT OR IGNORE INTO scheduler_parameter_sets(
+            id, engine_version, parameters_json, created_at_ms
+         ) VALUES (?1, 'fsrs-7', ?2, ?3)",
+        params![
+            DEFAULT_SCHEDULER_PARAMETER_SET_ID,
+            crate::DEFAULT_SCHEDULER_PARAMETERS_JSON,
+            created_at_ms,
+        ],
     )?;
     Ok(())
 }

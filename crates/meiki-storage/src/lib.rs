@@ -39,6 +39,7 @@ const LATEST_SCHEMA_VERSION: u32 = 10;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
+const DEFAULT_SCHEDULER_PARAMETERS_JSON: &str = "[0.041,2.4175,4.1283,11.9709,5.6385,0.4468,3.262,2.3054,0.1688,1.3325,0.3524,0.0049,0.7503,0.0896,0.6625,1.3,0.882,0.3072,3.5875,0.303,0.0107,0.2279,2.6413,0.5594,1.3,2.5,1.0,0.0723,0.1634,0.5,0.9555,0.2245,0.6232,0.1362,0.3862]";
 #[cfg(any(test, feature = "test-fixtures"))]
 pub const SAMPLE_SOURCE_ID: &str = "sample-source";
 #[cfg(any(test, feature = "test-fixtures"))]
