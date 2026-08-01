@@ -11,10 +11,16 @@ use meiki_application::{
     AnnotationDraftDto, ApplicationRuntime, ApplicationService, ArchiveAddDeckRequest,
     ArchiveExportRequest, ArchiveImportRequest, CheckAnswerRequest, Clock, ComparisonResultDto,
     CreateDeckRequest, DirectionDto, GradeDto, GradeReviewRequest, IdSource, ImportMediaRequest,
-    MakeClozeRequest, MatchingPolicyDto, MediaAvailabilityDto, MediaRoleDto, SchedulingModeDto,
-    StudyAvailabilityDto, TodayRequest, UndoReviewRequest, UpdateSchedulerSettingsRequest,
+    ImportSchedulerParametersRequest, MakeClozeRequest, MatchingPolicyDto, MediaAvailabilityDto,
+    MediaRoleDto, SchedulingModeDto, StudyAvailabilityDto, TodayRequest, UndoReviewRequest,
+    UpdateSchedulerSettingsRequest,
 };
-use meiki_storage::Storage;
+use meiki_portable::read_archive;
+use meiki_scheduler::DEFAULT_PARAMETERS;
+use meiki_storage::{
+    DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, SchedulerParameterSetRepository,
+    SchedulerProfileRepository, Storage,
+};
 use tempfile::{TempDir, tempdir};
 
 const NOW_MS: i64 = 1_700_000_000_000;
@@ -77,6 +83,34 @@ fn today(deck_id: &str, now_ms: i64) -> TodayRequest {
         day_start_ms: now_ms - DAY_MS / 2,
         day_end_ms: now_ms + DAY_MS / 2,
     }
+}
+
+fn default_deck_expert_settings() -> UpdateSchedulerSettingsRequest {
+    UpdateSchedulerSettingsRequest {
+        deck_id: DEFAULT_DECK_ID.into(),
+        scheduling_mode: SchedulingModeDto::Expert,
+        collection_daily_time_budget_minutes: 30,
+        deck_daily_time_budget_minutes: None,
+        target_retention_basis_points: 9_000,
+        new_cards_per_day: 20,
+        maximum_interval_days: 36_500,
+        day_boundary_minutes: 240,
+        now_ms: NOW_MS,
+        day_start_ms: NOW_MS - DAY_MS / 2,
+    }
+}
+
+fn assert_bundled_default_exists(storage: &Storage) {
+    let bundled_default = storage
+        .get_scheduler_parameter_set(DEFAULT_SCHEDULER_PARAMETER_SET_ID)
+        .expect("restore the bundled default for future decks");
+    assert!(
+        bundled_default
+            .parameters
+            .iter()
+            .zip(DEFAULT_PARAMETERS)
+            .all(|(stored, expected)| stored.to_bits() == expected.to_bits())
+    );
 }
 
 fn png(width: u32, height: u32) -> Vec<u8> {
@@ -481,6 +515,112 @@ fn full_archive_replacement_preserves_history_media_and_continued_study() {
         &target_path,
         &target_clock,
         target_stored.schedule.due_at_ms,
+    );
+}
+
+#[test]
+fn replacement_without_bundled_parameters_still_creates_and_adds_decks() {
+    const PRISTINE_DECK: &[u8] = include_bytes!("../fixtures/pristine-deck-v4.meiki");
+    const IMPORTED_DECK_ID: &str = "fixture-deck-ja-foundation";
+
+    let source_directory = tempdir().expect("create source collection");
+    let source_path = source_directory.path().join("collection.db");
+    let source_clock = FixedClock::new(NOW_MS);
+    let source_ids = SequentialIds::default();
+    let source = service(&source_path, &source_clock, &source_ids);
+    source
+        .update_scheduler_settings(&default_deck_expert_settings())
+        .expect("switch the only deck to Expert mode");
+    let exported_parameters = source
+        .export_scheduler_parameters(DEFAULT_DECK_ID)
+        .expect("export valid FSRS-7 parameters");
+    source
+        .import_scheduler_parameters(&ImportSchedulerParametersRequest {
+            deck_id: DEFAULT_DECK_ID.into(),
+            path: exported_parameters.path,
+        })
+        .expect("activate a custom Expert parameter set");
+    let custom_profile = Storage::open(&source_path)
+        .expect("open source collection")
+        .get_scheduler_profile(DEFAULT_DECK_ID)
+        .expect("load the custom Expert profile");
+    assert_ne!(
+        custom_profile.active_parameter_set_id,
+        DEFAULT_SCHEDULER_PARAMETER_SET_ID
+    );
+
+    let exported = source
+        .export_archive(&ArchiveExportRequest { now_ms: NOW_MS + 1 })
+        .expect("export a collection that does not reference the bundled default");
+    let archived = read_archive(Path::new(&exported.path)).expect("read the exported collection");
+    assert_eq!(archived.collection.scheduler_parameter_sets.len(), 1);
+    assert_eq!(
+        archived.collection.scheduler_parameter_sets[0].id,
+        custom_profile.active_parameter_set_id
+    );
+    let target_directory = tempdir().expect("create replacement target");
+    let target_path = target_directory.path().join("collection.db");
+    let target_clock = FixedClock::new(NOW_MS + 2);
+    let target_ids = SequentialIds::default();
+    let target = service(&target_path, &target_clock, &target_ids);
+    target
+        .import_archive(&ArchiveImportRequest {
+            path: exported.path,
+            confirmation: "REPLACE".into(),
+        })
+        .expect("replace from an archive without the bundled default");
+
+    let replaced = Storage::open(&target_path).expect("open replaced collection");
+    assert_bundled_default_exists(&replaced);
+    assert_eq!(
+        replaced
+            .get_scheduler_profile(DEFAULT_DECK_ID)
+            .expect("load the unchanged custom profile"),
+        custom_profile
+    );
+    drop(replaced);
+
+    let created = target
+        .create_deck(&CreateDeckRequest {
+            name: "Created after replacement".into(),
+            now_ms: NOW_MS + 3,
+        })
+        .expect("create an automatic deck after replacement");
+    assert_eq!(
+        Storage::open(&target_path)
+            .expect("open collection after creating a deck")
+            .get_scheduler_profile(&created.id)
+            .expect("load the created deck profile")
+            .active_parameter_set_id,
+        DEFAULT_SCHEDULER_PARAMETER_SET_ID
+    );
+
+    let pristine_path = target_directory.path().join("pristine-deck.meiki");
+    fs::write(&pristine_path, PRISTINE_DECK).expect("copy the pristine deck fixture");
+    let preview = target
+        .preview_archive(&pristine_path.to_string_lossy())
+        .expect("preview the pristine deck after replacement");
+    assert!(preview.can_add_deck);
+    target
+        .add_archive_deck(&ArchiveAddDeckRequest {
+            path: pristine_path.to_string_lossy().into_owned(),
+            now_ms: NOW_MS + 4,
+        })
+        .expect("add the pristine deck after replacement");
+
+    let final_storage = Storage::open(&target_path).expect("open final collection");
+    assert_eq!(
+        final_storage
+            .get_scheduler_profile(IMPORTED_DECK_ID)
+            .expect("load the imported deck profile")
+            .active_parameter_set_id,
+        DEFAULT_SCHEDULER_PARAMETER_SET_ID
+    );
+    assert_eq!(
+        final_storage
+            .get_scheduler_profile(DEFAULT_DECK_ID)
+            .expect("reload the unchanged custom profile"),
+        custom_profile
     );
 }
 
