@@ -1,18 +1,18 @@
 use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, BundleImportProgressDto, BundleImportRequest, BundleImportResultDto,
-    BundlePreviewDto, BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
-    BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
-    DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
-    DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
-    ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
-    LibraryOverviewDto, LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto,
-    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
-    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
-    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
-    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
-    UpdateSchedulerSettingsRequest,
+    BackupDto, BundleExportRequest, BundleImportProgressDto, BundleImportRequest,
+    BundleImportResultDto, BundlePreviewDto, BundleRemovalPreviewDto, BundleRemovalProgressDto,
+    BundleRemovalRequest, BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest,
+    DeckCardActionRequest, DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto,
+    DeckSummaryDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest,
+    GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest,
+    LibraryBulkResultDto, LibraryOverviewDto, LibraryRequest, MakeClozeRequest,
+    PortableArchivePreviewDto, PortableExportResultDto, ReconcileStudyQueueRequest,
+    RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest, RevealDto,
+    SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto,
+    StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto,
+    TodayRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 
 type CommandResult<T> = Result<T, String>;
@@ -110,6 +110,13 @@ pub(crate) fn list_installed_bundles(
     service: &ApplicationService,
 ) -> CommandResult<Vec<BundleRemovalPreviewDto>> {
     map_error(service.list_installed_bundles())
+}
+
+pub(crate) fn export_bundle(
+    service: &ApplicationService,
+    request: &BundleExportRequest,
+) -> CommandResult<PortableExportResultDto> {
+    map_error(service.export_bundle(request))
 }
 
 pub(crate) fn remove_bundle(

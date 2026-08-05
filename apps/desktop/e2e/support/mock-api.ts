@@ -482,6 +482,16 @@ export async function installMockApi(page: Page): Promise<void> {
         }
         return [];
       }
+      if (command === "export_bundle") {
+        return {
+          path: "/tmp/exports/meiki-bundle-e2e.meiki",
+          decks: 6,
+          notes: 9_700,
+          cards: 9_700,
+          review_events: 0,
+          media_objects: 9_700,
+        };
+      }
       if (command === "remove_bundle") {
         const cardTotals = [300, 1_100, 2_100, 3_700, 6_700, 9_700];
         for (const [index, movedCards] of cardTotals.entries()) {

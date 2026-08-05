@@ -50,6 +50,8 @@
   let bundleError = $state("");
   let installedBundles = $state<BundleRemovalPreviewDto[]>([]);
   let bundleActionsDialogOpen = $state(false);
+  let exportingBundleLanguage = $state("");
+  let bundleActionError = $state("");
   let bundleRemovalConfirmationOpen = $state(false);
   let bundleRemovalProgressDialogOpen = $state(false);
   let selectedBundle = $state<BundleRemovalPreviewDto | null>(null);
@@ -164,6 +166,25 @@
     bundleRemovalConfirmationOpen = true;
   }
 
+  async function exportBundle(bundle: BundleRemovalPreviewDto): Promise<void> {
+    if (exportingBundleLanguage) return;
+    exportingBundleLanguage = bundle.language_tag;
+    bundleActionError = "";
+    notice = "";
+    try {
+      const result = await api.exportBundle({
+        language_tag: bundle.language_tag,
+        now_ms: Date.now(),
+      });
+      bundleActionsDialogOpen = false;
+      notice = `Exported ${languageName(bundle.language_tag)} with ${result.decks.toLocaleString()} ${result.decks === 1 ? "deck" : "decks"} and ${result.cards.toLocaleString()} ${result.cards === 1 ? "card" : "cards"} to ${result.path}.`;
+    } catch (cause) {
+      bundleActionError = message(cause);
+    } finally {
+      exportingBundleLanguage = "";
+    }
+  }
+
   async function removeBundle(): Promise<void> {
     if (!selectedBundle || removingBundle) return;
     const bundle = selectedBundle;
@@ -275,8 +296,10 @@
       {#if installedBundles.length > 0}
         <Button
           variant="outline"
-          onclick={() => (bundleActionsDialogOpen = true)}
-          >Bundle actions</Button
+          onclick={() => {
+            bundleActionError = "";
+            bundleActionsDialogOpen = true;
+          }}>Bundle actions</Button
         >
       {/if}
       <Button variant="outline" onclick={() => void chooseBundle()}
@@ -421,21 +444,43 @@
         Manage language bundles installed in this collection.
       </Dialog.Description>
     </Dialog.Header>
+    {#if bundleActionError}
+      <Alert.Root variant="destructive" role="alert">
+        <Alert.Title>The bundle was not exported</Alert.Title>
+        <Alert.Description>{bundleActionError}</Alert.Description>
+      </Alert.Root>
+    {/if}
     <div class="bundle-action-list">
       {#each installedBundles as bundle (bundle.language_tag)}
-        <Button variant="outline" onclick={() => confirmBundleRemoval(bundle)}>
-          Remove {languageName(bundle.language_tag)}
-          <span>
-            {bundle.decks.toLocaleString()}
-            {bundle.decks === 1 ? "deck" : "decks"}, {bundle.cards.toLocaleString()}
-            {bundle.cards === 1 ? "card" : "cards"}
-          </span>
-        </Button>
+        <div>
+          <Button
+            variant="outline"
+            disabled={Boolean(exportingBundleLanguage)}
+            onclick={() => void exportBundle(bundle)}
+          >
+            {exportingBundleLanguage === bundle.language_tag
+              ? `Exporting ${languageName(bundle.language_tag)}…`
+              : `Export ${languageName(bundle.language_tag)}`}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={Boolean(exportingBundleLanguage)}
+            onclick={() => confirmBundleRemoval(bundle)}
+          >
+            Remove {languageName(bundle.language_tag)}
+            <span>
+              {bundle.decks.toLocaleString()}
+              {bundle.decks === 1 ? "deck" : "decks"}, {bundle.cards.toLocaleString()}
+              {bundle.cards === 1 ? "card" : "cards"}
+            </span>
+          </Button>
+        </div>
       {/each}
     </div>
     <Dialog.Footer>
       <Button
         variant="outline"
+        disabled={Boolean(exportingBundleLanguage)}
         onclick={() => (bundleActionsDialogOpen = false)}>Close</Button
       >
     </Dialog.Footer>
@@ -707,6 +752,7 @@
   }
 
   .bundle-action-list,
+  .bundle-action-list > div,
   .bundle-removal-progress,
   .bundle-removal-progress label {
     display: grid;

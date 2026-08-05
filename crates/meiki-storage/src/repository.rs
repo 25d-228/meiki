@@ -1065,6 +1065,25 @@ impl PristineDeckRepository for Storage {
 }
 
 impl Storage {
+    /// Lists the remaining deck identities for one installed bundle in their
+    /// original stage order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when bundle associations cannot be read.
+    pub fn bundle_deck_ids(&self, language_tag: &str) -> Result<Vec<String>, StorageError> {
+        let mut statement = self.connection.prepare(
+            "SELECT deck_id
+             FROM bundle_decks
+             WHERE language_tag = ?1
+             ORDER BY ordinal",
+        )?;
+        statement
+            .query_map([language_tag], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::from)
+    }
+
     /// Lists installed language bundles that still have associated decks.
     ///
     /// # Errors
@@ -1316,6 +1335,8 @@ fn validate_pristine_bundle_import(
     let mut installed_deck_ids = Vec::new();
     let mut missing_deck_ids = Vec::new();
     let mut unassociated_deck_ids = Vec::new();
+    let mut imported_ordinals = HashMap::new();
+    let mut previous_associated_ordinal = None;
     for (ordinal, imported_deck) in import.decks.iter().enumerate() {
         let deck = &imported_deck.deck;
         let ordinal = u64::try_from(ordinal)
@@ -1326,6 +1347,7 @@ fn validate_pristine_bundle_import(
                 deck.id
             )));
         }
+        imported_ordinals.insert(deck.id.as_str(), ordinal);
         if deck.language_tag.as_deref() != Some(import.language_tag.as_str()) {
             return Err(StorageError::InvalidAggregate(format!(
                 "bundle deck {} does not use language {}",
@@ -1341,28 +1363,21 @@ fn validate_pristine_bundle_import(
             .optional()?;
         if deck_association
             .as_ref()
-            .is_some_and(|(associated_language, associated_ordinal)| {
-                associated_language != &import.language_tag || *associated_ordinal != ordinal
-            })
+            .is_some_and(|(associated_language, _)| associated_language != &import.language_tag)
         {
             return Err(StorageError::InvalidAggregate(format!(
                 "bundle deck {} is already associated with another bundle or stage",
                 deck.id
             )));
         }
-        let associated_stage_deck = connection
-            .query_row(
-                "SELECT deck_id
-                 FROM bundle_decks
-                 WHERE language_tag = ?1 AND ordinal = ?2",
-                params![import.language_tag, ordinal],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        if associated_stage_deck.is_some_and(|associated| associated != deck.id) {
-            return Err(StorageError::InvalidAggregate(format!(
-                "bundle stage {ordinal} is already associated with another deck"
-            )));
+        if let Some((_, associated_ordinal)) = deck_association.as_ref() {
+            if previous_associated_ordinal.is_some_and(|previous| previous >= *associated_ordinal) {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "bundle deck {} is already associated with another bundle or stage",
+                    deck.id
+                )));
+            }
+            previous_associated_ordinal = Some(*associated_ordinal);
         }
         if entity_id_exists(connection, "SELECT 1 FROM decks WHERE id = ?1", &deck.id)? {
             installed_deck_ids.push(deck.id.clone());
@@ -1375,6 +1390,34 @@ fn validate_pristine_bundle_import(
             validate_pristine_note(imported_note, &deck.id, &mut identities)?;
         }
         missing_deck_ids.push(deck.id.clone());
+    }
+    if !missing_deck_ids.is_empty() || !unassociated_deck_ids.is_empty() {
+        let mut desired_stage_decks = HashMap::new();
+        let mut statement = connection.prepare(
+            "SELECT deck_id, ordinal
+             FROM bundle_decks
+             WHERE language_tag = ?1",
+        )?;
+        let associated_decks = statement
+            .query_map([&import.language_tag], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (deck_id, ordinal) in associated_decks {
+            if !imported_ordinals.contains_key(deck_id.as_str()) {
+                desired_stage_decks.insert(ordinal, deck_id);
+            }
+        }
+        for (deck_id, ordinal) in &imported_ordinals {
+            if desired_stage_decks
+                .insert(*ordinal, (*deck_id).to_owned())
+                .is_some()
+            {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "bundle stage {ordinal} is already associated with another deck"
+                )));
+            }
+        }
     }
     ensure_pristine_identities_available(connection, &identities)?;
 
@@ -1652,28 +1695,28 @@ fn persist_pristine_bundle_import(
         .iter()
         .map(String::as_str)
         .collect::<HashSet<_>>();
-    let unassociated = plan
-        .unassociated_deck_ids
-        .iter()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-    for (ordinal, imported_deck) in import.decks.iter().enumerate() {
+    // Reinsert as a set because shifting one ordinal at a time can collide with another stage.
+    for imported_deck in &import.decks {
         let deck_id = imported_deck.deck.id.as_str();
         if missing.contains(deck_id) {
             persist_pristine_deck_import(transaction, imported_deck, on_card_imported)?;
         }
-        if missing.contains(deck_id) || unassociated.contains(deck_id) {
-            transaction.execute(
-                "INSERT INTO bundle_decks(language_tag, deck_id, ordinal)
-                 VALUES (?1, ?2, ?3)",
-                params![
-                    import.language_tag,
-                    imported_deck.deck.id,
-                    u64::try_from(ordinal)
-                        .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?
-                ],
-            )?;
-        }
+        transaction.execute(
+            "DELETE FROM bundle_decks WHERE language_tag = ?1 AND deck_id = ?2",
+            params![import.language_tag, deck_id],
+        )?;
+    }
+    for (ordinal, imported_deck) in import.decks.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO bundle_decks(language_tag, deck_id, ordinal)
+             VALUES (?1, ?2, ?3)",
+            params![
+                import.language_tag,
+                imported_deck.deck.id,
+                u64::try_from(ordinal)
+                    .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?
+            ],
+        )?;
     }
     Ok(())
 }

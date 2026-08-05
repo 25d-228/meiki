@@ -60,8 +60,8 @@ pub use library::{
 pub use portable::{
     ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest, ArchiveImportRequest,
     ArchiveImportResultDto, BackupDto, BundleDeckInstallStatusDto, BundleDeckPreviewDto,
-    BundleImportProgressDto, BundleImportRequest, BundleImportResultDto, BundleImportStageDto,
-    BundlePreviewDto, PortableArchivePreviewDto, PortableExportResultDto,
+    BundleExportRequest, BundleImportProgressDto, BundleImportRequest, BundleImportResultDto,
+    BundleImportStageDto, BundlePreviewDto, PortableArchivePreviewDto, PortableExportResultDto,
 };
 pub use today::{
     ALL_DECKS_ID, StudyAvailabilityDto, StudyPlanDto, TodayDeckDto, TodayOverviewDto,
@@ -1796,6 +1796,7 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     BundleImportStageDto::export_all_to(output)?;
     BundleImportProgressDto::export_all_to(output)?;
     BundleImportResultDto::export_all_to(output)?;
+    BundleExportRequest::export_all_to(output)?;
     Ok(())
 }
 

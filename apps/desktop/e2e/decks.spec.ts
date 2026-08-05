@@ -181,6 +181,27 @@ test("removes an installed bundle after one confirmation and leaves unrelated de
   });
 });
 
+test("exports an installed bundle from its language actions", async ({
+  page,
+}) => {
+  await page.goto("/?bundleRemoval=installed");
+  await openDecks(page);
+  await page.getByRole("button", { name: "Bundle actions" }).click();
+  await page
+    .getByRole("dialog", { name: "Bundle actions" })
+    .getByRole("button", { name: "Export Japanese" })
+    .click();
+
+  await expect(
+    page.getByText(
+      "Exported Japanese with 6 decks and 9,700 cards to /tmp/exports/meiki-bundle-e2e.meiki.",
+    ),
+  ).toBeVisible();
+  expect((await lastRequest(page, "export_bundle"))?.args).toMatchObject({
+    request: { language_tag: "ja-JP" },
+  });
+});
+
 test("preserves an all-decks study queue when its bundle decks are removed", async ({
   page,
 }) => {
