@@ -744,10 +744,14 @@ fn bundle_removal_uses_one_confirmation_for_six_stages_and_preserves_unrelated_c
     }
 
     storage
-        .move_library_notes(&["source-mixed".into()], DEFAULT_DECK_ID, 3_000)
+        .move_deck_cards(
+            &["pristine-card-0".into(), "pristine-card-1".into()],
+            DEFAULT_DECK_ID,
+            3_000,
+        )
         .unwrap();
     storage
-        .move_library_notes(&[SAMPLE_SOURCE_ID.into()], "deck-mixed-2", 3_000)
+        .move_deck_cards(&[SAMPLE_CARD_ID.into()], "deck-mixed-2", 3_000)
         .unwrap();
     let review = sample_event(&storage, "bundle-removal-review", 4_000);
     storage.commit_review(&review).unwrap();
@@ -1350,7 +1354,6 @@ fn review_append_projection_and_queue_update_are_atomic() {
 fn fixed_lifecycle_command_model_preserves_durable_invariants_after_every_step() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("lifecycle-model.db");
-    let source_ids = vec![SAMPLE_SOURCE_ID.to_owned()];
     let mut storage = Storage::open(&path).unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();
     let mut model = LifecycleModel {
@@ -1392,12 +1395,12 @@ fn fixed_lifecycle_command_model_preserves_durable_invariants_after_every_step()
     assert_lifecycle_model(&storage, &model);
 
     storage
-        .set_library_notes_suspended(&source_ids, true, 13_000)
+        .set_deck_cards_suspended(&[SAMPLE_CARD_ID.into()], true, 13_000)
         .unwrap();
     model.suspended = true;
     assert_lifecycle_model(&storage, &model);
     storage
-        .set_library_notes_suspended(&source_ids, false, 14_000)
+        .set_deck_cards_suspended(&[SAMPLE_CARD_ID.into()], false, 14_000)
         .unwrap();
     model.suspended = false;
     assert_lifecycle_model(&storage, &model);
@@ -1410,12 +1413,12 @@ fn fixed_lifecycle_command_model_preserves_durable_invariants_after_every_step()
     assert_lifecycle_model(&storage, &model);
 
     storage
-        .set_library_notes_deleted(&source_ids, Some(16_000), 16_000)
+        .set_deck_cards_deleted(&[SAMPLE_CARD_ID.into()], Some(16_000), 16_000)
         .unwrap();
     model.trashed = true;
     assert_lifecycle_model(&storage, &model);
     storage
-        .set_library_notes_deleted(&source_ids, None, 17_000)
+        .set_deck_cards_deleted(&[SAMPLE_CARD_ID.into()], None, 17_000)
         .unwrap();
     model.trashed = false;
     assert_lifecycle_model(&storage, &model);
@@ -1506,7 +1509,7 @@ fn failed_deck_deletion_rolls_back_trash_and_rehome_writes() {
         })
         .unwrap();
     storage
-        .move_library_notes(&[SAMPLE_SOURCE_ID.into()], "doomed-deck", 2_000)
+        .move_deck_cards(&[SAMPLE_CARD_ID.into()], "doomed-deck", 2_000)
         .unwrap();
     storage
         .connection
@@ -2358,7 +2361,7 @@ fn multilingual_aggregate_round_trips_and_cloze_ids_survive_surrounding_edits() 
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn library_bulk_actions_are_recoverable_atomic_and_preserve_history_and_media() {
+fn deck_card_actions_are_atomic_and_preserve_history_and_media() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();
     let source_id = storage.library_notes().unwrap()[0]
@@ -2378,7 +2381,7 @@ fn library_bulk_actions_are_recoverable_atomic_and_preserve_history_and_media() 
     assert_eq!(storage.media_reference_usage("media-library").unwrap(), 1);
 
     storage
-        .set_library_notes_deleted(std::slice::from_ref(&source_id), Some(20_000), 20_000)
+        .set_deck_cards_deleted(&[SAMPLE_CARD_ID.into()], Some(20_000), 20_000)
         .unwrap();
     let deleted = storage.library_notes().unwrap();
     assert_eq!(deleted[0].deleted_at_ms, Some(20_000));
@@ -2400,25 +2403,22 @@ fn library_bulk_actions_are_recoverable_atomic_and_preserve_history_and_media() 
     );
 
     storage
-        .set_library_notes_deleted(std::slice::from_ref(&source_id), None, 21_000)
+        .set_deck_cards_deleted(&[SAMPLE_CARD_ID.into()], None, 21_000)
         .unwrap();
     assert_eq!(
         storage.study_cards_for_deck(DEFAULT_DECK_ID).unwrap().len(),
         1
     );
 
-    let missing_selection = vec![source_id.clone(), "missing-source".into()];
+    let missing_selection = vec![SAMPLE_CARD_ID.into(), "missing-card".into()];
     assert!(matches!(
-        storage.set_library_notes_suspended(&missing_selection, true, 22_000),
-        Err(StorageError::EntityNotFound {
-            entity: "source note",
-            ..
-        })
+        storage.set_deck_cards_suspended(&missing_selection, true, 22_000),
+        Err(StorageError::EntityNotFound { entity: "card", .. })
     ));
     assert!(!storage.get_card(SAMPLE_CARD_ID).unwrap().suspended);
 
     storage
-        .set_library_notes_suspended(std::slice::from_ref(&source_id), true, 23_000)
+        .set_deck_cards_suspended(&[SAMPLE_CARD_ID.into()], true, 23_000)
         .unwrap();
     assert!(storage.get_card(SAMPLE_CARD_ID).unwrap().suspended);
     assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
@@ -2430,7 +2430,7 @@ fn library_bulk_actions_are_recoverable_atomic_and_preserve_history_and_media() 
     let destination = deck("library-destination");
     storage.create_deck(&destination).unwrap();
     storage
-        .move_library_notes(std::slice::from_ref(&source_id), &destination.id, 24_000)
+        .move_deck_cards(&[SAMPLE_CARD_ID.into()], &destination.id, 24_000)
         .unwrap();
     assert_eq!(
         storage
@@ -2441,31 +2441,6 @@ fn library_bulk_actions_are_recoverable_atomic_and_preserve_history_and_media() 
         destination.id
     );
 
-    let library_tag = tag("tag-library", "検索");
-    storage
-        .tag_library_notes(std::slice::from_ref(&source_id), &library_tag, 25_000)
-        .unwrap();
-    assert!(
-        storage
-            .get_source_note(&source_id)
-            .unwrap()
-            .source_item
-            .tags
-            .iter()
-            .any(|stored| stored.id == library_tag.id)
-    );
-    storage
-        .untag_library_notes(std::slice::from_ref(&source_id), &library_tag.id, 26_000)
-        .unwrap();
-    assert!(
-        storage
-            .get_source_note(&source_id)
-            .unwrap()
-            .source_item
-            .tags
-            .iter()
-            .all(|stored| stored.id != library_tag.id)
-    );
     assert_eq!(storage.review_count(SAMPLE_CARD_ID).unwrap(), 1);
     assert_eq!(
         storage.load_schedule(SAMPLE_CARD_ID).unwrap(),

@@ -21,21 +21,10 @@ import type { ImportSchedulerParametersRequest } from "./generated/ImportSchedul
 import type { UpdateSchedulerSettingsRequest } from "./generated/UpdateSchedulerSettingsRequest";
 import type { DirectionDto } from "./generated/DirectionDto";
 import type { ImportMediaRequest } from "./generated/ImportMediaRequest";
-import type { LibraryBulkRequest } from "./generated/LibraryBulkRequest";
-import type { LibraryBulkResultDto } from "./generated/LibraryBulkResultDto";
-import type { LibraryOverviewDto } from "./generated/LibraryOverviewDto";
-import type { LibraryRequest } from "./generated/LibraryRequest";
 import type { MediaRoleDto } from "./generated/MediaRoleDto";
 import type { StudyMediaDto } from "./generated/StudyMediaDto";
 import type { TodayOverviewDto } from "./generated/TodayOverviewDto";
 import type { TodayRequest } from "./generated/TodayRequest";
-import type { ArchiveExportRequest } from "./generated/ArchiveExportRequest";
-import type { ArchiveAddDeckRequest } from "./generated/ArchiveAddDeckRequest";
-import type { ArchiveAddDeckResultDto } from "./generated/ArchiveAddDeckResultDto";
-import type { ArchiveImportRequest } from "./generated/ArchiveImportRequest";
-import type { ArchiveImportResultDto } from "./generated/ArchiveImportResultDto";
-import type { BackupDto } from "./generated/BackupDto";
-import type { PortableArchivePreviewDto } from "./generated/PortableArchivePreviewDto";
 import type { PortableExportResultDto } from "./generated/PortableExportResultDto";
 import type { ReconcileStudyQueueRequest } from "./generated/ReconcileStudyQueueRequest";
 import type { StudyQueueEntryDto } from "./generated/StudyQueueEntryDto";
@@ -89,16 +78,6 @@ export const api = {
     return invoke("reconcile_study_queue", { request });
   },
 
-  getLibrary(request: LibraryRequest): Promise<LibraryOverviewDto> {
-    return invoke("get_library", { request });
-  },
-
-  applyLibraryBulkAction(
-    request: LibraryBulkRequest,
-  ): Promise<LibraryBulkResultDto> {
-    return invoke("apply_library_bulk_action", { request });
-  },
-
   getDeckCards(request: DeckCardRequest): Promise<DeckCardOverviewDto> {
     return invoke("get_deck_cards", { request });
   },
@@ -109,25 +88,15 @@ export const api = {
     return invoke("apply_deck_card_action", { request });
   },
 
-  exportArchive(
-    request: ArchiveExportRequest,
-  ): Promise<PortableExportResultDto> {
-    return invoke("export_archive", { request });
-  },
-
   async pickArchiveFile(): Promise<string | null> {
     const testPick = window.__MEIKI_TEST_PICK_ARCHIVE__;
     if (testPick) return testPick();
     const selected = await open({
       multiple: false,
       directory: false,
-      filters: [{ name: "Meiki archive", extensions: ["meiki"] }],
+      filters: [{ name: "Meiki bundle", extensions: ["meiki"] }],
     });
     return typeof selected === "string" ? selected : null;
-  },
-
-  previewArchive(path: string): Promise<PortableArchivePreviewDto> {
-    return invoke("preview_archive", { path });
   },
 
   previewBundle(path: string): Promise<BundlePreviewDto> {
@@ -172,26 +141,6 @@ export const api = {
     }
     const progress = new Channel<BundleRemovalProgressDto>(onProgress);
     return invoke("remove_bundle", { request, onProgress: progress });
-  },
-
-  addArchiveDeck(
-    request: ArchiveAddDeckRequest,
-  ): Promise<ArchiveAddDeckResultDto> {
-    return invoke("add_archive_deck", { request });
-  },
-
-  importArchive(
-    request: ArchiveImportRequest,
-  ): Promise<ArchiveImportResultDto> {
-    return invoke("import_archive", { request });
-  },
-
-  listBackups(): Promise<BackupDto[]> {
-    return invoke("list_backups");
-  },
-
-  restoreBackup(path: string, confirmation: string): Promise<BackupDto> {
-    return invoke("restore_backup", { path, confirmation });
   },
 
   getAuthoringDraftForCard(cardId: string): Promise<AuthoringDraftDto> {

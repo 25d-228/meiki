@@ -55,10 +55,6 @@ test("shows one deck's cards and searches mixed-script sentences and answers", a
   expect((await lastRequest(page, "get_deck_cards"))?.args).toMatchObject({
     request: { deck_id: "travel-deck", query: "كتابًا" },
   });
-
-  await expect(page.getByText("Library", { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/source note/i)).toHaveCount(0);
-  expect(await lastRequest(page, "get_library")).toBeUndefined();
 });
 
 test("adds and edits from the opened deck and returns after cancel or save", async ({

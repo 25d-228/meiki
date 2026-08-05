@@ -53,33 +53,27 @@ maximum interval, or versioned memory-parameter import/export. Memory
 parameters and the time-budget policy are separate; policy changes affect only
 future scheduling decisions and never rewrite history.
 
-## Back up and restore
+## Import and export language bundles
 
-Open **Settings → Archives and recovery** to export the complete collection.
-A `.meiki` archive preserves review history, schedule metadata, Unicode text,
-and checksum-addressed media.
+Open **Decks** and choose **Import bundle** to preview a `.meiki` language
+bundle. The preview lists its ordered decks and marks stages that are already
+installed. Adding a bundle preserves existing decks and study state; imported
+cards start unseen with Automatic scheduling.
 
-Always preview an import. When an archive contains exactly one pristine deck,
-choose **Add deck** to keep every existing deck, review, schedule, and
-collection setting. The added deck starts unseen, uses Automatic scheduling,
-and inherits the current collection budget. Importing the same deck again is
-rejected as already installed.
-
-Use **Replace collection** only when you intend to replace everything. It
-accepts a complete collection archive and requires typing `REPLACE`. Both add
-and replace create a recovery backup before changing durable collection data.
-
-Settings lists rolling backups. Restoring one requires its exact filename and
-creates another recovery point for the collection being replaced.
+Use **Bundle actions** to export the remaining installed decks for a language
+or to remove that language with one confirmation. A clean export includes the
+bundle's active cards and local media, but not review history, current due
+dates, the collection study-time setting, unrelated decks, or Trash.
 
 ## Recovery and media
 
 If an action is interrupted, Meiki keeps the complete pending review command
 and presents **Try again**. A restart retries the same command identity, so a
 saved review is not duplicated when its response was lost. Before displaying
-the next cached card, Meiki checks the current database schedule and skips
+the next cached card, Meiki checks the current schedule and skips
 cards that were changed, suspended, moved, deleted, or rescheduled. Missing or
 corrupt media is reported without blocking study.
 
-Keep exported `.meiki` archives on another device or backup volume. The
-runtime SQLite database is not the portable format.
+Keep exported `.meiki` bundles wherever you want to install them again. Meiki
+also creates internal recovery points for migrations and transactional bundle
+operations; these are maintained automatically and are not shown in Settings.

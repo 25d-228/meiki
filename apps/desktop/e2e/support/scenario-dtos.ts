@@ -407,80 +407,6 @@ function authoredDraft(
 
 const cjkDraft = authoredDraft("日曜日は図書館に行きます", "図書館", "auto");
 
-const libraryNotes = [
-  {
-    source_id: "sample-source",
-    deck_id: "default-deck",
-    deck_name: "Japanese",
-    source_text: "日曜日は図書館に行きます",
-    language_tag: "ja",
-    direction: "auto",
-    tags: [{ id: "tag-travel", name: "旅行" }],
-    cards: [
-      {
-        card_id: "due-card",
-        cloze_id: "sample-cloze",
-        prompt: "日曜日は図書館に[…]",
-        answer: "行きます",
-        suspended: false,
-        is_new: false,
-        is_due: true,
-        due_at: dueAt,
-        language_tag: "ja",
-        direction: "auto",
-        has_media: true,
-      },
-    ],
-    media_count: 1,
-    deleted: false,
-    deleted_at: null,
-    updated_at_ms: 1,
-  },
-  {
-    source_id: "source-ar",
-    deck_id: "travel-deck",
-    deck_name: "Travel phrases",
-    source_text: "أنا أقرأ كتابًا في المكتبة",
-    language_tag: "ar",
-    direction: "rtl",
-    tags: [{ id: "tag-arabic", name: "العربية" }],
-    cards: [
-      {
-        card_id: "card-ar",
-        cloze_id: "cloze-ar",
-        prompt: "أنا أقرأ […] في المكتبة",
-        answer: "كتابًا",
-        suspended: false,
-        is_new: false,
-        is_due: false,
-        due_at: nextDueAt,
-        language_tag: "ar",
-        direction: "rtl",
-        has_media: false,
-      },
-    ],
-    media_count: 0,
-    deleted: false,
-    deleted_at: null,
-    updated_at_ms: 2,
-  },
-] as const;
-
-const library = {
-  notes: libraryNotes,
-  decks: decks.map(({ id, name }) => ({ id, name })),
-  tags: [
-    { id: "tag-travel", name: "旅行" },
-    { id: "tag-arabic", name: "العربية" },
-  ],
-  languages: ["ar", "ja"],
-  total_matches: 2,
-  active_notes: 2,
-  trashed_notes: 0,
-  offset: 0,
-  limit: 50,
-};
-
 const deckCards = {
   default: {
     cards: [
@@ -810,25 +736,7 @@ export const scenarioDtos = {
     controller_explanation:
       "60 min/day\nTarget retention: 87.5%\nNew cards today: 12\nReason: fixture response.",
   },
-  library,
   deckCards,
-  emptyLibrary: {
-    ...library,
-    notes: [],
-    tags: [],
-    languages: [],
-    total_matches: 0,
-    active_notes: 0,
-  },
-  bulkResults: {
-    suspend: { affected_notes: 2, action: "suspend", undo_action: null },
-    unsuspend: { affected_notes: 2, action: "unsuspend", undo_action: null },
-    delete: { affected_notes: 2, action: "delete", undo_action: "restore" },
-    restore: { affected_notes: 2, action: "restore", undo_action: "delete" },
-    move: { affected_notes: 2, action: "move", undo_action: null },
-    add_tag: { affected_notes: 2, action: "add_tag", undo_action: null },
-    remove_tag: { affected_notes: 2, action: "remove_tag", undo_action: null },
-  },
   emptyDraft,
   authoring: {
     cjk: cjkDraft,
@@ -963,46 +871,5 @@ export const scenarioDtos = {
     persisted: true,
     language_tag: "ja",
     deck_language_tag: "ja",
-  },
-  archiveExport: {
-    path: "/tmp/exports/meiki-e2e.meiki",
-    decks: 2,
-    notes: 2,
-    cards: 2,
-    review_events: 1,
-    media_objects: 1,
-  },
-  archivePreview: {
-    path: "/tmp/exports/meiki-e2e.meiki",
-    format_version: 4,
-    deck_name: "Japanese Foundation 1",
-    decks: 1,
-    notes: 1,
-    cards: 1,
-    review_events: 0,
-    media_objects: 1,
-    duplicate_media_objects: 1,
-    can_add_deck: true,
-    add_deck_summary:
-      'Ready to add deck "Japanese Foundation 1" with 1 note(s), 1 card(s), and 1 media object(s).',
-    can_import: true,
-    confirmation: "REPLACE",
-    summary: "Validated 1 note(s), 1 card(s), and 1 media object(s).",
-  },
-  archiveAddDeck: {
-    backup_path: "/tmp/backups/collection.db.pre-add-deck.bak",
-    deck_id: "japanese-foundation-1",
-    deck_name: "Japanese Foundation 1",
-    imported_notes: 1,
-    imported_cards: 1,
-    imported_media_objects: 0,
-    deduplicated_media_objects: 1,
-  },
-  archiveImport: {
-    backup_path: "/tmp/backups/collection.db.pre-import.bak",
-    imported_notes: 2,
-    imported_cards: 2,
-    imported_media_objects: 0,
-    deduplicated_media_objects: 1,
   },
 } as const;

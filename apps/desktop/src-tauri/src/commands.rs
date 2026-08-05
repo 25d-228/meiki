@@ -1,18 +1,16 @@
 use meiki_application::{
-    ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
-    ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, BundleExportRequest, BundleImportProgressDto, BundleImportRequest,
-    BundleImportResultDto, BundlePreviewDto, BundleRemovalPreviewDto, BundleRemovalProgressDto,
-    BundleRemovalRequest, BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest,
-    DeckCardActionRequest, DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto,
-    DeckSummaryDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest,
-    GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest,
-    LibraryBulkResultDto, LibraryOverviewDto, LibraryRequest, MakeClozeRequest,
-    PortableArchivePreviewDto, PortableExportResultDto, ReconcileStudyQueueRequest,
-    RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest, RevealDto,
-    SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto,
-    StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto,
-    TodayRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
+    ApplicationService, AuthoringDraftDto, AuthoringPreviewDto, BundleExportRequest,
+    BundleImportProgressDto, BundleImportRequest, BundleImportResultDto, BundlePreviewDto,
+    BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
+    BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
+    DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
+    DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
+    ImportMediaRequest, ImportSchedulerParametersRequest, MakeClozeRequest,
+    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
+    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
+    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
+    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    UpdateSchedulerSettingsRequest,
 };
 
 type CommandResult<T> = Result<T, String>;
@@ -49,20 +47,6 @@ pub(crate) fn reconcile_study_queue(
     map_error(service.reconcile_study_queue(request))
 }
 
-pub(crate) fn get_library(
-    service: &ApplicationService,
-    request: &LibraryRequest,
-) -> CommandResult<LibraryOverviewDto> {
-    map_error(service.get_library(request))
-}
-
-pub(crate) fn apply_library_bulk_action(
-    service: &ApplicationService,
-    request: &LibraryBulkRequest,
-) -> CommandResult<LibraryBulkResultDto> {
-    map_error(service.apply_library_bulk_action(request))
-}
-
 pub(crate) fn get_deck_cards(
     service: &ApplicationService,
     request: &DeckCardRequest,
@@ -75,20 +59,6 @@ pub(crate) fn apply_deck_card_action(
     request: &DeckCardActionRequest,
 ) -> CommandResult<DeckCardActionResultDto> {
     map_error(service.apply_deck_card_action(request))
-}
-
-pub(crate) fn export_archive(
-    service: &ApplicationService,
-    request: &ArchiveExportRequest,
-) -> CommandResult<PortableExportResultDto> {
-    map_error(service.export_archive(request))
-}
-
-pub(crate) fn preview_archive(
-    service: &ApplicationService,
-    path: &str,
-) -> CommandResult<PortableArchivePreviewDto> {
-    map_error(service.preview_archive(path))
 }
 
 pub(crate) fn preview_bundle(
@@ -125,32 +95,6 @@ pub(crate) fn remove_bundle(
     on_progress: impl FnMut(BundleRemovalProgressDto),
 ) -> CommandResult<BundleRemovalResultDto> {
     map_error(service.remove_bundle(request, on_progress))
-}
-
-pub(crate) fn add_archive_deck(
-    service: &ApplicationService,
-    request: &ArchiveAddDeckRequest,
-) -> CommandResult<ArchiveAddDeckResultDto> {
-    map_error(service.add_archive_deck(request))
-}
-
-pub(crate) fn import_archive(
-    service: &ApplicationService,
-    request: &ArchiveImportRequest,
-) -> CommandResult<ArchiveImportResultDto> {
-    map_error(service.import_archive(request))
-}
-
-pub(crate) fn list_backups(service: &ApplicationService) -> CommandResult<Vec<BackupDto>> {
-    map_error(service.list_backups())
-}
-
-pub(crate) fn restore_backup(
-    service: &ApplicationService,
-    path: &str,
-    confirmation: &str,
-) -> CommandResult<BackupDto> {
-    map_error(service.restore_backup(path, confirmation))
 }
 
 pub(crate) fn get_authoring_draft_for_card(

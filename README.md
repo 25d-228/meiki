@@ -80,8 +80,8 @@ application needs no account or network connection.
 
 Meiki is deliberately one personal collection on one desktop. The collection
 may contain flat decks, tags, typed clozes, and local media. Daily study,
-authoring, search, complete collection archives, rolling backups, and manual
-expert scheduling are the supported product.
+authoring, deck search, portable language bundles, and manual expert
+scheduling are the supported product.
 
 Accounts, identity, cloud sync, mobile clients, marketplaces, plugins,
 executable card templates, collaborative editing, shared ownership, automatic
@@ -89,21 +89,13 @@ content generation, social or competitive features, and network-dependent
 study behavior are permanent non-goals. Production code and desktop
 permissions must not require a network.
 
-## Data portability and recovery
+## Language bundles
 
-Settings exports the complete collection as a `.meiki` archive. The versioned
-archive contains canonical UTF-8 structured data, immutable review history and
-current projections, scheduler metadata, a manifest, and checksum-addressed
-media. It does not contain SQLite. Import validates a complete collection,
-then offers two local actions. A pristine single-deck archive can be added
-without changing existing decks, history, schedules, or collection policy. A
-full archive can replace the local collection after explicit typed
-confirmation.
+Decks imports and exports versioned `.meiki` language bundles. A bundle contains
+ordered decks, typed-cloze content, and referenced local media, but never the
+user's review history, learned schedules, or collection study-time setting.
+Imported cards start unseen and each deck remains independently schedulable.
 
-Meiki keeps the newest five backups for each automatic backup category.
-Migrations, deck additions, replacement imports, and restores create a backup
-before changing durable collection state. Settings lists these backups and
-requires the exact filename before restore. Pruning is lexical by the
-timestamp-and-sequence filename, so it remains deterministic even when
-multiple backups are created within one millisecond. Application recovery
-points include a checksum-verified media-store companion.
+Meiki validates bundle structure and media before applying changes. Migrations
+and transactional bundle operations create internal recovery points when
+needed; they are not a collection-management workflow in Settings.

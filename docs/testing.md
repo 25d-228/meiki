@@ -13,7 +13,7 @@ commands through `./scripts/dev-env`; the complete local gate is:
 | Layer                                      | Responsibility                                                                                                        |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | Crate unit and property tests              | Text normalization and graphemes, FSRS projections, storage transactions, media integrity, and archive validation     |
-| `meiki-application/tests/real_journeys.rs` | Public `ApplicationService` journeys through real SQLite, scheduler, text, media, backup, and archive boundaries      |
+| `meiki-application/tests/real_journeys.rs` | Public `ApplicationService` journeys through real SQLite, scheduler, text, and media boundaries                       |
 | `meiki-desktop` library tests              | Plain command argument mapping, DTO serialization, display-error mapping, and Tauri handler registration completeness |
 | Playwright                                 | UI request wiring, rendering, keyboard/IME behavior, bidi, accessibility, responsive layout, and visual snapshots     |
 | `scripts/package-launch-smoke.py`          | The built platform executable opens its declared main window and initializes a clean local collection on Today        |
@@ -32,8 +32,8 @@ The Tauri macros call plain Rust command functions, and those functions call
 browser adapter in `e2e/support/mock-api.ts` records command arguments and
 returns predefined DTO or error scenarios from `scenario-dtos.ts`. It must not
 schedule cards, reconcile queues, compare answers, mutate review history,
-search notes, build archives, manage backups, or emulate application
-controllers.
+perform business-rule search, write bundle files, manage recovery points, or
+emulate application controllers.
 
 ## Deterministic adversarial matrix
 
@@ -67,17 +67,15 @@ fixtures are ignored by normal `cargo test` and run serially through
 
 ## Failure matrix
 
-| Failure boundary                                                          | Executable evidence                                                                                                                                     |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Review transaction fails after writes but before commit                   | `injected_failure_before_review_commit_rolls_back_every_write` uses the storage crate's single bounded, test-only fault                                 |
-| Response is lost after a committed review                                 | `response_loss_retry_is_exactly_once_and_undo_is_compensating` discards the first result and retries the same event ID                                  |
-| Stale content or schedule version                                         | `corrupt_archive_and_stale_review_fail_without_partial_state` proves no second event is appended                                                        |
-| Filesystem media write fails after recovery backup but before replacement | `media_write_failure_after_backup_does_not_replace_the_database` blocks the temporary target object directory                                           |
-| Recovery backup cannot be created                                         | `backup_failure_leaves_the_live_collection_unchanged` blocks the temporary backup directory                                                             |
-| Media object is missing or corrupt                                        | `missing_and_corrupt_media_are_reported_without_blocking_the_card` uses the real content-addressed object                                               |
-| Archive bytes or media checksums are corrupt                              | Application and `meiki-portable` tests reject them before live replacement                                                                              |
-| ZIP duplicate names, unsafe paths, invalid UTF-8, or decompression bombs  | Raw central-directory validation and aggregate/ratio limits reject the archive before collection parsing or media extraction                            |
-| Restart finds a pending review request                                    | Playwright seeds one serialized UI queue fixture and verifies that the identical command is replayed; exactly-once persistence remains a Rust invariant |
+| Failure boundary                                                         | Executable evidence                                                                                                                                     |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Review transaction fails after writes but before commit                  | `injected_failure_before_review_commit_rolls_back_every_write` uses the storage crate's single bounded, test-only fault                                 |
+| Response is lost after a committed review                                | `response_loss_retry_is_exactly_once_and_undo_is_compensating` discards the first result and retries the same event ID                                  |
+| Stale content or schedule version                                        | `stale_review_fails_without_partial_state` proves no second event is appended                                                                           |
+| Media object is missing or corrupt                                       | `missing_and_corrupt_media_are_reported_without_blocking_the_card` uses the real content-addressed object                                               |
+| Bundle bytes or media checksums are corrupt                              | Application and `meiki-portable` tests reject them before bundle changes                                                                                |
+| ZIP duplicate names, unsafe paths, invalid UTF-8, or decompression bombs | Raw central-directory validation and aggregate/ratio limits reject the file before collection parsing or media extraction                               |
+| Restart finds a pending review request                                   | Playwright seeds one serialized UI queue fixture and verifies that the identical command is replayed; exactly-once persistence remains a Rust invariant |
 
 All filesystem faults are confined to temporary directories. The only explicit
 fault API is compiled for storage tests and fixture builds; it cannot be
@@ -114,13 +112,13 @@ smoke still receive a regression test at the lowest meaningful boundary.
 | Pull request              | Formatting, lint, architecture boundaries, generated contracts, frontend build, all bounded Rust/property/differential/migration/integration tests, and Chromium interaction/accessibility/visual tests |
 | macOS and Windows         | Core Rust integration journeys, desktop contracts, generated contracts, and frontend production build                                                                                                   |
 | Main                      | The pull-request lanes plus serial storage-backed release budgets                                                                                                                                       |
-| Tag or manual package run | Platform bundles, full Rust validation, archive/restore journey, and packaged executable launch smoke                                                                                                   |
+| Tag or manual package run | Platform bundles, full Rust validation, bundle journeys, and packaged executable launch smoke                                                                                                           |
 
 The storage-backed release fixture contains 15,000 cards and mixed-script notes
 across two real decks. It times current-schema open, exact-due all-decks Today
-construction, automatic controller evaluation, and Library search through
-`ApplicationService`. A separate 10,000-card schema-8 fixture times backup and
-migration, and a 5,000-note `.meiki` fixture times export and validation.
+construction, automatic controller evaluation, and deck-card search through
+`ApplicationService`. A separate 10,000-card schema-8 fixture times migration,
+and a 5,000-note `.meiki` fixture times shared writer and reader validation.
 Fixture construction is outside the measured interval; every result prints
 fixture bytes and elapsed time.
 

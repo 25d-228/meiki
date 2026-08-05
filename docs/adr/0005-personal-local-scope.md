@@ -7,8 +7,8 @@
 
 Meiki is one person's local collection on one desktop. The supported model is
 a collection with optional flat decks, tags, language-neutral typed clozes,
-local media, daily study, Library search and editing, complete collection
-archives, rolling recovery backups, and an expert manual scheduling policy.
+local media, daily study, deck-scoped search and editing, clean language
+bundles, and an expert manual scheduling policy.
 
 Accounts and identity, cloud sync, mobile clients, marketplaces, plugins and
 extensions, executable card templates, collaborative editing and shared
@@ -30,10 +30,10 @@ intend to build.
 
 Settings have collection defaults and optional flat-deck overrides. Cards do
 not carry scheduling overrides. Deck workflows stay intentionally small.
-Portable archives represent complete collection replacement, while readers
-may retain compatibility with older published archives. Engine identifiers,
-maintenance operations, and other implementation details are not normal
-product controls.
+Portable files represent clean language bundles without personal study state.
+Readers retain compatibility with older published data when it is valid bundle
+content. Internal recovery points, engine identifiers, maintenance operations,
+and other implementation details are not normal product controls.
 
 The boundary check rejects network dependencies and Tauri network
 permissions. A request for one of the permanent non-goals requires replacing

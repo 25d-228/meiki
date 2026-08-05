@@ -34,7 +34,6 @@ use uuid::Uuid;
 mod authoring;
 mod deck_cards;
 mod decks;
-mod library;
 mod portable;
 mod today;
 
@@ -52,16 +51,10 @@ pub use decks::{
     BundleRemovalResultDto, CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckRequest,
     DeleteDeckResultDto, RenameDeckRequest,
 };
-pub use library::{
-    LibraryBulkActionDto, LibraryBulkRequest, LibraryBulkResultDto, LibraryCardDto, LibraryDeckDto,
-    LibraryDueFilterDto, LibraryMediaFilterDto, LibraryNoteDto, LibraryOverviewDto, LibraryRequest,
-    LibrarySuspendedFilterDto, LibraryTagDto, LibraryTrashFilterDto,
-};
 pub use portable::{
-    ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest, ArchiveImportRequest,
-    ArchiveImportResultDto, BackupDto, BundleDeckInstallStatusDto, BundleDeckPreviewDto,
-    BundleExportRequest, BundleImportProgressDto, BundleImportRequest, BundleImportResultDto,
-    BundleImportStageDto, BundlePreviewDto, PortableArchivePreviewDto, PortableExportResultDto,
+    BundleDeckInstallStatusDto, BundleDeckPreviewDto, BundleExportRequest, BundleImportProgressDto,
+    BundleImportRequest, BundleImportResultDto, BundleImportStageDto, BundlePreviewDto,
+    PortableExportResultDto,
 };
 pub use today::{
     ALL_DECKS_ID, StudyAvailabilityDto, StudyPlanDto, TodayDeckDto, TodayOverviewDto,
@@ -86,8 +79,6 @@ pub enum ApplicationError {
     InvalidAuthoring(String),
     #[error("invalid Today request: {0}")]
     InvalidToday(String),
-    #[error("invalid Library request: {0}")]
-    InvalidLibrary(String),
     #[error("invalid deck request: {0}")]
     InvalidDeck(String),
     #[error("invalid deck card request: {0}")]
@@ -106,7 +97,7 @@ pub enum ApplicationError {
     SchedulerParameterJson(#[source] serde_json::Error),
     #[error("media operation failed: {0}")]
     Media(#[from] MediaError),
-    #[error("portable archive operation failed: {0}")]
+    #[error("bundle file operation failed: {0}")]
     Portable(#[from] meiki_portable::PortableError),
     #[error("invalid portability request: {0}")]
     InvalidPortable(String),
@@ -1768,27 +1759,7 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     TodayDeckDto::export_all_to(output)?;
     TodayQueueCardDto::export_all_to(output)?;
     TodayOverviewDto::export_all_to(output)?;
-    LibraryDueFilterDto::export_all_to(output)?;
-    LibrarySuspendedFilterDto::export_all_to(output)?;
-    LibraryMediaFilterDto::export_all_to(output)?;
-    LibraryTrashFilterDto::export_all_to(output)?;
-    LibraryRequest::export_all_to(output)?;
-    LibraryDeckDto::export_all_to(output)?;
-    LibraryTagDto::export_all_to(output)?;
-    LibraryCardDto::export_all_to(output)?;
-    LibraryNoteDto::export_all_to(output)?;
-    LibraryOverviewDto::export_all_to(output)?;
-    LibraryBulkActionDto::export_all_to(output)?;
-    LibraryBulkRequest::export_all_to(output)?;
-    LibraryBulkResultDto::export_all_to(output)?;
-    ArchiveExportRequest::export_all_to(output)?;
     PortableExportResultDto::export_all_to(output)?;
-    ArchiveAddDeckRequest::export_all_to(output)?;
-    ArchiveAddDeckResultDto::export_all_to(output)?;
-    ArchiveImportRequest::export_all_to(output)?;
-    PortableArchivePreviewDto::export_all_to(output)?;
-    ArchiveImportResultDto::export_all_to(output)?;
-    BackupDto::export_all_to(output)?;
     BundleDeckInstallStatusDto::export_all_to(output)?;
     BundleDeckPreviewDto::export_all_to(output)?;
     BundlePreviewDto::export_all_to(output)?;
