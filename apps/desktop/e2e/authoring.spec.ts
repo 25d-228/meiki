@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 
 async function openEditor(page: Page, scenario = "cjk"): Promise<void> {
   await page.goto(`/?authoring=${scenario}`);
-  await page.getByRole("button", { name: "Add / Edit" }).click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Add / Edit", level: 1 }),
   ).toBeVisible();
@@ -238,17 +238,18 @@ test("unsaved navigation never interrupts active IME composition", async ({
   const source = await sourceTextarea(page);
   await source.fill("入力中");
   await source.dispatchEvent("compositionstart", { data: "中" });
-  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Add / Edit", level: 1 }),
   ).toBeVisible();
 
   await source.dispatchEvent("compositionend", { data: "中" });
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("discard unsaved changes");
-    await dialog.dismiss();
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Discard unsaved changes?",
   });
-  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Keep editing" }).click();
   await expect(
     page.getByRole("heading", { name: "Add / Edit", level: 1 }),
   ).toBeVisible();

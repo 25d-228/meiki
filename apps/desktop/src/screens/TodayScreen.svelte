@@ -7,6 +7,7 @@
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import type { TodayOverviewDto } from "../lib/generated/TodayOverviewDto";
+  import { localDayBounds } from "../lib/local-day";
   import {
     clearStudyQueue,
     readStudyQueue,
@@ -78,23 +79,9 @@
       onStart();
       return;
     }
-    if (!overview?.queue.length) return;
-    activeQueue = startStudyQueue(overview);
+    if (!overview) return;
+    if (overview.queue.length) activeQueue = startStudyQueue(overview);
     onStart();
-  }
-
-  function localDayBounds(
-    now: Date,
-    boundaryMinutes: number,
-  ): { start: SvelteDate; end: SvelteDate } {
-    const start = new SvelteDate(now);
-    start.setHours(0, boundaryMinutes, 0, 0);
-    if (now.getTime() < start.getTime()) {
-      start.setDate(start.getDate() - 1);
-    }
-    const end = new SvelteDate(start);
-    end.setDate(end.getDate() + 1);
-    return { start, end };
   }
 
   function estimate(seconds: number): string {
@@ -202,8 +189,7 @@
         <Button
           variant="default"
           data-primary-action
-          disabled={loading ||
-            (!activeQueue && (overview?.queue.length ?? 0) === 0)}
+          disabled={loading || !overview}
           onclick={beginStudy}
         >
           {activeQueue && remainingStudyCards(activeQueue) > 0

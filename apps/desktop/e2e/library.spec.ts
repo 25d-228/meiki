@@ -5,9 +5,13 @@ import { installMockApi } from "./support/mock-api";
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
+  await page
+    .getByTestId("deck-travel-deck")
+    .getByRole("button", { name: "Open" })
+    .click();
   await expect(
-    page.getByRole("heading", { name: "Library", level: 1 }),
+    page.getByRole("heading", { name: "Travel phrases", level: 1 }),
   ).toBeVisible();
 });
 
@@ -18,7 +22,7 @@ async function lastRequest(page: Page, command: string) {
   }, command);
 }
 
-test("maps search and filter controls and renders the returned library DTO", async ({
+test("maps deck-scoped search and filter controls to the library boundary", async ({
   page,
 }) => {
   await expect(page.getByText("日曜日は図書館に行きます")).toBeVisible();
@@ -30,7 +34,6 @@ test("maps search and filter controls and renders the returned library DTO", asy
     .toMatchObject({ request: { query: " كتاب " } });
 
   await page.getByRole("button", { name: "Filters" }).click();
-  await page.getByLabel("Deck").selectOption("travel-deck");
   await page.getByLabel("Due state").selectOption("scheduled");
   await page.getByLabel("Language metadata").selectOption("ar");
   await page.getByLabel("Media").selectOption("without_media");

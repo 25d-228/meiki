@@ -9,7 +9,7 @@ test.beforeEach(async ({ page }) => {
 
 async function openStudy(page: Page, url: string): Promise<void> {
   await page.goto(url);
-  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await page.getByRole("button", { name: "Start study" }).click();
 }
 
 test("all primary screens have labelled responsive shells", async ({
@@ -24,9 +24,8 @@ test("all primary screens have labelled responsive shells", async ({
   await expect(openNavigation).toBeVisible();
   const screens = [
     ["Today", "Today"],
-    ["Study", "Study"],
-    ["Library", "Library"],
-    ["Add / Edit", "Add / Edit"],
+    ["Decks", "Decks"],
+    ["Add", "Add / Edit"],
     ["Settings", "Settings"],
   ] as const;
 
@@ -51,16 +50,18 @@ test("dialog, toolbar, fields, and empty state are keyboard operable", async ({
   page,
 }) => {
   await page.goto("/?collection=empty");
-  await page.getByRole("button", { name: "Library" }).click();
-  await expect(
-    page.getByRole("search", { name: "Library tools" }),
-  ).toBeVisible();
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
+  await page
+    .getByTestId("deck-travel-deck")
+    .getByRole("button", { name: "Open" })
+    .click();
+  await expect(page.getByRole("search", { name: "Deck tools" })).toBeVisible();
   await page.getByRole("searchbox", { name: "Search library" }).fill("不存在");
   await expect(
     page.getByRole("heading", { name: "No matching notes" }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Add / Edit" }).click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
   const source = page.locator(".segment-text");
   await source.fill("Keyboard");
   await source.evaluate((element) => {
@@ -98,14 +99,14 @@ test("light and dark themes preserve text contrast and focus visibility", async 
     expect(contrast.violations).toEqual([]);
   }
 
-  const studyButton = page.getByRole("button", {
-    name: "Study",
+  const decksButton = page.getByRole("button", {
+    name: "Decks",
     exact: true,
   });
   await page.getByRole("button", { name: "Today", exact: true }).focus();
   await page.keyboard.press("Tab");
-  await expect(studyButton).toBeFocused();
-  const focusStyle = await studyButton.evaluate((element) => {
+  await expect(decksButton).toBeFocused();
+  const focusStyle = await decksButton.evaluate((element) => {
     const style = getComputedStyle(element);
     return { boxShadow: style.boxShadow, outlineStyle: style.outlineStyle };
   });

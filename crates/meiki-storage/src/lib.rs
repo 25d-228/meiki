@@ -149,6 +149,14 @@ pub struct SchedulingWorkload {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeckCardCounts {
+    pub deck_id: String,
+    pub total_cards: u64,
+    pub due_cards: u64,
+    pub new_cards: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduleIntegrityReport {
     pub checked_cards: usize,
     pub mismatched_card_ids: Vec<String>,

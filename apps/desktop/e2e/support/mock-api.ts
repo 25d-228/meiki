@@ -72,6 +72,23 @@ export async function installMockApi(page: Page): Promise<void> {
         if (params.get("collection") === "empty")
           return clone(dtos.emptyCollectionPlan);
         if (todayName === "empty") return clone(dtos.nothingDuePlan);
+        const deckId = (args as { request?: { deck_id?: string } })?.request
+          ?.deck_id;
+        if (deckId && deckId !== "__all_decks__") {
+          return {
+            ...clone(dtos.readyPlan),
+            overview: {
+              ...clone(dtos.readyPlan.overview),
+              deck_id: deckId,
+              deck_name:
+                deckId === "default-deck" ? "Unsorted" : "Travel phrases",
+              queue: clone(dtos.readyPlan.overview.queue).map((card) => ({
+                ...card,
+                deck_id: deckId,
+              })),
+            },
+          };
+        }
         return clone(dtos.readyPlan);
       }
       if (command === "reconcile_study_queue") {
@@ -179,6 +196,21 @@ export async function installMockApi(page: Page): Promise<void> {
           return clone(dtos.deckLifecycle[index]);
         }
         return clone(dtos.decks);
+      }
+      if (command === "list_deck_summaries") {
+        if (params.get("decks") === "lifecycle") {
+          const index = Math.min(
+            calls[command] - 1,
+            dtos.deckSummaryLifecycle.length - 1,
+          );
+          return clone(dtos.deckSummaryLifecycle[index]);
+        }
+        if (params.get("decks") === "empty-default") {
+          return clone(
+            dtos.deckSummaries.filter((deck) => deck.id !== "default-deck"),
+          );
+        }
+        return clone(dtos.deckSummaries);
       }
       if (command === "create_deck") return clone(dtos.createdDeck);
       if (command === "rename_deck") return clone(dtos.renamedDeck);

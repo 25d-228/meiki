@@ -4,7 +4,6 @@
   import RiEditLine from "remixicon-svelte/icons/edit-line";
   import RiMenuLine from "remixicon-svelte/icons/menu-line";
   import RiSettings3Line from "remixicon-svelte/icons/settings-3-line";
-  import RiSparkling2Line from "remixicon-svelte/icons/sparkling-2-line";
   import { onMount, tick } from "svelte";
 
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
@@ -14,17 +13,17 @@
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import { messages } from "./lib/messages";
   import { screens, type Screen, type ThemeMode } from "./lib/ui";
+  import DeckManagementScreen from "./screens/DeckManagementScreen.svelte";
+  import DecksScreen from "./screens/DecksScreen.svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
-  import LibraryScreen from "./screens/LibraryScreen.svelte";
   import SettingsScreen from "./screens/SettingsScreen.svelte";
   import StudyScreen from "./screens/StudyScreen.svelte";
   import TodayScreen from "./screens/TodayScreen.svelte";
 
   const menuItems = [
     { id: "today", label: "Today", icon: RiCalendarTodoLine },
-    { id: "study", label: "Study", icon: RiSparkling2Line },
-    { id: "library", label: "Library", icon: RiBookShelfLine },
-    { id: "editor", label: "Add / Edit", icon: RiEditLine },
+    { id: "decks", label: "Decks", icon: RiBookShelfLine },
+    { id: "editor", label: "Add", icon: RiEditLine },
     { id: "settings", label: "Settings", icon: RiSettings3Line },
   ];
 
@@ -33,7 +32,10 @@
   let authoringDirty = false;
   let authoringComposing = false;
   let editingStudyCardId: string | null = null;
-  let editingReturnScreen: "study" | "library" = "study";
+  let editingReturnScreen: "study" | "deck" | null = null;
+  let studyReturnScreen: "today" | "decks" = "today";
+  let selectedDeckId = "";
+  let selectedDeckName = "";
   let mainElement: HTMLElement;
   let mobileNavigationOpen = false;
   let discardDialogOpen = false;
@@ -77,6 +79,9 @@
   }
 
   function screenLabel(screen: Screen): string {
+    if (screen === "study") return "Study";
+    if (screen === "deck") return selectedDeckName || "Deck";
+    if (screen === "editor") return editingStudyCardId ? "Edit" : "Add";
     return menuItems.find((item) => item.id === screen)?.label ?? "Today";
   }
 
@@ -104,7 +109,8 @@
     authoringDirty = false;
     authoringComposing = false;
     activeScreen = value;
-    if (value !== "editor") editingStudyCardId = null;
+    editingStudyCardId = null;
+    editingReturnScreen = null;
     await tick();
     mainElement.focus();
   }
@@ -130,8 +136,8 @@
     mainElement.focus();
   }
 
-  async function editLibraryCard(cardId: string): Promise<void> {
-    editingReturnScreen = "library";
+  async function editDeckCard(cardId: string): Promise<void> {
+    editingReturnScreen = "deck";
     editingStudyCardId = cardId;
     activeScreen = "editor";
     await tick();
@@ -142,7 +148,7 @@
     if (authoringDirty) {
       if (authoringComposing) return;
       const destination =
-        editingReturnScreen === "library" ? "Library" : "study";
+        editingReturnScreen === "deck" ? selectedDeckName : "study";
       pendingNavigation = { kind: "return" };
       discardDescription = `Your unsaved source note changes will be lost when you return to ${destination}.`;
       discardDialogOpen = true;
@@ -152,6 +158,7 @@
   }
 
   async function performEditorReturn(): Promise<void> {
+    if (!editingReturnScreen) return;
     discardDialogOpen = false;
     pendingNavigation = null;
     authoringDirty = false;
@@ -170,9 +177,34 @@
     if (pendingNavigation?.kind === "return") await performEditorReturn();
   }
 
+  async function startStudy(
+    returnScreen: "today" | "decks",
+    deckName: string,
+  ): Promise<void> {
+    studyReturnScreen = returnScreen;
+    deckContext = deckName;
+    await performNavigation("study");
+  }
+
+  async function openDeck(deckId: string, deckName: string): Promise<void> {
+    selectedDeckId = deckId;
+    selectedDeckName = deckName;
+    deckContext = deckName;
+    await performNavigation("deck");
+  }
+
+  async function addDeckNote(): Promise<void> {
+    editingReturnScreen = "deck";
+    editingStudyCardId = null;
+    activeScreen = "editor";
+    await tick();
+    mainElement.focus();
+  }
+
   async function finishStudyQueue(): Promise<void> {
-    announcement = "Study queue complete. Returning to Today.";
-    activeScreen = "today";
+    const destination = studyReturnScreen === "decks" ? "Decks" : "Today";
+    announcement = `Study queue complete. Returning to ${destination}.`;
+    activeScreen = studyReturnScreen;
     editingStudyCardId = null;
     await tick();
     mainElement.focus();
@@ -248,7 +280,10 @@
             lang="ja">{messages.appName}</span
           >
           <span class="hidden truncate text-xs text-muted-foreground sm:inline">
-            {screenLabel(activeScreen)} · {deckContext}
+            {screenLabel(activeScreen)}
+            {screenLabel(activeScreen) === deckContext
+              ? ""
+              : ` · ${deckContext}`}
           </span>
         </Button>
       </div>
@@ -299,8 +334,14 @@
       >
         {#if activeScreen === "today"}
           <TodayScreen
-            onStart={() => void navigate("study")}
+            onStart={() => void startStudy("today", deckContext)}
             onSettings={() => void navigate("settings")}
+            onDeckContextChange={(value) => (deckContext = value)}
+          />
+        {:else if activeScreen === "decks"}
+          <DecksScreen
+            onStudy={(deckName) => void startStudy("decks", deckName)}
+            onOpen={(deckId, deckName) => void openDeck(deckId, deckName)}
             onDeckContextChange={(value) => (deckContext = value)}
           />
         {:else if activeScreen === "study"}
@@ -309,14 +350,23 @@
             onEdit={editStudyCard}
             onQueueComplete={finishStudyQueue}
           />
-        {:else if activeScreen === "library"}
-          <LibraryScreen onNavigate={navigate} onEdit={editLibraryCard} />
+        {:else if activeScreen === "deck"}
+          <DeckManagementScreen
+            {selectedDeckId}
+            deckName={selectedDeckName}
+            onBack={() => void navigate("decks")}
+            onCreate={() => void addDeckNote()}
+            onEdit={editDeckCard}
+          />
         {:else if activeScreen === "editor"}
           <EditorScreen
             cardId={editingStudyCardId}
-            onReturn={editingStudyCardId ? returnFromEditor : undefined}
-            returnLabel={editingReturnScreen === "library"
-              ? "Return to Library"
+            preferredDeckId={editingReturnScreen === "deck"
+              ? selectedDeckId
+              : undefined}
+            onReturn={editingReturnScreen ? returnFromEditor : undefined}
+            returnLabel={editingReturnScreen === "deck"
+              ? `Return to ${selectedDeckName}`
               : "Return to study"}
           />
         {:else}

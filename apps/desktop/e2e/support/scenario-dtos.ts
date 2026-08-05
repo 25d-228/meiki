@@ -204,6 +204,23 @@ const decks = [
   },
 ] as const;
 
+const deckSummaries = [
+  {
+    id: "default-deck",
+    name: "Unsorted",
+    total_cards: 2,
+    due_cards: 1,
+    new_cards: 1,
+  },
+  {
+    id: "travel-deck",
+    name: "Travel phrases",
+    total_cards: 1,
+    due_cards: 0,
+    new_cards: 1,
+  },
+] as const;
+
 const queue = [
   {
     card_id: "due-card",
@@ -572,6 +589,7 @@ export const scenarioDtos = {
     suspended: true,
   },
   decks,
+  deckSummaries,
   createdDeck: {
     ...decks[1],
     id: "listening-deck",
@@ -580,9 +598,7 @@ export const scenarioDtos = {
   },
   renamedDeck: {
     ...decks[1],
-    id: "listening-deck",
     name: "Audio",
-    note_count: 0,
   },
   deletedDeck: {
     deleted_deck_id: "listening-deck",
@@ -594,25 +610,28 @@ export const scenarioDtos = {
   },
   deckLifecycle: [
     decks,
+    decks,
     [
-      ...decks,
+      decks[0],
       {
         ...decks[1],
+        name: "Audio",
+      },
+    ],
+    [decks[0]],
+  ],
+  deckSummaryLifecycle: [
+    deckSummaries,
+    [
+      ...deckSummaries,
+      {
         id: "listening-deck",
         name: "Listening",
-        note_count: 0,
+        total_cards: 0,
+        due_cards: 0,
+        new_cards: 0,
       },
     ],
-    [
-      ...decks,
-      {
-        ...decks[1],
-        id: "listening-deck",
-        name: "Audio",
-        note_count: 0,
-      },
-    ],
-    decks,
   ],
   schedulerSettings,
   midnightSchedulerSettings: {

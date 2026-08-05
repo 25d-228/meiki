@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { installMockApi } from "./support/mock-api";
 
 type Theme = "system" | "light" | "dark";
-type Screen = "Today" | "Study" | "Library" | "Add / Edit" | "Settings";
+type Screen = "Today" | "Study" | "Decks" | "Deck" | "Add" | "Settings";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
@@ -19,7 +19,10 @@ async function chooseTheme(page: Page, theme: Theme): Promise<void> {
   await expect(page.getByRole("listbox")).toBeHidden();
 }
 
-async function navigate(page: Page, screen: Screen): Promise<void> {
+async function navigatePrimary(
+  page: Page,
+  screen: "Today" | "Decks" | "Add" | "Settings",
+): Promise<void> {
   const openNavigation = page.getByRole("button", {
     name: "Open navigation",
   });
@@ -29,8 +32,26 @@ async function navigate(page: Page, screen: Screen): Promise<void> {
     .getByRole("button", { name: screen, exact: true })
     .click();
   await expect(
-    page.getByRole("heading", { name: screen, level: 1 }),
+    page.getByRole("heading", {
+      name: screen === "Add" ? "Add / Edit" : screen,
+      level: 1,
+    }),
   ).toBeVisible();
+}
+
+async function navigate(page: Page, screen: Screen): Promise<void> {
+  if (screen === "Study") {
+    await navigatePrimary(page, "Today");
+    await page.getByRole("button", { name: "Start study" }).click();
+  } else if (screen === "Deck") {
+    await navigatePrimary(page, "Decks");
+    await page
+      .getByTestId("deck-travel-deck")
+      .getByRole("button", { name: "Open" })
+      .click();
+  } else {
+    await navigatePrimary(page, screen);
+  }
 }
 
 async function prepare(
@@ -92,28 +113,28 @@ const visualCases = [
   {
     name: "editor-narrow-light-cjk-combining",
     route: "/?fixture=cjk",
-    screen: "Add / Edit",
+    screen: "Add",
     theme: "light",
     viewport: "narrow",
   },
   {
     name: "editor-desktop-dark-ltr",
     route: "/?fixture=ltr",
-    screen: "Add / Edit",
+    screen: "Add",
     theme: "dark",
     viewport: "desktop",
   },
   {
-    name: "library-medium-light-normal",
+    name: "decks-medium-light-normal",
     route: "/",
-    screen: "Library",
+    screen: "Decks",
     theme: "light",
     viewport: "medium",
   },
   {
-    name: "library-narrow-dark-normal",
+    name: "deck-management-narrow-dark-normal",
     route: "/",
-    screen: "Library",
+    screen: "Deck",
     theme: "dark",
     viewport: "narrow",
   },
@@ -136,7 +157,7 @@ const visualCases = [
 for (const visualCase of visualCases) {
   test(`visual regression: ${visualCase.name}`, async ({ page }) => {
     await prepare(page, visualCase);
-    if (visualCase.screen === "Add / Edit") {
+    if (visualCase.screen === "Add") {
       await page
         .getByLabel("Source text segment 1")
         .fill(
@@ -223,7 +244,7 @@ test("visual regression: study-loading-medium-dark", async ({ page }) => {
 for (const theme of ["light", "dark"] as const) {
   test(`visual regression: study-empty-medium-${theme}`, async ({ page }) => {
     await prepare(page, {
-      route: "/?collection=empty",
+      route: "/?today=empty&collection=empty",
       screen: "Study",
       theme,
       viewport: "medium",
@@ -297,7 +318,7 @@ test("visual regression: destructive-confirmation-medium-dark", async ({
 }) => {
   await prepare(page, {
     route: "/",
-    screen: "Library",
+    screen: "Deck",
     theme: "dark",
     viewport: "medium",
   });
@@ -323,7 +344,7 @@ test("visual regression: destructive-confirmation-medium-light", async ({
 }) => {
   await prepare(page, {
     route: "/",
-    screen: "Library",
+    screen: "Deck",
     theme: "light",
     viewport: "medium",
   });
@@ -372,7 +393,7 @@ test("dialogs trap focus and restore it to their launch control", async ({
   page,
 }) => {
   await page.goto("/");
-  await navigate(page, "Add / Edit");
+  await navigate(page, "Add");
   const source = page.getByLabel("Source text segment 1");
   await source.fill("Keyboard");
   await source.evaluate((element) => {
@@ -407,7 +428,7 @@ test("alert dialogs trap focus and restore it to their launch control", async ({
   page,
 }) => {
   await page.goto("/");
-  await navigate(page, "Library");
+  await navigate(page, "Deck");
   await page.getByText("Select this page").click();
   const trashButton = page.getByRole("button", { name: "Move to Trash" });
   await trashButton.click();
@@ -439,14 +460,23 @@ test("screens reflow at a 200% zoom-equivalent CSS viewport", async ({
   await page.goto("/");
   for (const screen of [
     "Today",
+    "Decks",
+    "Deck",
     "Study",
-    "Library",
-    "Add / Edit",
+    "Add",
     "Settings",
   ] as const) {
     if (screen !== "Today") await navigate(page, screen);
     await expect(
-      page.getByRole("heading", { name: screen, level: 1 }),
+      page.getByRole("heading", {
+        name:
+          screen === "Add"
+            ? "Add / Edit"
+            : screen === "Deck"
+              ? "Travel phrases"
+              : screen,
+        level: 1,
+      }),
     ).toBeVisible();
     expect(
       await page.evaluate(

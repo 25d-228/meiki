@@ -25,12 +25,14 @@
 
   type Props = {
     cardId?: string | null;
+    preferredDeckId?: string;
     onReturn?: () => void;
     returnLabel?: string;
   };
 
   let {
     cardId = null,
+    preferredDeckId,
     onReturn,
     returnLabel = "Return to study",
   }: Props = $props();
@@ -139,7 +141,17 @@
     }
     busy = true;
     try {
-      draft = await api.newAuthoringDraft();
+      const nextDraft = await api.newAuthoringDraft();
+      const preferredDeck = decks.find((deck) => deck.id === preferredDeckId);
+      draft = preferredDeck
+        ? {
+            ...nextDraft,
+            deck_id: preferredDeck.id,
+            deck_language_tag: preferredDeck.language_tag,
+            deck_direction: preferredDeck.direction,
+            deck_matching_policy: preferredDeck.matching_policy,
+          }
+        : nextDraft;
       selection = null;
       previews = [];
       previewOpen = false;

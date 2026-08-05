@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 
 async function openStudy(page: Page, url: string): Promise<void> {
   await page.goto(url);
-  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await page.getByRole("button", { name: /^(Start|Resume) study$/ }).click();
 }
 
 async function lastRequest(page: Page, command: string) {

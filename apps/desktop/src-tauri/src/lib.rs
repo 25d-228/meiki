@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckDto, DeleteDeckRequest,
+    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckRequest,
     DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
     ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto, LibraryOverviewDto,
     LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
@@ -43,6 +43,7 @@ macro_rules! desktop_commands {
             import_scheduler_parameters,
             export_scheduler_parameters,
             list_decks,
+            list_deck_summaries,
             create_deck,
             rename_deck,
             delete_deck,
@@ -284,6 +285,15 @@ fn list_decks(state: State<'_, AppContext>) -> Result<Vec<DeckDto>, String> {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+fn list_deck_summaries(
+    now_ms: i64,
+    state: State<'_, AppContext>,
+) -> Result<Vec<DeckSummaryDto>, String> {
+    commands::list_deck_summaries(&state.service(), now_ms)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 fn create_deck(
     request: CreateDeckRequest,
     state: State<'_, AppContext>,
@@ -426,6 +436,7 @@ mod tests {
         "import_scheduler_parameters",
         "export_scheduler_parameters",
         "list_decks",
+        "list_deck_summaries",
         "create_deck",
         "rename_deck",
         "delete_deck",
@@ -474,6 +485,14 @@ mod tests {
                 .iter()
                 .any(|deck| deck.id == created.id)
         );
+        let summary = commands::list_deck_summaries(&service, request.now_ms)
+            .expect("map the summary timestamp to ApplicationService")
+            .into_iter()
+            .find(|deck| deck.id == created.id)
+            .expect("include an empty user-created deck");
+        assert_eq!(summary.total_cards, 0);
+        assert_eq!(summary.due_cards, 0);
+        assert_eq!(summary.new_cards, 0);
 
         let serialized = serde_json::to_value(created).expect("serialize the desktop DTO");
         assert_eq!(serialized["name"], json!("Adapter contract"));

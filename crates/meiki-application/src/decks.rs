@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{ApplicationError, ApplicationService, DirectionDto, MatchingPolicyDto, desktop_u32};
 use meiki_domain::{Deck, Direction, MatchingPolicy, StudySettingsOverride};
 use meiki_storage::{DEFAULT_DECK_ID, DeckRepository, SchedulerProfileRepository, Storage};
@@ -15,6 +17,15 @@ pub struct DeckDto {
     pub language_tag: Option<String>,
     pub direction: DirectionDto,
     pub matching_policy: MatchingPolicyDto,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct DeckSummaryDto {
+    pub id: String,
+    pub name: String,
+    pub total_cards: u32,
+    pub due_cards: u32,
+    pub new_cards: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -60,6 +71,44 @@ impl ApplicationService {
             .into_iter()
             .map(|deck| deck_dto(&storage, deck))
             .collect()
+    }
+
+    /// Lists user-visible flat decks with current active card counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when deck metadata or aggregate card state cannot be loaded.
+    pub fn list_deck_summaries(
+        &self,
+        now_ms: i64,
+    ) -> Result<Vec<DeckSummaryDto>, ApplicationError> {
+        let storage = self.open_storage()?;
+        let counts = storage
+            .deck_card_counts(now_ms)?
+            .into_iter()
+            .map(|counts| (counts.deck_id.clone(), counts))
+            .collect::<HashMap<_, _>>();
+        let mut summaries = Vec::new();
+        for deck in storage.list_decks()? {
+            let counts = counts.get(&deck.id).ok_or_else(|| {
+                ApplicationError::InvalidDeck("deck card counts are incomplete".into())
+            })?;
+            if deck.id == DEFAULT_DECK_ID && counts.total_cards == 0 {
+                continue;
+            }
+            summaries.push(DeckSummaryDto {
+                id: deck.id.clone(),
+                name: if deck.id == DEFAULT_DECK_ID {
+                    "Unsorted".into()
+                } else {
+                    deck.name
+                },
+                total_cards: desktop_u32(counts.total_cards, "deck card count")?,
+                due_cards: desktop_u32(counts.due_cards, "deck due card count")?,
+                new_cards: desktop_u32(counts.new_cards, "deck new card count")?,
+            });
+        }
+        Ok(summaries)
     }
 
     /// Creates one flat deck with inherited collection scheduling defaults.
@@ -195,11 +244,89 @@ mod tests {
         Card, CardLifecycle, Cloze, Direction, MatchingPolicy, ScheduleState, SegmentContent,
         SemanticSegment, SourceItem,
     };
-    use meiki_storage::{CardRepository, SourceNoteRepository, StoredSourceNote};
+    use meiki_storage::{CardRepository, SourceNoteRepository, Storage, StoredSourceNote};
     use tempfile::tempdir;
 
     use super::{CreateDeckRequest, DeleteDeckRequest, RenameDeckRequest};
     use crate::ApplicationService;
+
+    fn add_card(
+        storage: &mut Storage,
+        deck_id: &str,
+        id: &str,
+        lifecycle: CardLifecycle,
+        due_at_ms: i64,
+        suspended: bool,
+    ) {
+        let source_id = format!("{id}-source");
+        let cloze_id = format!("{id}-cloze");
+        storage
+            .create_source_note(&StoredSourceNote {
+                source_item: SourceItem {
+                    id: source_id.clone(),
+                    deck_id: deck_id.into(),
+                    segments: vec![SemanticSegment {
+                        id: format!("{id}-segment"),
+                        ordinal: 0,
+                        content: SegmentContent::Cloze {
+                            cloze_id: cloze_id.clone(),
+                            text: id.into(),
+                        },
+                    }],
+                    language_tag: None,
+                    direction: Direction::Auto,
+                    tags: Vec::new(),
+                    annotations: Vec::new(),
+                    explanation: None,
+                    media: Vec::new(),
+                    created_at_ms: 1_000,
+                    updated_at_ms: 1_000,
+                },
+                clozes: vec![Cloze {
+                    id: cloze_id.clone(),
+                    source_item_id: source_id,
+                    answer: id.into(),
+                    accepted_answers: Vec::new(),
+                    hint: None,
+                    language_tag: None,
+                    direction: Direction::Auto,
+                    matching_policy: Some(MatchingPolicy::Strict),
+                    annotations: Vec::new(),
+                    explanation: None,
+                    media: Vec::new(),
+                    created_at_ms: 1_000,
+                    updated_at_ms: 1_000,
+                }],
+            })
+            .unwrap();
+        let introduced = lifecycle == CardLifecycle::Introduced;
+        storage
+            .create_card(
+                &Card {
+                    id: id.into(),
+                    cloze_id,
+                    content_version: 0,
+                    suspended,
+                    created_at_ms: 1_000,
+                    updated_at_ms: 1_000,
+                },
+                &ScheduleState {
+                    card_id: id.into(),
+                    version: 0,
+                    lifecycle,
+                    due_at_ms,
+                    ideal_due_at_ms: due_at_ms,
+                    interval_milliseconds: if introduced { 86_400_000 } else { 0 },
+                    interval_seconds: if introduced { 86_400 } else { 0 },
+                    repetitions: u32::from(introduced),
+                    stability_milliseconds: if introduced { 86_400_000 } else { 0 },
+                    difficulty_millipoints: if introduced { 5_000 } else { 0 },
+                    last_reviewed_at_ms: introduced.then_some(1_000),
+                    last_review_event_id: None,
+                },
+            )
+            .unwrap();
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]
@@ -368,5 +495,88 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn deck_summaries_count_only_active_cards_and_present_the_populated_default_as_unsorted() {
+        let directory = tempdir().unwrap();
+        let service = ApplicationService::new(directory.path().join("collection.db"));
+        let created = service
+            .create_deck(&CreateDeckRequest {
+                name: "Japanese".into(),
+                now_ms: 1_000,
+            })
+            .unwrap();
+        let mut storage = service.open_storage().unwrap();
+        add_card(
+            &mut storage,
+            &created.id,
+            "new-card",
+            CardLifecycle::Unseen,
+            10_000,
+            false,
+        );
+        add_card(
+            &mut storage,
+            &created.id,
+            "due-card",
+            CardLifecycle::Introduced,
+            9_000,
+            false,
+        );
+        add_card(
+            &mut storage,
+            &created.id,
+            "scheduled-card",
+            CardLifecycle::Introduced,
+            11_000,
+            false,
+        );
+        add_card(
+            &mut storage,
+            &created.id,
+            "suspended-card",
+            CardLifecycle::Unseen,
+            10_000,
+            true,
+        );
+        add_card(
+            &mut storage,
+            &created.id,
+            "trashed-card",
+            CardLifecycle::Introduced,
+            9_000,
+            false,
+        );
+        storage
+            .set_library_notes_deleted(&["trashed-card-source".into()], Some(9_000), 9_000)
+            .unwrap();
+        drop(storage);
+
+        let summaries = service.list_deck_summaries(10_000).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "Japanese");
+        assert_eq!(summaries[0].total_cards, 3);
+        assert_eq!(summaries[0].due_cards, 1);
+        assert_eq!(summaries[0].new_cards, 1);
+
+        let mut storage = service.open_storage().unwrap();
+        add_card(
+            &mut storage,
+            meiki_storage::DEFAULT_DECK_ID,
+            "unsorted-card",
+            CardLifecycle::Unseen,
+            10_000,
+            false,
+        );
+        drop(storage);
+        let summaries = service.list_deck_summaries(10_000).unwrap();
+        let unsorted = summaries
+            .iter()
+            .find(|deck| deck.id == meiki_storage::DEFAULT_DECK_ID)
+            .unwrap();
+        assert_eq!(unsorted.name, "Unsorted");
+        assert_eq!(unsorted.total_cards, 1);
+        assert_eq!(unsorted.new_cards, 1);
     }
 }
