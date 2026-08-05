@@ -26,7 +26,7 @@ async function navigate(page: Page, screen: Screen): Promise<void> {
     .click();
   await expect(
     page.getByRole("heading", {
-      name: screen === "Add" ? "Add / Edit" : screen,
+      name: screen === "Add" ? "Add / Edit card" : screen,
       level: 1,
     }),
   ).toBeVisible();
@@ -122,7 +122,7 @@ for (const theme of ["light", "dark"] as const) {
     await expectNoAccessibilityViolations(page);
   });
 
-  test(`destructive confirmation and success states pass axe in ${theme}`, async ({
+  test(`recoverable card trash and study success states pass axe in ${theme}`, async ({
     page,
   }) => {
     await chooseTheme(page, theme);
@@ -131,13 +131,13 @@ for (const theme of ["light", "dark"] as const) {
       .getByTestId("deck-travel-deck")
       .getByRole("button", { name: "Open" })
       .click();
-    await page.getByText("Select this page").click();
-    await page.getByRole("button", { name: "Move to Trash" }).click();
+    await page
+      .getByTestId("card-card-ar")
+      .getByRole("button", { name: "Move to Trash" })
+      .click();
     await expect(
-      page.getByRole("alertdialog", {
-        name: "Move selected notes to Trash?",
-      }),
-    ).toBeVisible();
+      page.getByTestId("app-shell").getByRole("status"),
+    ).toContainText("Moved the card to Trash.");
     await expectNoAccessibilityViolations(page);
 
     await openStudyScenario(page, "/", theme);

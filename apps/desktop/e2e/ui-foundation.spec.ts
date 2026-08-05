@@ -25,7 +25,7 @@ test("all primary screens have labelled responsive shells", async ({
   const screens = [
     ["Today", "Today"],
     ["Decks", "Decks"],
-    ["Add", "Add / Edit"],
+    ["Add", "Add / Edit card"],
     ["Settings", "Settings"],
   ] as const;
 
@@ -55,10 +55,10 @@ test("dialog, toolbar, fields, and empty state are keyboard operable", async ({
     .getByTestId("deck-travel-deck")
     .getByRole("button", { name: "Open" })
     .click();
-  await expect(page.getByRole("search", { name: "Deck tools" })).toBeVisible();
-  await page.getByRole("searchbox", { name: "Search library" }).fill("不存在");
+  await expect(page.getByRole("search", { name: "Card search" })).toBeVisible();
+  await page.getByRole("searchbox", { name: "Search cards" }).fill("不存在");
   await expect(
-    page.getByRole("heading", { name: "No matching notes" }),
+    page.getByRole("heading", { name: "No cards found" }),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Add", exact: true }).click();

@@ -264,7 +264,9 @@ test("maps edit and suspend controls while retaining the reveal UI", async ({
   await page.getByLabel("Your answer").press("Enter");
   await page.keyboard.press("e");
 
-  await expect(page.getByRole("heading", { name: "Add / Edit" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Add / Edit card" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Return to study" }).click();
   await expect(page.getByText("Expected answer")).toBeVisible();
 

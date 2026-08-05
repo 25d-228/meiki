@@ -148,17 +148,18 @@ impl ApplicationService {
         })
     }
 
-    /// Loads the source note that owns a study card as an editable draft.
+    /// Loads one card as an editable draft.
     ///
     /// # Errors
     ///
-    /// Returns an error when the card aggregate or one of its sibling card
-    /// identities cannot be loaded.
+    /// Returns an error when the card cannot be isolated from legacy siblings
+    /// or its editable aggregate cannot be loaded.
     pub fn get_authoring_draft_for_card(
         &self,
         card_id: &str,
     ) -> Result<AuthoringDraftDto, ApplicationError> {
-        let storage = self.open_storage()?;
+        let mut storage = self.open_storage()?;
+        self.isolate_card_source(&mut storage, card_id, self.now_ms())?;
         let studied = storage.load_study_card(card_id)?;
         let note = storage.get_source_note(&studied.source_item.id)?;
         let deck = storage.get_deck(&note.source_item.deck_id)?;

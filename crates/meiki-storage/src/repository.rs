@@ -5,14 +5,16 @@ use meiki_domain::{
     MediaKind, MediaReference, MediaRole, ScheduleState, SchedulerParameterSet, SchedulerProfile,
     SchedulingMode, SegmentContent, SemanticSegment, SourceItem, Tag,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{
+    Connection, OptionalExtension, Transaction, params, params_from_iter, types::Value,
+};
 
 use crate::{
     DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, PristineDeckImport,
-    PristineDeckImportStatus, SchedulingWorkload, Storage, StorageError, StoredLibraryCard,
-    StoredLibraryNote, StoredSourceNote, StoredStudyCard, direction_from_database,
-    direction_to_database, entity_not_found, matching_policy_from_database,
-    matching_policy_to_database,
+    PristineDeckImportStatus, SchedulingWorkload, Storage, StorageError, StoredDeckCard,
+    StoredDeckCardPage, StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote,
+    StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
+    entity_not_found, matching_policy_from_database, matching_policy_to_database,
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
@@ -1453,6 +1455,311 @@ impl Storage {
                 })
             })
             .collect()
+    }
+
+    /// Loads the minimal searchable text for cards in one deck and trash state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the card search projection cannot be read.
+    pub fn deck_card_search(
+        &self,
+        deck_id: &str,
+        trashed: bool,
+    ) -> Result<Vec<StoredDeckCardSearch>, StorageError> {
+        // NUL separators prevent a query from matching across adjacent fields.
+        let mut statement = self.connection.prepare(
+            "SELECT
+                cards.id,
+                COALESCE((
+                    SELECT group_concat(
+                        CASE
+                            WHEN semantic_segments.cloze_id = clozes.id THEN '[…]'
+                            ELSE semantic_segments.text
+                        END,
+                        '' ORDER BY semantic_segments.ordinal
+                    )
+                    FROM semantic_segments
+                    WHERE semantic_segments.source_item_id = source_items.id
+                ), '') || char(0) ||
+                clozes.answer || char(0) ||
+                clozes.accepted_answers_json || char(0) ||
+                COALESCE(clozes.hint, '') || char(0) ||
+                COALESCE((
+                    SELECT group_concat(
+                        tags.name,
+                        char(0) ORDER BY source_item_tags.ordinal
+                    )
+                    FROM source_item_tags
+                    JOIN tags ON tags.id = source_item_tags.tag_id
+                    WHERE source_item_tags.source_item_id = source_items.id
+                ), '')
+             FROM cards
+             JOIN clozes ON clozes.id = cards.cloze_id
+             JOIN source_items ON source_items.id = clozes.source_item_id
+             WHERE source_items.deck_id = ?1
+               AND (
+                    (?2 = 1 AND source_items.deleted_at_ms IS NOT NULL)
+                    OR (?2 = 0 AND source_items.deleted_at_ms IS NULL)
+               )
+             ORDER BY
+                source_items.updated_at_ms DESC,
+                source_items.id,
+                (
+                    SELECT semantic_segments.ordinal
+                    FROM semantic_segments
+                    WHERE semantic_segments.cloze_id = clozes.id
+                ),
+                clozes.id",
+        )?;
+        Ok(statement
+            .query_map(params![deck_id, trashed], |row| {
+                Ok(StoredDeckCardSearch {
+                    card_id: row.get(0)?,
+                    text: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Loads one bounded page from the card-list projection.
+    ///
+    /// `matching_card_ids` must retain the order returned by
+    /// [`Storage::deck_card_search`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the page cannot be read or a matching card
+    /// no longer belongs to the requested deck and trash state.
+    pub fn deck_card_page(
+        &self,
+        deck_id: &str,
+        trashed: bool,
+        matching_card_ids: Option<&[String]>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<StoredDeckCardPage, StorageError> {
+        if limit == 0 {
+            return Err(StorageError::InvalidAggregate(
+                "a deck card page requires a positive limit".into(),
+            ));
+        }
+        let query = match matching_card_ids {
+            Some(card_ids) => {
+                let total_matches = u64::try_from(card_ids.len())
+                    .map_err(|_| StorageError::NumericRange("deck card match count"))?;
+                let start = usize::try_from(offset).unwrap_or(usize::MAX);
+                let Some(remaining_ids) = card_ids.get(start..).filter(|ids| !ids.is_empty())
+                else {
+                    return Ok(StoredDeckCardPage {
+                        cards: Vec::new(),
+                        total_matches,
+                    });
+                };
+                matching_deck_card_page_query(deck_id, trashed, remaining_ids, limit, total_matches)
+            }
+            None => all_deck_card_page_query(&self.connection, deck_id, trashed, offset, limit)?,
+        };
+        let cards = load_deck_card_rows(&self.connection, &query.sql, &query.parameters)?;
+        if cards.len() != query.expected_rows {
+            return Err(StorageError::InvalidAggregate(
+                "the deck card page changed while it was loading".into(),
+            ));
+        }
+        Ok(StoredDeckCardPage {
+            cards,
+            total_matches: query.total_matches,
+        })
+    }
+
+    /// Moves one card into an independent source record without changing its
+    /// card, schedule, or review identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the requested card and isolated record do
+    /// not describe the same cloze, or when the transaction cannot be committed.
+    pub fn isolate_card_source(
+        &mut self,
+        card_id: &str,
+        isolated: &StoredSourceNote,
+    ) -> Result<(), StorageError> {
+        validate_note(isolated)?;
+        if isolated.clozes.len() != 1 {
+            return Err(StorageError::InvalidAggregate(
+                "an isolated card source must contain exactly one cloze".into(),
+            ));
+        }
+        let transaction = self.connection.transaction()?;
+        let (cloze_id, source_id) = transaction
+            .query_row(
+                "SELECT cards.cloze_id, clozes.source_item_id
+                 FROM cards
+                 JOIN clozes ON clozes.id = cards.cloze_id
+                 WHERE cards.id = ?1",
+                [card_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| entity_not_found("card", card_id))?;
+        let cloze_count = transaction.query_row(
+            "SELECT COUNT(*) FROM clozes WHERE source_item_id = ?1",
+            [&source_id],
+            |row| row.get::<_, u64>(0),
+        )?;
+        if cloze_count == 1 {
+            return Ok(());
+        }
+        let isolated_cloze = &isolated.clozes[0];
+        if isolated_cloze.id != cloze_id
+            || isolated_cloze.source_item_id != isolated.source_item.id
+            || isolated.source_item.id == source_id
+        {
+            return Err(StorageError::InvalidAggregate(
+                "an isolated card source must preserve its selected cloze".into(),
+            ));
+        }
+        let deleted_at_ms = transaction.query_row(
+            "SELECT deleted_at_ms FROM source_items WHERE id = ?1",
+            [&source_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )?;
+
+        insert_source(&transaction, &isolated.source_item)?;
+        transaction.execute(
+            "UPDATE source_items SET deleted_at_ms = ?1 WHERE id = ?2",
+            params![deleted_at_ms, isolated.source_item.id],
+        )?;
+        for tag in &isolated.source_item.tags {
+            upsert_tag(&transaction, tag)?;
+        }
+        insert_source_tag_links(&transaction, &isolated.source_item)?;
+        insert_owned_annotations(
+            &transaction,
+            "source_item_annotations",
+            "source_item_id",
+            &isolated.source_item.id,
+            &isolated.source_item.annotations,
+        )?;
+        for media in &isolated.source_item.media {
+            upsert_media(&transaction, media)?;
+        }
+        insert_source_media_links(&transaction, &isolated.source_item)?;
+        insert_segments(&transaction, &isolated.source_item)?;
+
+        let changed_segment = transaction.execute(
+            "UPDATE semantic_segments
+             SET kind = 'text', cloze_id = NULL
+             WHERE source_item_id = ?1 AND cloze_id = ?2",
+            params![source_id, cloze_id],
+        )?;
+        ensure_changed(changed_segment, "card segment", &cloze_id)?;
+        let changed_cloze = transaction.execute(
+            "UPDATE clozes SET source_item_id = ?1
+             WHERE id = ?2 AND source_item_id = ?3",
+            params![isolated.source_item.id, cloze_id, source_id],
+        )?;
+        ensure_changed(changed_cloze, "card cloze", &cloze_id)?;
+        transaction.execute(
+            "UPDATE source_items SET updated_at_ms = ?1 WHERE id = ?2",
+            params![isolated.source_item.updated_at_ms, source_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Suspends or unsuspends only the selected card identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the selection is invalid or a write fails.
+    pub fn set_deck_cards_suspended(
+        &mut self,
+        card_ids: &[String],
+        suspended: bool,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_cards_exist(&transaction, card_ids)?;
+        for card_id in card_ids {
+            transaction.execute(
+                "UPDATE cards
+                 SET suspended = ?1, updated_at_ms = ?2, queue_updated_at_ms = ?2
+                 WHERE id = ?3",
+                params![suspended, updated_at_ms, card_id],
+            )?;
+            transaction.execute(
+                "UPDATE source_items
+                 SET updated_at_ms = ?1
+                 WHERE id = (
+                    SELECT clozes.source_item_id
+                    FROM cards JOIN clozes ON clozes.id = cards.cloze_id
+                    WHERE cards.id = ?2
+                 )",
+                params![updated_at_ms, card_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Moves isolated card sources into or out of recoverable Trash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the selection is invalid or a write fails.
+    pub fn set_deck_cards_deleted(
+        &mut self,
+        card_ids: &[String],
+        deleted_at_ms: Option<i64>,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_cards_exist(&transaction, card_ids)?;
+        for card_id in card_ids {
+            transaction.execute(
+                "UPDATE source_items
+                 SET deleted_at_ms = ?1, updated_at_ms = ?2
+                 WHERE id = (
+                    SELECT clozes.source_item_id
+                    FROM cards JOIN clozes ON clozes.id = cards.cloze_id
+                    WHERE cards.id = ?3
+                 )",
+                params![deleted_at_ms, updated_at_ms, card_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Moves isolated card sources to an existing flat deck.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when a card or destination deck is missing.
+    pub fn move_deck_cards(
+        &mut self,
+        card_ids: &[String],
+        deck_id: &str,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_entity_exists(&transaction, "decks", "deck", deck_id)?;
+        ensure_cards_exist(&transaction, card_ids)?;
+        for card_id in card_ids {
+            transaction.execute(
+                "UPDATE source_items
+                 SET deck_id = ?1, updated_at_ms = ?2
+                 WHERE id = (
+                    SELECT clozes.source_item_id
+                    FROM cards JOIN clozes ON clozes.id = cards.cloze_id
+                    WHERE cards.id = ?3
+                 )",
+                params![deck_id, updated_at_ms, card_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Atomically moves source notes into or out of the recoverable trash.
@@ -3005,6 +3312,229 @@ fn ensure_changed(changed: usize, entity: &'static str, id: &str) -> Result<(), 
     } else {
         Err(entity_not_found(entity, id))
     }
+}
+
+struct DeckCardPageQuery {
+    total_matches: u64,
+    sql: String,
+    parameters: Vec<Value>,
+    expected_rows: usize,
+}
+
+fn matching_deck_card_page_query(
+    deck_id: &str,
+    trashed: bool,
+    remaining_ids: &[String],
+    limit: u32,
+    total_matches: u64,
+) -> DeckCardPageQuery {
+    let page_ids = remaining_ids
+        .iter()
+        .take(usize::try_from(limit).unwrap_or(usize::MAX))
+        .collect::<Vec<_>>();
+    let expected_rows = page_ids.len();
+    let requested = page_ids
+        .iter()
+        .enumerate()
+        .map(|(position, _)| format!("(?, {position})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "WITH requested(card_id, position) AS (VALUES {requested})
+         SELECT
+            cards.id,
+            COALESCE((
+                SELECT group_concat(
+                    CASE
+                        WHEN semantic_segments.cloze_id = clozes.id THEN '[…]'
+                        ELSE semantic_segments.text
+                    END,
+                    '' ORDER BY semantic_segments.ordinal
+                )
+                FROM semantic_segments
+                WHERE semantic_segments.source_item_id = source_items.id
+            ), ''),
+            clozes.answer,
+            cards.suspended,
+            schedule_states.lifecycle,
+            schedule_states.due_at_ms,
+            COALESCE(
+                clozes.language_tag,
+                source_items.language_tag,
+                decks.language_tag
+            ),
+            CASE
+                WHEN clozes.direction != 'auto' THEN clozes.direction
+                WHEN source_items.direction != 'auto' THEN source_items.direction
+                ELSE decks.direction
+            END
+         FROM requested
+         JOIN cards ON cards.id = requested.card_id
+         JOIN clozes ON clozes.id = cards.cloze_id
+         JOIN source_items ON source_items.id = clozes.source_item_id
+         JOIN decks ON decks.id = source_items.deck_id
+         JOIN schedule_states ON schedule_states.card_id = cards.id
+         WHERE source_items.deck_id = ?
+           AND (
+                (? = 1 AND source_items.deleted_at_ms IS NOT NULL)
+                OR (? = 0 AND source_items.deleted_at_ms IS NULL)
+           )
+         ORDER BY requested.position"
+    );
+    let mut parameters = page_ids
+        .into_iter()
+        .map(|card_id| Value::Text((*card_id).clone()))
+        .collect::<Vec<_>>();
+    parameters.push(Value::Text(deck_id.to_owned()));
+    parameters.push(Value::Integer(i64::from(trashed)));
+    parameters.push(Value::Integer(i64::from(trashed)));
+    DeckCardPageQuery {
+        total_matches,
+        sql,
+        parameters,
+        expected_rows,
+    }
+}
+
+fn all_deck_card_page_query(
+    connection: &Connection,
+    deck_id: &str,
+    trashed: bool,
+    offset: u32,
+    limit: u32,
+) -> Result<DeckCardPageQuery, StorageError> {
+    let total_matches = connection.query_row(
+        "SELECT COUNT(*)
+         FROM cards
+         JOIN clozes ON clozes.id = cards.cloze_id
+         JOIN source_items ON source_items.id = clozes.source_item_id
+         WHERE source_items.deck_id = ?1
+           AND (
+                (?2 = 1 AND source_items.deleted_at_ms IS NOT NULL)
+                OR (?2 = 0 AND source_items.deleted_at_ms IS NULL)
+           )",
+        params![deck_id, trashed],
+        |row| row.get::<_, u64>(0),
+    )?;
+    let sql = "SELECT
+            cards.id,
+            COALESCE((
+                SELECT group_concat(
+                    CASE
+                        WHEN semantic_segments.cloze_id = clozes.id THEN '[…]'
+                        ELSE semantic_segments.text
+                    END,
+                    '' ORDER BY semantic_segments.ordinal
+                )
+                FROM semantic_segments
+                WHERE semantic_segments.source_item_id = source_items.id
+            ), ''),
+            clozes.answer,
+            cards.suspended,
+            schedule_states.lifecycle,
+            schedule_states.due_at_ms,
+            COALESCE(
+                clozes.language_tag,
+                source_items.language_tag,
+                decks.language_tag
+            ),
+            CASE
+                WHEN clozes.direction != 'auto' THEN clozes.direction
+                WHEN source_items.direction != 'auto' THEN source_items.direction
+                ELSE decks.direction
+            END
+         FROM cards
+         JOIN clozes ON clozes.id = cards.cloze_id
+         JOIN source_items ON source_items.id = clozes.source_item_id
+         JOIN decks ON decks.id = source_items.deck_id
+         JOIN schedule_states ON schedule_states.card_id = cards.id
+         WHERE source_items.deck_id = ?1
+           AND (
+                (?2 = 1 AND source_items.deleted_at_ms IS NOT NULL)
+                OR (?2 = 0 AND source_items.deleted_at_ms IS NULL)
+           )
+         ORDER BY
+            source_items.updated_at_ms DESC,
+            source_items.id,
+            (
+                SELECT semantic_segments.ordinal
+                FROM semantic_segments
+                WHERE semantic_segments.cloze_id = clozes.id
+            ),
+            clozes.id
+         LIMIT ?3 OFFSET ?4"
+        .to_owned();
+    let parameters = vec![
+        Value::Text(deck_id.to_owned()),
+        Value::Integer(i64::from(trashed)),
+        Value::Integer(i64::from(limit)),
+        Value::Integer(i64::from(offset)),
+    ];
+    let remaining = total_matches.saturating_sub(u64::from(offset));
+    let expected_rows = usize::try_from(remaining.min(u64::from(limit))).unwrap_or(usize::MAX);
+    Ok(DeckCardPageQuery {
+        total_matches,
+        sql,
+        parameters,
+        expected_rows,
+    })
+}
+
+fn load_deck_card_rows(
+    connection: &Connection,
+    sql: &str,
+    parameters: &[Value],
+) -> Result<Vec<StoredDeckCard>, StorageError> {
+    let mut statement = connection.prepare(sql)?;
+    let stored = statement
+        .query_map(params_from_iter(parameters.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    stored
+        .into_iter()
+        .map(
+            |(id, sentence, answer, suspended, lifecycle, due_at_ms, language_tag, direction)| {
+                Ok(StoredDeckCard {
+                    id,
+                    sentence,
+                    answer,
+                    suspended,
+                    lifecycle: card_lifecycle_from_database(&lifecycle)?,
+                    due_at_ms,
+                    language_tag,
+                    direction: direction_from_database(&direction)?,
+                })
+            },
+        )
+        .collect()
+}
+
+fn ensure_cards_exist(connection: &Connection, card_ids: &[String]) -> Result<(), StorageError> {
+    if card_ids.is_empty() {
+        return Err(StorageError::InvalidAggregate(
+            "a card action requires at least one card".to_owned(),
+        ));
+    }
+    let unique = card_ids.iter().collect::<HashSet<_>>();
+    if unique.len() != card_ids.len() {
+        return Err(StorageError::InvalidAggregate(
+            "a card action cannot contain duplicate cards".to_owned(),
+        ));
+    }
+    for card_id in card_ids {
+        ensure_entity_exists(connection, "cards", "card", card_id)?;
+    }
+    Ok(())
 }
 
 fn ensure_library_notes_exist(

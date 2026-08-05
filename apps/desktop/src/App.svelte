@@ -121,7 +121,7 @@
       if (authoringComposing) return;
       pendingNavigation = { kind: "screen", screen: value };
       discardDescription =
-        "Your unsaved source note changes will be lost when you leave the editor.";
+        "Your unsaved card changes will be lost when you leave the editor.";
       discardDialogOpen = true;
       return;
     }
@@ -150,7 +150,7 @@
       const destination =
         editingReturnScreen === "deck" ? selectedDeckName : "study";
       pendingNavigation = { kind: "return" };
-      discardDescription = `Your unsaved source note changes will be lost when you return to ${destination}.`;
+      discardDescription = `Your unsaved card changes will be lost when you return to ${destination}.`;
       discardDialogOpen = true;
       return;
     }
@@ -365,8 +365,9 @@
               ? selectedDeckId
               : undefined}
             onReturn={editingReturnScreen ? returnFromEditor : undefined}
+            onSaved={editingReturnScreen ? performEditorReturn : undefined}
             returnLabel={editingReturnScreen === "deck"
-              ? `Return to ${selectedDeckName}`
+              ? "Cancel"
               : "Return to study"}
           />
         {:else}

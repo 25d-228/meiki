@@ -27,6 +27,7 @@
     cardId?: string | null;
     preferredDeckId?: string;
     onReturn?: () => void;
+    onSaved?: () => void | Promise<void>;
     returnLabel?: string;
   };
 
@@ -34,6 +35,7 @@
     cardId = null,
     preferredDeckId,
     onReturn,
+    onSaved,
     returnLabel = "Return to study",
   }: Props = $props();
 
@@ -134,8 +136,7 @@
     if (composing) return;
     if (protect && dirty) {
       confirmationKind = "new";
-      confirmationDescription =
-        "Discard the unsaved source note and start a new one?";
+      confirmationDescription = "Discard the unsaved card and start a new one?";
       confirmationOpen = true;
       return;
     }
@@ -450,8 +451,12 @@
       draft = await api.saveAuthoringDraft(draft);
       dirty = false;
       error = "";
-      savedMessage = "Source note saved on this device.";
-      if (next) await startNew(false);
+      savedMessage = "Card saved on this device.";
+      if (onSaved) {
+        await onSaved();
+      } else if (next) {
+        await startNew(false);
+      }
     } catch (reason) {
       reportFailure(reason);
     } finally {
@@ -490,31 +495,35 @@
 <section class="screen" aria-labelledby="editor-title" aria-busy={busy}>
   <header class="screen-header">
     <div>
-      <span class="eyebrow">Source-first authoring</span>
-      <h1 id="editor-title" class="screen-title">Add / Edit</h1>
+      <span class="eyebrow">Card authoring</span>
+      <h1 id="editor-title" class="screen-title">Add / Edit card</h1>
       <p class="screen-description">
         Select complete text in any plain segment, make a cloze, add context,
         then preview and save.
       </p>
     </div>
     <div class="cluster">
-      {#if cardId && onReturn}
+      {#if onReturn}
         <Button variant="ghost" disabled={busy} onclick={onReturn}
           >{returnLabel}</Button
         >
       {/if}
-      <Button variant="ghost" disabled={busy} onclick={() => startNew()}
-        >New</Button
-      >
+      {#if !onReturn}
+        <Button variant="ghost" disabled={busy} onclick={() => startNew()}
+          >New</Button
+        >
+      {/if}
       <Button
         bind:ref={previewTrigger}
         variant="outline"
         disabled={busy || !draft?.clozes.length}
         onclick={openPreview}>Preview</Button
       >
-      <Button variant="outline" disabled={busy} onclick={() => save(true)}
-        >Save & next</Button
-      >
+      {#if !onReturn}
+        <Button variant="outline" disabled={busy} onclick={() => save(true)}
+          >Save & next</Button
+        >
+      {/if}
       <Button
         variant="default"
         data-primary-action
@@ -526,7 +535,7 @@
 
   {#if error}
     <Alert.Root variant="destructive" role="alert" class="mb-5">
-      <Alert.Title>The source note was not changed</Alert.Title>
+      <Alert.Title>The card was not changed</Alert.Title>
       <Alert.Description>{error}</Alert.Description>
     </Alert.Root>
   {:else if savedMessage}
@@ -542,7 +551,7 @@
           <div class="stack">
             <div class="source-heading">
               <div>
-                <span class="eyebrow">Source content</span>
+                <span class="eyebrow">Sentence</span>
                 <p>
                   Text and clozes are stable semantic segments. Use
                   <kbd>{shortcut} Enter</kbd> to cloze the current selection.
@@ -562,7 +571,7 @@
               class="semantic-source content-text"
               dir={displayDirection(draft.direction)}
               lang={draft.language_tag ?? undefined}
-              aria-label="Semantic source segments"
+              aria-label="Sentence segments"
             >
               {#each draft.segments as segment, index (segment.id)}
                 <div
@@ -571,7 +580,7 @@
                 >
                   {#if segment.kind === "text"}
                     <label class="visually-hidden" for={`segment-${segment.id}`}
-                      >Source text segment {index + 1}</label
+                      >Sentence text segment {index + 1}</label
                     >
                     <Textarea
                       id={`segment-${segment.id}`}
@@ -728,8 +737,7 @@
                       </div>
                       <Input
                         id="cloze-language"
-                        placeholder={draft.language_tag ??
-                          "Inherit deck / source"}
+                        placeholder={draft.language_tag ?? "Inherit card"}
                         value={cloze.language_tag ?? ""}
                         oninput={(event) =>
                           updateActiveCloze((value) => ({
@@ -885,10 +893,10 @@
         {/if}
       </div>
 
-      <aside class="stack" aria-label="Source defaults and optional media">
+      <aside class="stack" aria-label="Card defaults and optional media">
         <Card.Root class="bg-muted/40 p-4 shadow-none">
           <div class="stack compact-stack">
-            <span class="eyebrow">Deck defaults / source overrides</span>
+            <span class="eyebrow">Deck defaults / card overrides</span>
             <div class="field">
               <Label for="authoring-deck">Deck</Label>
               <select
@@ -1033,7 +1041,7 @@
     </div>
   {:else}
     <Alert.Root role="status">
-      <Alert.Title>Preparing a new source note…</Alert.Title>
+      <Alert.Title>Preparing a new card…</Alert.Title>
     </Alert.Root>
   {/if}
 </section>

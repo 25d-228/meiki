@@ -32,6 +32,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod authoring;
+mod deck_cards;
 mod decks;
 mod library;
 mod portable;
@@ -41,6 +42,10 @@ pub use authoring::{
     AnnotationDraftDto, AuthoringClozeDto, AuthoringDraftDto, AuthoringPreviewDto,
     AuthoringSegmentDto, AuthoringSegmentKindDto, MakeClozeRequest, MatchingPolicyDto,
     RemoveClozeRequest, ReorderSegmentsRequest,
+};
+pub use deck_cards::{
+    DeckCardActionDto, DeckCardActionRequest, DeckCardActionResultDto, DeckCardDeckDto,
+    DeckCardDto, DeckCardOverviewDto, DeckCardRequest, DeckCardStatusDto, DeckCardTrashDto,
 };
 pub use decks::{
     CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckRequest, DeleteDeckResultDto,
@@ -82,6 +87,8 @@ pub enum ApplicationError {
     InvalidLibrary(String),
     #[error("invalid deck request: {0}")]
     InvalidDeck(String),
+    #[error("invalid deck card request: {0}")]
+    InvalidDeckCard(String),
     #[error("invalid text selection: {0}")]
     TextBoundary(#[from] meiki_text::TextBoundaryError),
     #[error("scheduler operation failed: {0}")]
@@ -1725,6 +1732,15 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     SchedulerParametersExportDto::export_all_to(output)?;
     DeckDto::export_all_to(output)?;
     DeckSummaryDto::export_all_to(output)?;
+    DeckCardTrashDto::export_all_to(output)?;
+    DeckCardStatusDto::export_all_to(output)?;
+    DeckCardRequest::export_all_to(output)?;
+    DeckCardDto::export_all_to(output)?;
+    DeckCardDeckDto::export_all_to(output)?;
+    DeckCardOverviewDto::export_all_to(output)?;
+    DeckCardActionDto::export_all_to(output)?;
+    DeckCardActionRequest::export_all_to(output)?;
+    DeckCardActionResultDto::export_all_to(output)?;
     CreateDeckRequest::export_all_to(output)?;
     RenameDeckRequest::export_all_to(output)?;
     DeleteDeckRequest::export_all_to(output)?;
