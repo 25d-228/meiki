@@ -97,6 +97,58 @@ class ReleaseCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("obsolete release-gate reference", result.stderr)
 
+    def test_removed_lucide_dependency_fails(self) -> None:
+        manifest_path = self.checkout / "apps/desktop/package.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["dependencies"]["@lucide/svelte"] = "1.27.0"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("removed UI dependencies", result.stderr)
+
+    def test_removed_inter_font_marker_fails(self) -> None:
+        stylesheet_path = self.checkout / "apps/desktop/src/app.css"
+        stylesheet = stylesheet_path.read_text(encoding="utf-8").replace(
+            "Merriweather Variable",
+            "Inter Variable",
+            1,
+        )
+        stylesheet_path.write_text(stylesheet, encoding="utf-8")
+
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("fixed preset marker", result.stderr)
+
+    def test_nonzero_shared_radius_fails(self) -> None:
+        stylesheet_path = self.checkout / "apps/desktop/src/app.css"
+        stylesheet = stylesheet_path.read_text(encoding="utf-8").replace(
+            "--radius: 0rem;",
+            "--radius: 0.5rem;",
+            1,
+        )
+        stylesheet_path.write_text(stylesheet, encoding="utf-8")
+
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("shared radius must be zero", result.stderr)
+
+    def test_old_shadcn_style_fails(self) -> None:
+        config_path = self.checkout / "apps/desktop/components.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["style"] = "nova"
+        config_path.write_text(
+            json.dumps(config, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("fixed preset", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

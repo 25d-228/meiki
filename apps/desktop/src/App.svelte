@@ -1,10 +1,10 @@
 <script lang="ts">
-  import CalendarDaysIcon from "@lucide/svelte/icons/calendar-days";
-  import LibraryIcon from "@lucide/svelte/icons/library";
-  import MenuIcon from "@lucide/svelte/icons/menu";
-  import PenLineIcon from "@lucide/svelte/icons/pen-line";
-  import SettingsIcon from "@lucide/svelte/icons/settings";
-  import SparklesIcon from "@lucide/svelte/icons/sparkles";
+  import RiBookShelfLine from "remixicon-svelte/icons/book-shelf-line";
+  import RiCalendarTodoLine from "remixicon-svelte/icons/calendar-todo-line";
+  import RiEditLine from "remixicon-svelte/icons/edit-line";
+  import RiMenuLine from "remixicon-svelte/icons/menu-line";
+  import RiSettings3Line from "remixicon-svelte/icons/settings-3-line";
+  import RiSparkling2Line from "remixicon-svelte/icons/sparkling-2-line";
   import { onMount, tick } from "svelte";
 
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
@@ -21,11 +21,11 @@
   import TodayScreen from "./screens/TodayScreen.svelte";
 
   const menuItems = [
-    { id: "today", label: "Today", icon: CalendarDaysIcon },
-    { id: "study", label: "Study", icon: SparklesIcon },
-    { id: "library", label: "Library", icon: LibraryIcon },
-    { id: "editor", label: "Add / Edit", icon: PenLineIcon },
-    { id: "settings", label: "Settings", icon: SettingsIcon },
+    { id: "today", label: "Today", icon: RiCalendarTodoLine },
+    { id: "study", label: "Study", icon: RiSparkling2Line },
+    { id: "library", label: "Library", icon: RiBookShelfLine },
+    { id: "editor", label: "Add / Edit", icon: RiEditLine },
+    { id: "settings", label: "Settings", icon: RiSettings3Line },
   ];
 
   let activeScreen: Screen = "today";
@@ -207,7 +207,7 @@
                   class="inline-flex size-8 items-center justify-center rounded-lg hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none md:hidden"
                   aria-label="Open navigation"
                 >
-                  <MenuIcon />
+                  <RiMenuLine />
                 </Sheet.Trigger>
               {/snippet}
             </Tooltip.Trigger>

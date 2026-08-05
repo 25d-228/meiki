@@ -116,7 +116,7 @@
     width: 2.4rem;
     height: 2.4rem;
     flex: 0 0 auto;
-    border-radius: 50%;
+    border-radius: var(--radius-lg);
     color: var(--primary);
     background: var(--accent);
     font-size: 0.65rem;

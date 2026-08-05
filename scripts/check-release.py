@@ -61,6 +61,81 @@ package_lock_versions = {
 if set(package_lock_versions.values()) != {version}:
     fail(f"npm lockfile versions differ: {package_lock_versions}")
 
+desktop_dependencies = {
+    **desktop_package.get("dependencies", {}),
+    **desktop_package.get("devDependencies", {}),
+}
+removed_ui_dependencies = {
+    "@fontsource-variable/inter",
+    "@lucide/svelte",
+}
+present_removed_ui_dependencies = removed_ui_dependencies & desktop_dependencies.keys()
+if present_removed_ui_dependencies:
+    fail(
+        "desktop package contains removed UI dependencies: "
+        f"{sorted(present_removed_ui_dependencies)}"
+    )
+required_ui_dependencies = {
+    "@fontsource-variable/merriweather",
+    "remixicon-svelte",
+}
+missing_ui_dependencies = required_ui_dependencies - desktop_dependencies.keys()
+if missing_ui_dependencies:
+    fail(
+        "desktop package is missing fixed UI preset dependencies: "
+        f"{sorted(missing_ui_dependencies)}"
+    )
+
+components_config = read_json(ROOT / "apps/desktop/components.json")
+expected_preset_config = {
+    "style": "vega",
+    "iconLibrary": "remixicon",
+    "menuColor": "default",
+    "menuAccent": "subtle",
+}
+actual_preset_config = {
+    key: components_config.get(key) for key in expected_preset_config
+}
+if actual_preset_config != expected_preset_config:
+    fail(
+        "desktop shadcn preset differs from the fixed preset: "
+        f"{actual_preset_config}"
+    )
+tailwind_config = components_config.get("tailwind")
+if not isinstance(tailwind_config, dict) or tailwind_config.get("baseColor") != "neutral":
+    fail("desktop shadcn preset must use the neutral base color")
+
+desktop_stylesheet = (ROOT / "apps/desktop/src/app.css").read_text(encoding="utf-8")
+radius_match = re.search(
+    r"^\s*--radius:\s*([^;]+);", desktop_stylesheet, flags=re.MULTILINE
+)
+if radius_match is None or radius_match.group(1).strip() not in {"0", "0px", "0rem"}:
+    fail("desktop shared radius must be zero")
+required_stylesheet_markers = (
+    '@import "@fontsource-variable/merriweather";',
+    '--font-sans: "Merriweather Variable", serif;',
+    '--font-heading: "Merriweather Variable", serif;',
+)
+for marker in required_stylesheet_markers:
+    if marker not in desktop_stylesheet:
+        fail(f"desktop stylesheet is missing fixed preset marker {marker!r}")
+
+removed_ui_markers = (
+    "@fontsource-variable/inter",
+    "@lucide/svelte",
+    "Inter Variable",
+)
+desktop_source_root = ROOT / "apps/desktop/src"
+for source_file in desktop_source_root.rglob("*"):
+    if not source_file.is_file() or source_file.suffix not in {".css", ".svelte", ".ts"}:
+        continue
+    source = source_file.read_text(encoding="utf-8")
+    for marker in removed_ui_markers:
+        if marker in source:
+            fail(
+                f"{source_file.relative_to(ROOT)} contains removed UI marker {marker!r}"
+            )
+
 cargo_lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
 workspace_lock_versions = {}
 for block in cargo_lock.split("[[package]]")[1:]:
