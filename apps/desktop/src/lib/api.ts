@@ -1,4 +1,4 @@
-import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type { CheckAnswerRequest } from "./generated/CheckAnswerRequest";
@@ -50,6 +50,10 @@ import type { DeckCardRequest } from "./generated/DeckCardRequest";
 import type { DeleteDeckRequest } from "./generated/DeleteDeckRequest";
 import type { DeleteDeckResultDto } from "./generated/DeleteDeckResultDto";
 import type { RenameDeckRequest } from "./generated/RenameDeckRequest";
+import type { BundlePreviewDto } from "./generated/BundlePreviewDto";
+import type { BundleImportRequest } from "./generated/BundleImportRequest";
+import type { BundleImportProgressDto } from "./generated/BundleImportProgressDto";
+import type { BundleImportResultDto } from "./generated/BundleImportResultDto";
 
 function invoke<T>(
   command: string,
@@ -119,6 +123,26 @@ export const api = {
 
   previewArchive(path: string): Promise<PortableArchivePreviewDto> {
     return invoke("preview_archive", { path });
+  },
+
+  previewBundle(path: string): Promise<BundlePreviewDto> {
+    return invoke("preview_bundle", { path });
+  },
+
+  importBundle(
+    request: BundleImportRequest,
+    onProgress: (progress: BundleImportProgressDto) => void,
+  ): Promise<BundleImportResultDto> {
+    if (window.__MEIKI_TEST_INVOKE__) {
+      window.__MEIKI_TEST_BUNDLE_PROGRESS__ = onProgress;
+      return invoke<BundleImportResultDto>("import_bundle", {
+        request,
+      }).finally(() => {
+        delete window.__MEIKI_TEST_BUNDLE_PROGRESS__;
+      });
+    }
+    const progress = new Channel<BundleImportProgressDto>(onProgress);
+    return invoke("import_bundle", { request, onProgress: progress });
   },
 
   addArchiveDeck(

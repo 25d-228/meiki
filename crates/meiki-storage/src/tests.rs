@@ -11,11 +11,11 @@ use super::{
     AUTHORING_DEFAULTS_MIGRATION, AnnotationRepository, CARD_LIFECYCLE_MIGRATION,
     CORE_MODEL_MIGRATION, CardRepository, ClozeRepository, DEFAULT_DECK_ID, DeckRepository,
     FOUNDATION_MIGRATION, FSRS7_SCHEDULER_MIGRATION, LIBRARY_MIGRATION, MEDIA_PIPELINE_MIGRATION,
-    MediaRepository, PROJECTION_INTEGRITY_MIGRATION, PristineDeckCard, PristineDeckImport,
-    PristineDeckImportStatus, PristineDeckNote, PristineDeckRepository, SAMPLE_CARD_ID,
-    SAMPLE_CLOZE_ID, SAMPLE_SOURCE_ID, STUDY_SESSION_MIGRATION, SchedulerParameterSetRepository,
-    SchedulerProfileRepository, SourceNoteRepository, Storage, StorageError, StoredSourceNote,
-    TagRepository,
+    MediaRepository, PROJECTION_INTEGRITY_MIGRATION, PristineBundleImport, PristineDeckCard,
+    PristineDeckImport, PristineDeckImportStatus, PristineDeckNote, PristineDeckRepository,
+    SAMPLE_CARD_ID, SAMPLE_CLOZE_ID, SAMPLE_SOURCE_ID, STUDY_SESSION_MIGRATION,
+    SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository, Storage,
+    StorageError, StoredSourceNote, TagRepository,
 };
 
 fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent {
@@ -524,6 +524,60 @@ fn pristine_deck_import() -> PristineDeckImport {
     }
 }
 
+fn pristine_bundle_import() -> PristineBundleImport {
+    let mut first = pristine_deck_import();
+    first.deck.name = "Japanese 00".into();
+    first.deck.language_tag = Some("ja-JP".into());
+
+    let mut second = first.clone();
+    second.deck.id = "deck-mixed-2".into();
+    second.deck.name = "Japanese 01".into();
+    for imported_note in &mut second.notes {
+        let source = &mut imported_note.note.source_item;
+        source.id.push_str("-2");
+        source.deck_id.clone_from(&second.deck.id);
+        for segment in &mut source.segments {
+            segment.id.push_str("-2");
+            if let SegmentContent::Cloze { cloze_id, .. } = &mut segment.content {
+                cloze_id.push_str("-2");
+            }
+        }
+        for annotation in &mut source.annotations {
+            annotation.id.push_str("-2");
+        }
+        for media in &mut source.media {
+            media.id.push_str("-2");
+        }
+        for tag in &mut source.tags {
+            tag.id.push_str("-2");
+            tag.name.push_str(" 2");
+        }
+        for cloze in &mut imported_note.note.clozes {
+            cloze.id.push_str("-2");
+            cloze.source_item_id.clone_from(&source.id);
+            for annotation in &mut cloze.annotations {
+                annotation.id.push_str("-2");
+            }
+            for media in &mut cloze.media {
+                media.id.push_str("-2");
+            }
+        }
+        for imported_card in &mut imported_note.cards {
+            imported_card.card.id.push_str("-2");
+            imported_card.card.cloze_id.push_str("-2");
+            imported_card
+                .initial_schedule
+                .card_id
+                .clone_from(&imported_card.card.id);
+        }
+    }
+
+    PristineBundleImport {
+        language_tag: "ja-JP".into(),
+        decks: vec![first, second],
+    }
+}
+
 #[test]
 fn pristine_deck_import_is_atomic_and_uses_inherited_automatic_scheduling() {
     let mut storage = Storage::open_in_memory().unwrap();
@@ -559,6 +613,110 @@ fn pristine_deck_import_is_atomic_and_uses_inherited_automatic_scheduling() {
             .iter()
             .all(|card| card.schedule.lifecycle == CardLifecycle::Unseen)
     );
+}
+
+#[test]
+fn pristine_bundle_import_adds_only_missing_decks_with_associations_and_inherited_scheduling() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    let first_stage = PristineBundleImport {
+        language_tag: bundle.language_tag.clone(),
+        decks: vec![bundle.decks[0].clone()],
+    };
+    storage
+        .import_pristine_bundle(&first_stage, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+
+    let plan = storage.validate_pristine_bundle_import(&bundle).unwrap();
+    assert_eq!(plan.installed_deck_ids, [bundle.decks[0].deck.id.clone()]);
+    assert_eq!(plan.missing_deck_ids, [bundle.decks[1].deck.id.clone()]);
+    assert!(plan.unassociated_deck_ids.is_empty());
+    let mut imported_cards = 0;
+    let (completed, ()) = storage
+        .import_pristine_bundle(&bundle, || imported_cards += 1, || Ok::<(), ()>(()))
+        .unwrap();
+    assert_eq!(completed, plan);
+    assert_eq!(imported_cards, 2);
+
+    for stage in &bundle.decks {
+        let profile = storage.get_scheduler_profile(&stage.deck.id).unwrap();
+        assert_eq!(profile.scheduling_mode, SchedulingMode::Automatic);
+        assert_eq!(profile.deck_daily_time_budget_minutes, None);
+    }
+    assert_eq!(
+        storage
+            .connection
+            .query_row("SELECT COUNT(*) FROM bundle_installations", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        storage
+            .connection
+            .query_row("SELECT COUNT(*) FROM bundle_decks", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap(),
+        2
+    );
+
+    let mut unexpected_callback = false;
+    let (no_op, ()) = storage
+        .import_pristine_bundle(&bundle, || unexpected_callback = true, || Ok::<(), ()>(()))
+        .unwrap();
+    assert!(no_op.missing_deck_ids.is_empty());
+    assert!(no_op.unassociated_deck_ids.is_empty());
+    assert!(!unexpected_callback);
+}
+
+#[test]
+fn pristine_bundle_validation_rejects_an_existing_deck_associated_with_another_stage() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let mut reordered = bundle.clone();
+    reordered.decks.swap(0, 1);
+
+    assert!(matches!(
+        storage.validate_pristine_bundle_import(&reordered),
+        Err(StorageError::InvalidAggregate(message))
+            if message.contains("associated with another bundle or stage")
+    ));
+}
+
+#[test]
+fn pristine_bundle_failure_rolls_back_all_decks_and_associations() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+
+    assert!(matches!(
+        storage.import_pristine_bundle_failing_before_commit(&bundle),
+        Err(StorageError::InjectedTestFailure(
+            "pristine bundle transaction before commit"
+        ))
+    ));
+    for stage in &bundle.decks {
+        assert!(matches!(
+            storage.get_deck(&stage.deck.id),
+            Err(StorageError::EntityNotFound { .. })
+        ));
+    }
+    for table in ["bundle_installations", "bundle_decks"] {
+        assert_eq!(
+            storage
+                .connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap(),
+            0,
+            "{table}"
+        );
+    }
 }
 
 #[test]
@@ -719,7 +877,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     std::fs::write(&path, RELEASED_V0_1_SCHEMA).unwrap();
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 10);
+    assert_eq!(storage.schema_version().unwrap(), 11);
     assert_eq!(storage.get_deck(DEFAULT_DECK_ID).unwrap().name, "Default");
     assert_eq!(
         storage
@@ -774,7 +932,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     drop(storage);
 
     let reopened = Storage::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 10);
+    assert_eq!(reopened.schema_version().unwrap(), 11);
     assert_eq!(
         reopened
             .connection
@@ -788,7 +946,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
 
     let restored_path = directory.path().join("released-v0.1-restored.db");
     let restored = Storage::restore_from_backup(&backup, &restored_path).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 10);
+    assert_eq!(restored.schema_version().unwrap(), 11);
     assert!(!restored.has_learning_material().unwrap());
     assert!(
         restored
@@ -827,7 +985,7 @@ fn newer_schema_fails_without_migration_or_backup_writes() {
         Storage::open(&path),
         Err(StorageError::UnsupportedSchema {
             found: 999,
-            supported: 10
+            supported: 11
         })
     ));
     let connection = Connection::open(&path).unwrap();
@@ -959,7 +1117,7 @@ fn version_ten_migrates_legacy_policy_without_losing_user_choices() {
     drop(legacy);
 
     let migrated = Storage::open(&path).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 10);
+    assert_eq!(migrated.schema_version().unwrap(), 11);
     assert_eq!(
         migrated
             .collection_scheduling_settings()
@@ -1434,7 +1592,7 @@ fn version_nine_migration_backs_up_and_repairs_only_from_recorded_snapshots() {
     drop(storage);
 
     let repaired = Storage::open(&path).unwrap();
-    assert_eq!(repaired.schema_version().unwrap(), 10);
+    assert_eq!(repaired.schema_version().unwrap(), 11);
     assert_eq!(repaired.projection_migration_repaired_cards().unwrap(), 1);
     assert_eq!(repaired.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
     assert_eq!(
@@ -1665,7 +1823,7 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 10);
+    assert_eq!(storage.schema_version().unwrap(), 11);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "v1.db.migration-v1-"),
         1
@@ -1742,7 +1900,7 @@ fn version_five_media_migrates_to_roles_and_technical_metadata() {
     drop(connection);
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 10);
+    assert_eq!(storage.schema_version().unwrap(), 11);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "legacy-media.db.migration-v5-"),
         5
@@ -2208,7 +2366,7 @@ fn release_budget_large_version_eight_migration() {
     let integrity = migrated.check_collection_schedule_integrity().unwrap();
     let after_bytes = std::fs::metadata(&path).unwrap().len();
 
-    assert_eq!(migrated.schema_version().unwrap(), 10);
+    assert_eq!(migrated.schema_version().unwrap(), 11);
     assert_eq!(
         integrity.checked_cards,
         usize::try_from(CARD_COUNT).unwrap()

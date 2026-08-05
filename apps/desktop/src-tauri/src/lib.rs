@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
+    BackupDto, BundleImportProgressDto, BundleImportRequest, BundleImportResultDto,
+    BundlePreviewDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
     DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
     DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
     ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
@@ -14,7 +15,7 @@ use meiki_application::{
     SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
     UpdateSchedulerSettingsRequest,
 };
-use tauri::{Manager, State};
+use tauri::{Manager, State, ipc::Channel};
 
 mod commands;
 
@@ -31,6 +32,8 @@ macro_rules! desktop_commands {
             apply_deck_card_action,
             export_archive,
             preview_archive,
+            preview_bundle,
+            import_bundle,
             add_archive_deck,
             import_archive,
             list_backups,
@@ -172,6 +175,29 @@ fn preview_archive(
     state: State<'_, AppContext>,
 ) -> Result<PortableArchivePreviewDto, String> {
     commands::preview_archive(&state.service(), &path)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn preview_bundle(path: String, state: State<'_, AppContext>) -> Result<BundlePreviewDto, String> {
+    commands::preview_bundle(&state.service(), &path)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn import_bundle(
+    request: BundleImportRequest,
+    on_progress: Channel<BundleImportProgressDto>,
+    state: State<'_, AppContext>,
+) -> Result<BundleImportResultDto, String> {
+    let service = state.service();
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::import_bundle(&service, &request, |progress| {
+            drop(on_progress.send(progress));
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -447,6 +473,8 @@ mod tests {
         "apply_deck_card_action",
         "export_archive",
         "preview_archive",
+        "preview_bundle",
+        "import_bundle",
         "add_archive_deck",
         "import_archive",
         "list_backups",

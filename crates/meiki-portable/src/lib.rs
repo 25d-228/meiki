@@ -118,6 +118,18 @@ pub struct ValidatedArchive {
     _temporary: TempDir,
 }
 
+#[derive(Debug)]
+pub struct ArchivePreview {
+    pub manifest: ArchiveManifest,
+    pub collection: PortableCollection,
+}
+
+struct ArchiveContents {
+    archive: ZipArchive<File>,
+    manifest: ArchiveManifest,
+    collection: PortableCollection,
+}
+
 #[derive(Debug, Error)]
 pub enum PortableError {
     #[error("archive destination already exists: {}", .0.display())]
@@ -268,6 +280,21 @@ pub fn write_archive(
     Ok(manifest)
 }
 
+/// Reads and validates archive metadata and collection data without reading
+/// media payloads.
+///
+/// # Errors
+///
+/// Returns an error for an unsafe container, invalid manifest or collection,
+/// mismatched counts, or inconsistent media metadata.
+pub fn read_archive_preview(path: &Path) -> Result<ArchivePreview, PortableError> {
+    let contents = read_archive_contents(path)?;
+    Ok(ArchivePreview {
+        manifest: contents.manifest,
+        collection: contents.collection,
+    })
+}
+
 /// Reads, bounds-checks, and checksum-verifies an archive into temporary files.
 ///
 /// No archive-provided path is ever passed to the filesystem.
@@ -277,6 +304,32 @@ pub fn write_archive(
 /// Returns an error before exposing collection data when any entry, identity,
 /// relationship, size, or checksum is invalid.
 pub fn read_archive(path: &Path) -> Result<ValidatedArchive, PortableError> {
+    let ArchiveContents {
+        mut archive,
+        manifest,
+        collection,
+    } = read_archive_contents(path)?;
+    let temporary =
+        tempfile::tempdir().map_err(|error| portable_io("create import workspace", path, error))?;
+    let mut media_objects = Vec::with_capacity(manifest.media.len());
+    for (index, entry) in manifest.media.iter().enumerate() {
+        let output = temporary.path().join(index.to_string());
+        extract_media_entry(&mut archive, entry, &output)?;
+        media_objects.push(ValidatedMediaObject {
+            content_hash: entry.content_hash.clone(),
+            path: output,
+            byte_size: entry.byte_size,
+        });
+    }
+    Ok(ValidatedArchive {
+        manifest,
+        collection,
+        media_objects,
+        _temporary: temporary,
+    })
+}
+
+fn read_archive_contents(path: &Path) -> Result<ArchiveContents, PortableError> {
     let metadata = fs::metadata(path).map_err(|error| portable_io("inspect", path, error))?;
     if !metadata.is_file() || metadata.len() > MAX_ARCHIVE_BYTES {
         return Err(PortableError::ArchiveTooLarge);
@@ -332,24 +385,17 @@ pub fn read_archive(path: &Path) -> Result<ValidatedArchive, PortableError> {
         ));
     }
     validate_media_manifest_alignment(&collection, &manifest)?;
-
-    let temporary =
-        tempfile::tempdir().map_err(|error| portable_io("create import workspace", path, error))?;
-    let mut media_objects = Vec::with_capacity(manifest.media.len());
-    for (index, entry) in manifest.media.iter().enumerate() {
-        let output = temporary.path().join(index.to_string());
-        extract_media_entry(&mut archive, entry, &output)?;
-        media_objects.push(ValidatedMediaObject {
-            content_hash: entry.content_hash.clone(),
-            path: output,
-            byte_size: entry.byte_size,
-        });
+    for entry in &manifest.media {
+        let media = archive.by_name(&entry.path)?;
+        if media.is_dir() || media.size() != entry.byte_size {
+            return Err(PortableError::InvalidMedia(entry.content_hash.clone()));
+        }
     }
-    Ok(ValidatedArchive {
+
+    Ok(ArchiveContents {
+        archive,
         manifest,
         collection,
-        media_objects,
-        _temporary: temporary,
     })
 }
 
@@ -1125,10 +1171,12 @@ mod tests {
     use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        ArchiveManifest, ArchiveMediaSource, ArchiveScope, COLLECTION_ENTRY,
-        COMPRESSION_RATIO_MINIMUM_BYTES, MANIFEST_ENTRY, MAX_ARCHIVE_UNCOMPRESSED_BYTES,
-        MAX_COMPRESSION_RATIO, PortableCard, PortableCollection, PortableError, PortableNote,
-        content_hash, read_archive, validate_collection, validate_entry_budget, write_archive,
+        ARCHIVE_FORMAT, ARCHIVE_VERSION, ArchiveManifest, ArchiveMediaEntry, ArchiveMediaSource,
+        ArchiveScope, COLLECTION_ENTRY, COMPRESSION_RATIO_MINIMUM_BYTES, MANIFEST_ENTRY,
+        MAX_ARCHIVE_UNCOMPRESSED_BYTES, MAX_COMPRESSION_RATIO, PortableCard, PortableCollection,
+        PortableError, PortableNote, collection_counts, content_hash, media_entry_path,
+        read_archive, read_archive_preview, validate_collection, validate_entry_budget,
+        write_archive,
     };
 
     #[test]
@@ -1173,6 +1221,24 @@ mod tests {
             std::fs::read(&restored.media_objects[0].path).unwrap(),
             media_bytes
         );
+    }
+
+    #[test]
+    fn fast_bundle_preview_validates_9700_cards_without_reading_media_payloads() {
+        let directory = tempdir().unwrap();
+        let archive_path = directory.path().join("japanese-bundle.meiki");
+        let (collection, media) = pristine_japanese_bundle();
+        write_bundle_with_corrupt_media(&archive_path, &collection, media);
+
+        let preview = read_archive_preview(&archive_path).unwrap();
+
+        assert_eq!(preview.collection.decks.len(), 6);
+        assert_eq!(preview.manifest.counts.cards, 9_700);
+        assert_eq!(preview.manifest.counts.media_objects, 9_700);
+        assert!(matches!(
+            read_archive(&archive_path),
+            Err(PortableError::ChecksumMismatch(_))
+        ));
     }
 
     #[test]
@@ -1600,6 +1666,113 @@ mod tests {
         event.next_schedule.card_id = card_id;
         event.next_schedule.last_review_event_id = Some(review_id);
         note
+    }
+
+    fn pristine_japanese_bundle() -> (PortableCollection, Vec<(String, [u8; 8])>) {
+        const STAGES: [(&str, usize); 6] = [
+            ("Japanese 00 — Kana, sound, and Japanese input", 300),
+            ("Japanese 01 — N5 / A1 foundation", 1_000),
+            ("Japanese 02 — N4 / A2 elementary", 1_200),
+            ("Japanese 03 — N3 / B1 intermediate", 1_800),
+            ("Japanese 04 — N2 / B2 upper-intermediate", 2_400),
+            ("Japanese 05 — N1 / balanced C1 bridge", 3_000),
+        ];
+
+        let mut collection = collection(&content_hash(&0_u64.to_le_bytes()));
+        let note_template = collection.notes.pop().unwrap();
+        let deck_template = collection.decks.pop().unwrap();
+        let profile_template = collection.scheduler_profiles.pop().unwrap();
+        collection.decks = STAGES
+            .iter()
+            .enumerate()
+            .map(|(stage, (name, _))| Deck {
+                id: format!("deck:ja-JP:{stage:02}"),
+                name: (*name).into(),
+                description: None,
+                language_tag: Some("ja-JP".into()),
+                ..deck_template.clone()
+            })
+            .collect();
+        collection.scheduler_profiles = collection
+            .decks
+            .iter()
+            .map(|deck| SchedulerProfile {
+                deck_id: deck.id.clone(),
+                ..profile_template.clone()
+            })
+            .collect();
+
+        let mut media = Vec::with_capacity(9_700);
+        let mut note_index = 0_usize;
+        for (stage, (_, card_count)) in STAGES.iter().enumerate() {
+            for _ in 0..*card_count {
+                let bytes = u64::try_from(note_index).unwrap().to_le_bytes();
+                let hash = content_hash(&bytes);
+                let mut note = renumber_note(&note_template, note_index);
+                note.source_item.deck_id = format!("deck:ja-JP:{stage:02}");
+                note.source_item.language_tag = Some("ja-JP".into());
+                let media_reference = &mut note.source_item.media[0];
+                media_reference.content_hash.clone_from(&hash);
+                media_reference.kind = MediaKind::Audio;
+                media_reference.role = MediaRole::PromptAudio;
+                media_reference.media_type = "audio/mpeg".into();
+                media_reference.byte_size = 8;
+                media_reference.original_file_name = Some(format!("{note_index:05}.mp3"));
+                media_reference.alt_text = None;
+                media_reference.duration_ms = Some(1_000);
+                media_reference.language_tag = Some("ja-JP".into());
+                note.clozes[0].language_tag = Some("ja-JP".into());
+                let card = &mut note.cards[0];
+                card.schedule = card.baseline.clone();
+                card.review_events.clear();
+                collection.notes.push(note);
+                media.push((hash, bytes));
+                note_index += 1;
+            }
+        }
+        (collection, media)
+    }
+
+    fn write_bundle_with_corrupt_media(
+        path: &std::path::Path,
+        collection: &PortableCollection,
+        mut media: Vec<(String, [u8; 8])>,
+    ) {
+        validate_collection(collection).unwrap();
+        media.sort_by(|left, right| left.0.cmp(&right.0));
+        let collection_json = serde_json::to_vec(collection).unwrap();
+        let manifest = ArchiveManifest {
+            format: ARCHIVE_FORMAT.into(),
+            version: ARCHIVE_VERSION,
+            created_at_ms: 42,
+            scope: ArchiveScope::FullCollection,
+            collection_path: COLLECTION_ENTRY.into(),
+            collection_sha256: content_hash(&collection_json),
+            counts: collection_counts(collection).unwrap(),
+            media: media
+                .iter()
+                .map(|(hash, _)| ArchiveMediaEntry {
+                    content_hash: hash.clone(),
+                    path: media_entry_path(hash).unwrap(),
+                    byte_size: 8,
+                })
+                .collect(),
+        };
+        let output = std::fs::File::create(path).unwrap();
+        let mut writer = ZipWriter::new(output);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        writer.start_file(MANIFEST_ENTRY, options).unwrap();
+        writer
+            .write_all(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        writer.start_file(COLLECTION_ENTRY, options).unwrap();
+        writer.write_all(&collection_json).unwrap();
+        for (entry, (_, mut bytes)) in manifest.media.iter().zip(media) {
+            bytes[0] ^= 0xff;
+            writer.start_file(&entry.path, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
     }
 
     #[allow(clippy::too_many_lines)]
