@@ -1,7 +1,8 @@
 use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
+    BackupDto, BundleImportProgressDto, BundleImportRequest, BundleImportResultDto,
+    BundlePreviewDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
     DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
     DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
     ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
@@ -87,6 +88,21 @@ pub(crate) fn preview_archive(
     path: &str,
 ) -> CommandResult<PortableArchivePreviewDto> {
     map_error(service.preview_archive(path))
+}
+
+pub(crate) fn preview_bundle(
+    service: &ApplicationService,
+    path: &str,
+) -> CommandResult<BundlePreviewDto> {
+    map_error(service.preview_bundle(path))
+}
+
+pub(crate) fn import_bundle(
+    service: &ApplicationService,
+    request: &BundleImportRequest,
+    on_progress: impl FnMut(BundleImportProgressDto),
+) -> CommandResult<BundleImportResultDto> {
+    map_error(service.import_bundle(request, on_progress))
 }
 
 pub(crate) fn add_archive_deck(

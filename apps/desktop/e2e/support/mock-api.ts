@@ -10,6 +10,7 @@ export async function installMockApi(page: Page): Promise<void> {
     let deckDeletedToUnsorted = false;
     let deletedDeckCardRestored = false;
     let focusedSessionDeckDeleted = false;
+    let bundleImported = false;
     const schedulerSettingsByDeck: Record<
       string,
       typeof dtos.schedulerSettings
@@ -233,6 +234,9 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(dtos.decks);
       }
       if (command === "list_deck_summaries") {
+        if (bundleImported) {
+          return clone([...dtos.deckSummaries, ...dtos.bundleDeckSummaries]);
+        }
         if (params.get("deckDeletion") === "focused-session") {
           return clone(
             focusedSessionDeckDeleted
@@ -413,6 +417,46 @@ export async function installMockApi(page: Page): Promise<void> {
       }
 
       if (command === "export_archive") return clone(dtos.archiveExport);
+      if (command === "preview_bundle") {
+        const installedDecks =
+          params.get("bundle") === "installed"
+            ? dtos.bundlePreview.decks.length
+            : params.get("bundle") === "partial"
+              ? 2
+              : 0;
+        return clone({
+          ...dtos.bundlePreview,
+          decks: dtos.bundlePreview.decks.map((deck, index) => ({
+            ...deck,
+            status: index < installedDecks ? "installed" : "missing",
+          })),
+          can_import: installedDecks < dtos.bundlePreview.decks.length,
+        });
+      }
+      if (command === "import_bundle") {
+        const report = async (
+          stage: "preparing_decks" | "adding_cards" | "adding_audio",
+          current: number,
+          total: number,
+        ) => {
+          window.__MEIKI_TEST_BUNDLE_PROGRESS__?.({ stage, current, total });
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        };
+        await report("preparing_decks", 0, 6);
+        await report("preparing_decks", 6, 6);
+        await report("adding_cards", 0, 9_700);
+        await report("adding_cards", 9_700, 9_700);
+        await report("adding_audio", 0, 9_700);
+        await report("adding_audio", 9_700, 9_700);
+        bundleImported = true;
+        return {
+          language_tag: "ja-JP",
+          added_decks: 6,
+          added_cards: 9_700,
+          imported_media_objects: 9_700,
+          deduplicated_media_objects: 0,
+        };
+      }
       if (command === "preview_archive") return clone(dtos.archivePreview);
       if (command === "add_archive_deck") return clone(dtos.archiveAddDeck);
       if (command === "import_archive") return clone(dtos.archiveImport);

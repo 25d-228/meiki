@@ -221,6 +221,45 @@ const deckSummaries = [
   },
 ] as const;
 
+const bundleDecks = [
+  {
+    id: "deck:ja-JP:00",
+    name: "Japanese 00 — Kana, sound, and Japanese input",
+    cards: 300,
+    status: "missing",
+  },
+  {
+    id: "deck:ja-JP:01",
+    name: "Japanese 01 — N5 / A1 foundation",
+    cards: 1_000,
+    status: "missing",
+  },
+  {
+    id: "deck:ja-JP:02",
+    name: "Japanese 02 — N4 / A2 elementary",
+    cards: 1_200,
+    status: "missing",
+  },
+  {
+    id: "deck:ja-JP:03",
+    name: "Japanese 03 — N3 / B1 intermediate",
+    cards: 1_800,
+    status: "missing",
+  },
+  {
+    id: "deck:ja-JP:04",
+    name: "Japanese 04 — N2 / B2 upper-intermediate",
+    cards: 2_400,
+    status: "missing",
+  },
+  {
+    id: "deck:ja-JP:05",
+    name: "Japanese 05 — N1 / balanced C1 bridge",
+    cards: 3_000,
+    status: "missing",
+  },
+] as const;
+
 const queue = [
   {
     card_id: "due-card",
@@ -675,6 +714,21 @@ export const scenarioDtos = {
   },
   decks,
   deckSummaries,
+  bundlePreview: {
+    path: "/tmp/exports/meiki-e2e.meiki",
+    language_tag: "ja-JP",
+    decks: bundleDecks,
+    total_cards: 9_700,
+    audio_objects: 9_700,
+    can_import: true,
+  },
+  bundleDeckSummaries: bundleDecks.map((deck) => ({
+    id: deck.id,
+    name: deck.name,
+    total_cards: deck.cards,
+    due_cards: 0,
+    new_cards: deck.cards,
+  })),
   createdDeck: {
     ...decks[1],
     id: "listening-deck",

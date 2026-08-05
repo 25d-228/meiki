@@ -47,6 +47,65 @@ test("hides the empty internal default deck", async ({ page }) => {
   await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
 });
 
+test("previews and adds the complete Japanese bundle in ordered progress stages", async ({
+  page,
+}) => {
+  await openDecks(page);
+  await page.getByRole("button", { name: "Import bundle" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Import bundle" });
+  await expect(dialog.getByText("Japanese", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("9,700", { exact: true })).toHaveCount(2);
+  const bundleDecks = dialog.getByRole("list", { name: "Bundle decks" });
+  await expect(bundleDecks.getByRole("listitem")).toHaveCount(6);
+  await expect(bundleDecks.getByRole("listitem").nth(0)).toContainText(
+    /Japanese 00 — Kana, sound, and Japanese input\s+300\s+cards\s+Missing/,
+  );
+  await expect(bundleDecks.getByRole("listitem").nth(5)).toContainText(
+    /Japanese 05 — N1 \/ balanced C1 bridge\s+3,000\s+cards\s+Missing/,
+  );
+
+  await dialog.getByRole("button", { name: "Add bundle" }).click();
+  await expect(
+    dialog.getByText("Preparing decks", { exact: true }),
+  ).toBeVisible();
+  await expect(dialog.getByText("Adding cards", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("Adding audio", { exact: true })).toBeVisible();
+
+  await expect(
+    page.getByText("Added Japanese with 6 decks and 9,700 cards."),
+  ).toBeVisible();
+  const stage = page.getByTestId("deck-deck:ja-JP:05");
+  await expect(stage).toContainText(/3000\s*cards/);
+  await stage.getByRole("button", { name: "Study" }).click();
+  expect((await lastRequest(page, "prepare_study"))?.args).toMatchObject({
+    request: { deck_id: "deck:ja-JP:05" },
+  });
+});
+
+test("marks installed bundle decks and disables an already installed bundle", async ({
+  page,
+}) => {
+  await page.goto("/?bundle=partial");
+  await openDecks(page);
+  await page.getByRole("button", { name: "Import bundle" }).click();
+  let dialog = page.getByRole("dialog", { name: "Import bundle" });
+  await expect(dialog.getByText("Installed", { exact: true })).toHaveCount(2);
+  await expect(dialog.getByText("Missing", { exact: true })).toHaveCount(4);
+
+  await page.keyboard.press("Escape");
+  await page.goto("/?bundle=installed");
+  await openDecks(page);
+  await page.getByRole("button", { name: "Import bundle" }).click();
+  dialog = page.getByRole("dialog", { name: "Import bundle" });
+  await expect(
+    dialog.getByText("Japanese is already installed", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Add bundle" }),
+  ).toBeDisabled();
+});
+
 test("keeps Unsorted visible when active cards exist but hides rename and delete", async ({
   page,
 }) => {

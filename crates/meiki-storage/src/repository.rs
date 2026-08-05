@@ -10,11 +10,12 @@ use rusqlite::{
 };
 
 use crate::{
-    DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, PristineDeckImport,
-    PristineDeckImportStatus, SchedulingWorkload, Storage, StorageError, StoredDeckCard,
-    StoredDeckCardPage, StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote,
-    StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
-    entity_not_found, matching_policy_from_database, matching_policy_to_database,
+    DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, PristineBundleImport,
+    PristineBundleImportPlan, PristineDeckImport, PristineDeckImportStatus, SchedulingWorkload,
+    Storage, StorageError, StoredDeckCard, StoredDeckCardPage, StoredDeckCardSearch,
+    StoredLibraryCard, StoredLibraryNote, StoredSourceNote, StoredStudyCard,
+    direction_from_database, direction_to_database, entity_not_found,
+    matching_policy_from_database, matching_policy_to_database,
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
@@ -1057,13 +1058,47 @@ impl PristineDeckRepository for Storage {
         if status == PristineDeckImportStatus::AlreadyInstalled {
             return Ok(status);
         }
-        persist_pristine_deck_import(&transaction, import)?;
+        persist_pristine_deck_import(&transaction, import, &mut || {})?;
         transaction.commit()?;
         Ok(PristineDeckImportStatus::Ready)
     }
 }
 
 impl Storage {
+    /// Validates a pristine language bundle without changing the collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the bundle is empty, language membership
+    /// is inconsistent, or any missing deck identity collides.
+    pub fn validate_pristine_bundle_import(
+        &self,
+        import: &PristineBundleImport,
+    ) -> Result<PristineBundleImportPlan, StorageError> {
+        validate_pristine_bundle_import(&self.connection, import)
+    }
+
+    /// Adds every missing pristine bundle deck in one transaction.
+    ///
+    /// The callback runs after each missing card has been staged in the open
+    /// transaction and is intended only for bundle-specific progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when validation or any staged write fails. No
+    /// bundle deck is committed in that case.
+    pub fn import_pristine_bundle(
+        &mut self,
+        import: &PristineBundleImport,
+        mut on_card_imported: impl FnMut(),
+    ) -> Result<PristineBundleImportPlan, StorageError> {
+        let transaction = self.connection.transaction()?;
+        let plan = validate_pristine_bundle_import(&transaction, import)?;
+        persist_pristine_bundle_import(&transaction, import, &plan, &mut on_card_imported)?;
+        transaction.commit()?;
+        Ok(plan)
+    }
+
     /// Exercises rollback after all pristine-deck writes but before commit.
     ///
     /// This bounded fault is available only to local tests and fixture builds.
@@ -1084,9 +1119,28 @@ impl Storage {
         if status == PristineDeckImportStatus::AlreadyInstalled {
             return Ok(status);
         }
-        persist_pristine_deck_import(&transaction, import)?;
+        persist_pristine_deck_import(&transaction, import, &mut || {})?;
         Err(StorageError::InjectedTestFailure(
             "pristine deck transaction before commit",
+        ))
+    }
+
+    /// Exercises rollback after all pristine-bundle writes but before commit.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`StorageError::InjectedTestFailure`] after staging the
+    /// same database writes as [`Self::import_pristine_bundle`].
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn import_pristine_bundle_failing_before_commit(
+        &mut self,
+        import: &PristineBundleImport,
+    ) -> Result<PristineBundleImportPlan, StorageError> {
+        let transaction = self.connection.transaction()?;
+        let plan = validate_pristine_bundle_import(&transaction, import)?;
+        persist_pristine_bundle_import(&transaction, import, &plan, &mut || {})?;
+        Err(StorageError::InjectedTestFailure(
+            "pristine bundle transaction before commit",
         ))
     }
 }
@@ -1110,6 +1164,69 @@ fn validate_pristine_deck_import(
     ensure_pristine_identities_available(connection, &identities)?;
 
     Ok(PristineDeckImportStatus::Ready)
+}
+
+fn validate_pristine_bundle_import(
+    connection: &Connection,
+    import: &PristineBundleImport,
+) -> Result<PristineBundleImportPlan, StorageError> {
+    if import.language_tag.trim().is_empty() || import.decks.is_empty() {
+        return Err(StorageError::InvalidAggregate(
+            "a pristine bundle requires a language and at least one deck".into(),
+        ));
+    }
+
+    let mut deck_ids = HashSet::new();
+    let mut identities = PristineImportIdentities::default();
+    let mut installed_deck_ids = Vec::new();
+    let mut missing_deck_ids = Vec::new();
+    for (ordinal, imported_deck) in import.decks.iter().enumerate() {
+        let deck = &imported_deck.deck;
+        if !deck_ids.insert(deck.id.as_str()) {
+            return Err(StorageError::InvalidAggregate(format!(
+                "bundle deck identity {} is duplicated",
+                deck.id
+            )));
+        }
+        if deck.language_tag.as_deref() != Some(import.language_tag.as_str()) {
+            return Err(StorageError::InvalidAggregate(format!(
+                "bundle deck {} does not use language {}",
+                deck.id, import.language_tag
+            )));
+        }
+        if entity_id_exists(connection, "SELECT 1 FROM decks WHERE id = ?1", &deck.id)? {
+            installed_deck_ids.push(deck.id.clone());
+            continue;
+        }
+        let associated_deck = connection
+            .query_row(
+                "SELECT deck_id
+                 FROM bundle_decks
+                 WHERE language_tag = ?1 AND ordinal = ?2",
+                params![
+                    import.language_tag,
+                    u64::try_from(ordinal)
+                        .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if associated_deck.is_some_and(|associated| associated != deck.id) {
+            return Err(StorageError::InvalidAggregate(format!(
+                "bundle stage {ordinal} is already associated with another deck"
+            )));
+        }
+        for imported_note in &imported_deck.notes {
+            validate_pristine_note(imported_note, &deck.id, &mut identities)?;
+        }
+        missing_deck_ids.push(deck.id.clone());
+    }
+    ensure_pristine_identities_available(connection, &identities)?;
+
+    Ok(PristineBundleImportPlan {
+        installed_deck_ids,
+        missing_deck_ids,
+    })
 }
 
 #[derive(Default)]
@@ -1335,6 +1452,7 @@ fn ensure_pristine_tags_available<'a>(
 fn persist_pristine_deck_import(
     transaction: &Transaction<'_>,
     import: &PristineDeckImport,
+    on_card_imported: &mut impl FnMut(),
 ) -> Result<(), StorageError> {
     insert_deck(transaction, &import.deck)?;
     insert_default_scheduler_profile(transaction, &import.deck.id, import.deck.created_at_ms)?;
@@ -1347,7 +1465,52 @@ fn persist_pristine_deck_import(
                 &imported_card.card,
                 &imported_card.initial_schedule,
             )?;
+            on_card_imported();
         }
+    }
+    Ok(())
+}
+
+fn persist_pristine_bundle_import(
+    transaction: &Transaction<'_>,
+    import: &PristineBundleImport,
+    plan: &PristineBundleImportPlan,
+    on_card_imported: &mut impl FnMut(),
+) -> Result<(), StorageError> {
+    if plan.missing_deck_ids.is_empty() {
+        return Ok(());
+    }
+    let installed_at_ms = import
+        .decks
+        .iter()
+        .find(|deck| plan.missing_deck_ids.contains(&deck.deck.id))
+        .map_or(0, |deck| deck.deck.created_at_ms);
+    transaction.execute(
+        "INSERT INTO bundle_installations(language_tag, installed_at_ms)
+         VALUES (?1, ?2)
+         ON CONFLICT(language_tag) DO NOTHING",
+        params![import.language_tag, installed_at_ms],
+    )?;
+    let missing = plan
+        .missing_deck_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    for (ordinal, imported_deck) in import.decks.iter().enumerate() {
+        if !missing.contains(imported_deck.deck.id.as_str()) {
+            continue;
+        }
+        persist_pristine_deck_import(transaction, imported_deck, on_card_imported)?;
+        transaction.execute(
+            "INSERT INTO bundle_decks(language_tag, deck_id, ordinal)
+             VALUES (?1, ?2, ?3)",
+            params![
+                import.language_tag,
+                imported_deck.deck.id,
+                u64::try_from(ordinal)
+                    .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?
+            ],
+        )?;
     }
     Ok(())
 }

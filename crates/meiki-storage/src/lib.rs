@@ -37,7 +37,9 @@ const PROJECTION_INTEGRITY_MIGRATION: &str =
     include_str!("../migrations/0009_projection_integrity.sql");
 const TIME_BUDGET_POLICY_MIGRATION: &str =
     include_str!("../migrations/0010_time_budget_policy.sql");
-const LATEST_SCHEMA_VERSION: u32 = 10;
+const BUNDLE_ASSOCIATIONS_MIGRATION: &str =
+    include_str!("../migrations/0011_bundle_associations.sql");
+const LATEST_SCHEMA_VERSION: u32 = 11;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -156,6 +158,18 @@ pub struct PristineDeckNote {
 pub struct PristineDeckImport {
     pub deck: Deck,
     pub notes: Vec<PristineDeckNote>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PristineBundleImport {
+    pub language_tag: String,
+    pub decks: Vec<PristineDeckImport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PristineBundleImportPlan {
+    pub installed_deck_ids: Vec<String>,
+    pub missing_deck_ids: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -306,6 +320,9 @@ impl Storage {
         }
         if current < 10 {
             transaction.execute_batch(TIME_BUDGET_POLICY_MIGRATION)?;
+        }
+        if current < 11 {
+            transaction.execute_batch(BUNDLE_ASSOCIATIONS_MIGRATION)?;
         }
         transaction.commit()?;
         Ok(())
