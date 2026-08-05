@@ -1,31 +1,47 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { SvelteDate } from "svelte/reactivity";
 
   import { api } from "../lib/api";
   import * as Alert from "$lib/components/ui/alert/index.js";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
+  import { Switch } from "$lib/components/ui/switch/index.js";
   import type { DeckCardActionDto } from "../lib/generated/DeckCardActionDto";
   import type { DeckCardDto } from "../lib/generated/DeckCardDto";
   import type { DeckCardOverviewDto } from "../lib/generated/DeckCardOverviewDto";
   import type { DeckCardStatusDto } from "../lib/generated/DeckCardStatusDto";
   import type { DeckCardTrashDto } from "../lib/generated/DeckCardTrashDto";
+  import type { SchedulerSettingsDto } from "../lib/generated/SchedulerSettingsDto";
+  import { localDayBounds } from "../lib/local-day";
 
   type Props = {
     selectedDeckId: string;
     deckName: string;
     onBack: () => void;
     onCreate: () => void;
+    onDeleted: () => void;
     onEdit: (cardId: string) => void;
+    onRename: (name: string) => void;
   };
 
+  const defaultDeckId = "default-deck";
   const pageSize = 25;
 
-  let { selectedDeckId, deckName, onBack, onCreate, onEdit }: Props = $props();
+  let {
+    selectedDeckId,
+    deckName,
+    onBack,
+    onCreate,
+    onDeleted,
+    onEdit,
+    onRename,
+  }: Props = $props();
   let overview = $state<DeckCardOverviewDto | null>(null);
   let query = $state("");
   let trash = $state<DeckCardTrashDto>("active");
@@ -36,6 +52,16 @@
   let notice = $state("");
   let movingCard = $state<DeckCardDto | null>(null);
   let destinationDeckId = $state("");
+  let renameDialogOpen = $state(false);
+  let renameName = $state("");
+  let timeOverrideDialogOpen = $state(false);
+  let deckSettings = $state<SchedulerSettingsDto | null>(null);
+  let useTimeOverride = $state(false);
+  let timeOverrideMinutes = $state(30);
+  let deleteDialogOpen = $state(false);
+  let moveBeforeDeleteDialogOpen = $state(false);
+  let deleteCardCount = $state(0);
+  let busyDeckAction = $state(false);
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
@@ -134,6 +160,129 @@
       overview?.decks.find((deck) => deck.id !== selectedDeckId)?.id ?? "";
   }
 
+  function openRename(): void {
+    renameName = deckName;
+    renameDialogOpen = true;
+  }
+
+  async function renameDeck(): Promise<void> {
+    if (!renameName.trim() || busyDeckAction) return;
+    busyDeckAction = true;
+    error = "";
+    notice = "";
+    try {
+      const renamed = await api.renameDeck({
+        deck_id: selectedDeckId,
+        name: renameName,
+        now_ms: Date.now(),
+      });
+      renameDialogOpen = false;
+      onRename(renamed.name);
+      notice = `Renamed deck to “${renamed.name}”.`;
+    } catch (reason) {
+      error = message(reason);
+    } finally {
+      busyDeckAction = false;
+    }
+  }
+
+  async function openTimeOverride(): Promise<void> {
+    if (busyDeckAction) return;
+    busyDeckAction = true;
+    error = "";
+    try {
+      deckSettings = await api.getSchedulerSettings(selectedDeckId);
+      useTimeOverride = deckSettings.deck_daily_time_budget_minutes !== null;
+      timeOverrideMinutes =
+        deckSettings.deck_daily_time_budget_minutes ??
+        deckSettings.collection_daily_time_budget_minutes;
+      timeOverrideDialogOpen = true;
+    } catch (reason) {
+      error = message(reason);
+    } finally {
+      busyDeckAction = false;
+    }
+  }
+
+  async function saveTimeOverride(): Promise<void> {
+    if (!deckSettings || busyDeckAction) return;
+    busyDeckAction = true;
+    error = "";
+    notice = "";
+    try {
+      const now = new SvelteDate();
+      const { start } = localDayBounds(now, deckSettings.day_boundary_minutes);
+      deckSettings = await api.updateSchedulerSettings({
+        deck_id: selectedDeckId,
+        scheduling_mode: deckSettings.scheduling_mode,
+        collection_daily_time_budget_minutes:
+          deckSettings.collection_daily_time_budget_minutes,
+        deck_daily_time_budget_minutes: useTimeOverride
+          ? timeOverrideMinutes
+          : null,
+        target_retention_basis_points:
+          deckSettings.target_retention_basis_points,
+        new_cards_per_day: deckSettings.new_cards_per_day,
+        maximum_interval_days: deckSettings.maximum_interval_days,
+        day_boundary_minutes: deckSettings.day_boundary_minutes,
+        now_ms: now.getTime(),
+        day_start_ms: start.getTime(),
+      });
+      timeOverrideDialogOpen = false;
+      notice = useTimeOverride
+        ? `Set this deck’s daily time to ${timeOverrideMinutes} minutes.`
+        : "Cleared this deck’s daily-time override.";
+    } catch (reason) {
+      error = message(reason);
+    } finally {
+      busyDeckAction = false;
+    }
+  }
+
+  async function openDeleteDeck(): Promise<void> {
+    if (busyDeckAction) return;
+    busyDeckAction = true;
+    error = "";
+    try {
+      const summaries = await api.listDeckSummaries(Date.now());
+      deleteCardCount =
+        summaries.find((deck) => deck.id === selectedDeckId)?.total_cards ?? 0;
+      destinationDeckId =
+        overview?.decks.find((deck) => deck.id !== selectedDeckId)?.id ?? "";
+      deleteDialogOpen = true;
+    } catch (reason) {
+      error = message(reason);
+    } finally {
+      busyDeckAction = false;
+    }
+  }
+
+  async function deleteDeck(moveCardsToDeckId: string | null): Promise<void> {
+    if (busyDeckAction) return;
+    busyDeckAction = true;
+    error = "";
+    notice = "";
+    try {
+      await api.deleteDeck({
+        deck_id: selectedDeckId,
+        move_cards_to_deck_id: moveCardsToDeckId,
+        confirmation: deckName,
+        now_ms: Date.now(),
+      });
+      deleteDialogOpen = false;
+      moveBeforeDeleteDialogOpen = false;
+      onDeleted();
+    } catch (reason) {
+      error = message(reason);
+    } finally {
+      busyDeckAction = false;
+    }
+  }
+
+  function cardCountLabel(count: number): string {
+    return `${count} ${count === 1 ? "card" : "cards"}`;
+  }
+
   function statusLabel(status: DeckCardStatusDto): string {
     if (status === "new") return "New";
     if (status === "due") return "Due";
@@ -178,6 +327,21 @@
       >
         {trash === "active" ? "Show Trash" : "Show cards"}
       </Button>
+      {#if selectedDeckId !== defaultDeckId}
+        <Button variant="outline" disabled={busyDeckAction} onclick={openRename}
+          >Rename deck</Button
+        >
+        <Button
+          variant="outline"
+          disabled={busyDeckAction}
+          onclick={() => void openTimeOverride()}>Daily time</Button
+        >
+        <Button
+          variant="destructive"
+          disabled={busyDeckAction}
+          onclick={() => void openDeleteDeck()}>Delete deck</Button
+        >
+      {/if}
       <Button data-primary-action onclick={onCreate}>Add card</Button>
     </div>
   </header>
@@ -338,6 +502,163 @@
   {/if}
 </section>
 
+<Dialog.Root bind:open={renameDialogOpen}>
+  <Dialog.Content>
+    <Dialog.Header>
+      <Dialog.Title>Rename deck</Dialog.Title>
+      <Dialog.Description>
+        Change this deck’s name without changing its cards or schedule.
+      </Dialog.Description>
+    </Dialog.Header>
+    <form
+      class="grid gap-4"
+      onsubmit={(event) => {
+        event.preventDefault();
+        void renameDeck();
+      }}
+    >
+      <div class="grid gap-2">
+        <Label for="rename-deck-name">Name</Label>
+        <Input
+          id="rename-deck-name"
+          bind:value={renameName}
+          maxlength={80}
+          autocomplete="off"
+        />
+      </div>
+      <Dialog.Footer>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busyDeckAction}
+          onclick={() => (renameDialogOpen = false)}>Cancel</Button
+        >
+        <Button
+          type="submit"
+          disabled={busyDeckAction ||
+            !renameName.trim() ||
+            renameName.trim() === deckName}>Rename deck</Button
+        >
+      </Dialog.Footer>
+    </form>
+  </Dialog.Content>
+</Dialog.Root>
+
+<Dialog.Root bind:open={timeOverrideDialogOpen}>
+  <Dialog.Content>
+    <Dialog.Header>
+      <Dialog.Title>Daily time for {deckName}</Dialog.Title>
+      <Dialog.Description>
+        Set a daily-time override for this deck or use the collection budget.
+      </Dialog.Description>
+    </Dialog.Header>
+    <div class="grid gap-4">
+      <div class="setting-row">
+        <div>
+          <strong>Override collection budget</strong>
+          <p class="text-sm text-muted-foreground">
+            {useTimeOverride
+              ? "This deck uses its own daily time."
+              : `This deck uses the ${deckSettings?.collection_daily_time_budget_minutes ?? 0}-minute collection budget.`}
+          </p>
+        </div>
+        <Switch
+          aria-label="Override collection daily time"
+          bind:checked={useTimeOverride}
+        />
+      </div>
+      {#if useTimeOverride}
+        <div class="grid gap-2">
+          <Label for="deck-daily-time">Minutes per day</Label>
+          <Input
+            id="deck-daily-time"
+            type="number"
+            min={1}
+            max={1440}
+            bind:value={timeOverrideMinutes}
+          />
+        </div>
+      {/if}
+    </div>
+    <Dialog.Footer>
+      <Button
+        variant="outline"
+        disabled={busyDeckAction}
+        onclick={() => (timeOverrideDialogOpen = false)}>Cancel</Button
+      >
+      <Button
+        disabled={busyDeckAction ||
+          (useTimeOverride &&
+            (timeOverrideMinutes < 1 || timeOverrideMinutes > 1440))}
+        onclick={() => void saveTimeOverride()}>Save daily time</Button
+      >
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
+<AlertDialog.Root bind:open={deleteDialogOpen}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Delete “{deckName}”?</AlertDialog.Title>
+      <AlertDialog.Description>
+        Its {cardCountLabel(deleteCardCount)} will be moved to Trash.
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel disabled={busyDeckAction}>Cancel</AlertDialog.Cancel>
+      <Button
+        variant="outline"
+        disabled={busyDeckAction || !destinationDeckId}
+        onclick={() => {
+          deleteDialogOpen = false;
+          moveBeforeDeleteDialogOpen = true;
+        }}>Move cards instead</Button
+      >
+      <AlertDialog.Action
+        class="bg-destructive/10 text-destructive hover:bg-destructive/20"
+        disabled={busyDeckAction}
+        onclick={() => void deleteDeck(null)}>Delete deck</AlertDialog.Action
+      >
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<Dialog.Root bind:open={moveBeforeDeleteDialogOpen}>
+  <Dialog.Content>
+    <Dialog.Header>
+      <Dialog.Title>Move cards instead</Dialog.Title>
+      <Dialog.Description>
+        Move active cards to another deck, then delete “{deckName}”.
+      </Dialog.Description>
+    </Dialog.Header>
+    <div class="grid gap-2">
+      <Label for="delete-destination-deck">Destination deck</Label>
+      <select
+        id="delete-destination-deck"
+        class="w-full"
+        bind:value={destinationDeckId}
+      >
+        {#each overview?.decks.filter((deck) => deck.id !== selectedDeckId) ?? [] as deck (deck.id)}
+          <option value={deck.id}>{deck.name}</option>
+        {/each}
+      </select>
+    </div>
+    <Dialog.Footer>
+      <Button
+        variant="outline"
+        disabled={busyDeckAction}
+        onclick={() => (moveBeforeDeleteDialogOpen = false)}>Cancel</Button
+      >
+      <Button
+        variant="destructive"
+        disabled={busyDeckAction || !destinationDeckId}
+        onclick={() => void deleteDeck(destinationDeckId)}
+        >Move cards and delete</Button
+      >
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
 <Dialog.Root
   open={Boolean(movingCard)}
   onOpenChange={(open) => {
@@ -405,6 +726,17 @@
     gap: 0.5rem;
   }
 
+  .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .setting-row p {
+    margin: 0.25rem 0 0;
+  }
+
   .pagination {
     display: flex;
     align-items: center;
@@ -427,6 +759,11 @@
 
     .card-actions > :global(*) {
       flex: 1 1 auto;
+    }
+
+    .setting-row {
+      align-items: flex-start;
+      flex-direction: column;
     }
   }
 </style>

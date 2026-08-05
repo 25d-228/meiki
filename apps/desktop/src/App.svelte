@@ -12,6 +12,7 @@
   import * as Sheet from "$lib/components/ui/sheet/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import { messages } from "./lib/messages";
+  import { clearStudyQueue, readStudyQueue } from "./lib/study-queue";
   import { screens, type Screen, type ThemeMode } from "./lib/ui";
   import DeckManagementScreen from "./screens/DeckManagementScreen.svelte";
   import DecksScreen from "./screens/DecksScreen.svelte";
@@ -193,6 +194,20 @@
     await performNavigation("deck");
   }
 
+  function renameSelectedDeck(deckName: string): void {
+    selectedDeckName = deckName;
+    deckContext = deckName;
+  }
+
+  async function finishDeckDeletion(): Promise<void> {
+    const savedQueue = readStudyQueue();
+    if (savedQueue?.deckId === selectedDeckId) clearStudyQueue();
+    announcement = `Deleted ${selectedDeckName}. Returning to Decks.`;
+    selectedDeckId = "";
+    selectedDeckName = "";
+    await navigate("decks");
+  }
+
   async function addDeckNote(): Promise<void> {
     editingReturnScreen = "deck";
     editingStudyCardId = null;
@@ -356,7 +371,9 @@
             deckName={selectedDeckName}
             onBack={() => void navigate("decks")}
             onCreate={() => void addDeckNote()}
+            onDeleted={() => void finishDeckDeletion()}
             onEdit={editDeckCard}
+            onRename={renameSelectedDeck}
           />
         {:else if activeScreen === "editor"}
           <EditorScreen

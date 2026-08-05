@@ -7,6 +7,13 @@ export async function installMockApi(page: Page): Promise<void> {
     const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
     const calls: Record<string, number> = {};
     const removedDeckCardIds = new Set<string>();
+    let deckDeletedToUnsorted = false;
+    let deletedDeckCardRestored = false;
+    let focusedSessionDeckDeleted = false;
+    const schedulerSettingsByDeck: Record<
+      string,
+      typeof dtos.schedulerSettings
+    > = {};
 
     window.__MEIKI_TEST_REQUESTS__ = [];
     window.__MEIKI_TEST_PICK_FILE__ = async (role) => `/fixture/${role}`;
@@ -155,10 +162,24 @@ export async function installMockApi(page: Page): Promise<void> {
       }
       if (command === "suspend_card") return clone(dtos.suspendedCard);
       if (command === "get_scheduler_settings") {
-        return clone(
+        const deckId = (args as { deckId?: string })?.deckId ?? "default-deck";
+        const fixture =
           params.get("boundary") === "midnight"
             ? dtos.midnightSchedulerSettings
-            : dtos.schedulerSettings,
+            : dtos.schedulerSettings;
+        return clone(
+          schedulerSettingsByDeck[deckId] ?? {
+            ...fixture,
+            deck_id: deckId,
+            ...(params.get("settings") === "legacy-default-override" &&
+            deckId === "default-deck"
+              ? {
+                  deck_daily_time_budget_minutes: 20,
+                  effective_daily_time_budget_minutes: 20,
+                  budget_source: "deck_override",
+                }
+              : {}),
+          },
         );
       }
       if (command === "preview_scheduler_policy") {
@@ -173,15 +194,28 @@ export async function installMockApi(page: Page): Promise<void> {
         );
       }
       if (command === "update_scheduler_settings") {
-        return clone(
-          (
-            args as {
-              request: { scheduling_mode: "automatic" | "expert" };
-            }
-          ).request.scheduling_mode === "expert"
+        const request = (
+          args as {
+            request: typeof dtos.schedulerSettings & {
+              scheduling_mode: "automatic" | "expert";
+            };
+          }
+        ).request;
+        const saved = {
+          ...(request.scheduling_mode === "expert"
             ? dtos.savedExpertSettings
-            : dtos.savedAutomaticSettings,
-        );
+            : dtos.savedAutomaticSettings),
+          ...request,
+          effective_daily_time_budget_minutes:
+            request.deck_daily_time_budget_minutes ??
+            request.collection_daily_time_budget_minutes,
+          budget_source:
+            request.deck_daily_time_budget_minutes === null
+              ? "collection_budget"
+              : "deck_override",
+        } as typeof dtos.schedulerSettings;
+        schedulerSettingsByDeck[request.deck_id] = saved;
+        return clone(saved);
       }
       if (command === "import_scheduler_parameters")
         return clone(dtos.schedulerSettings);
@@ -199,6 +233,27 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(dtos.decks);
       }
       if (command === "list_deck_summaries") {
+        if (params.get("deckDeletion") === "focused-session") {
+          return clone(
+            focusedSessionDeckDeleted
+              ? dtos.deckSummaries.filter((deck) => deck.id === "default-deck")
+              : dtos.deckSummaries,
+          );
+        }
+        if (params.get("deckDeletion") === "only-deck") {
+          return clone(
+            deckDeletedToUnsorted
+              ? [
+                  {
+                    ...dtos.deckSummaries[0],
+                    total_cards: deletedDeckCardRestored ? 1 : 0,
+                    due_cards: 0,
+                    new_cards: deletedDeckCardRestored ? 1 : 0,
+                  },
+                ]
+              : dtos.deckSummaries.filter((deck) => deck.id === "travel-deck"),
+          );
+        }
         if (params.get("decks") === "lifecycle") {
           const index = Math.min(
             calls[command] - 1,
@@ -216,6 +271,14 @@ export async function installMockApi(page: Page): Promise<void> {
       if (command === "create_deck") return clone(dtos.createdDeck);
       if (command === "rename_deck") return clone(dtos.renamedDeck);
       if (command === "delete_deck") {
+        if (params.get("deckDeletion") === "focused-session") {
+          focusedSessionDeckDeleted = true;
+          return clone(dtos.movedDeck);
+        }
+        if (params.get("deckDeletion") === "only-deck") {
+          deckDeletedToUnsorted = true;
+          return { deleted_deck_id: "travel-deck", affected_cards: 1 };
+        }
         return clone(
           (args as { request: { deck_id: string } }).request.deck_id ===
             "travel-deck"
@@ -250,7 +313,7 @@ export async function installMockApi(page: Page): Promise<void> {
             };
           }
         ).request;
-        const fixture =
+        let fixture =
           request.trash === "trash"
             ? dtos.deckCards.trash
             : params.get("deckCards") === "last-page"
@@ -258,6 +321,23 @@ export async function installMockApi(page: Page): Promise<void> {
               : request.deck_id === "default-deck"
                 ? dtos.deckCards.default
                 : dtos.deckCards.travel;
+        if (
+          params.get("deckDeletion") === "only-deck" &&
+          request.deck_id === "default-deck"
+        ) {
+          fixture = {
+            ...dtos.deckCards.default,
+            cards:
+              request.trash === "trash"
+                ? deckDeletedToUnsorted && !deletedDeckCardRestored
+                  ? dtos.deckCards.trash.cards
+                  : []
+                : deletedDeckCardRestored
+                  ? dtos.deckCards.travel.cards.slice(0, 1)
+                  : [],
+            total_matches: 0,
+          };
+        }
         const query = request.query.trim().toLocaleLowerCase();
         const matches = fixture.cards.filter(
           (card) =>
@@ -279,8 +359,17 @@ export async function installMockApi(page: Page): Promise<void> {
       }
       if (command === "apply_deck_card_action") {
         const request = (
-          args as { request: { card_ids: string[]; action: string } }
+          args as {
+            request: { deck_id: string; card_ids: string[]; action: string };
+          }
         ).request;
+        if (
+          params.get("deckDeletion") === "only-deck" &&
+          request.deck_id === "default-deck" &&
+          request.action === "restore"
+        ) {
+          deletedDeckCardRestored = true;
+        }
         if (
           params.get("deckCards") === "last-page" &&
           (request.action === "move" || request.action === "trash")

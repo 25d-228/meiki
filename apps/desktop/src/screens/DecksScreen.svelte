@@ -221,7 +221,7 @@
     <Dialog.Header>
       <Dialog.Title>New deck</Dialog.Title>
       <Dialog.Description>
-        Choose a name. You can configure scheduling later in Settings.
+        Choose a name. You can set its daily time after opening it.
       </Dialog.Description>
     </Dialog.Header>
     <form

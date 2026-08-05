@@ -150,3 +150,142 @@ test("returns to the previous page after trash removes the final later-page card
   );
   expect(offsets.slice(-3)).toEqual([25, 25, 0]);
 });
+
+test("deletes directly with one confirmation and moves remaining cards to Trash", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete “Travel phrases”?",
+  });
+  await expect(confirmation).toContainText(
+    "Its 2 cards will be moved to Trash.",
+  );
+  await expect(confirmation.getByRole("textbox")).toHaveCount(0);
+  await confirmation.getByRole("button", { name: "Delete deck" }).click();
+
+  expect((await lastRequest(page, "delete_deck"))?.args).toMatchObject({
+    request: {
+      deck_id: "travel-deck",
+      move_cards_to_deck_id: null,
+      confirmation: "Travel phrases",
+    },
+  });
+  await expect(
+    page.getByRole("heading", { name: "Decks", level: 1 }),
+  ).toBeVisible();
+});
+
+test("moves active cards to another deck before deleting when requested", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Move cards instead" })
+    .click();
+  const moveDialog = page.getByRole("dialog", { name: "Move cards instead" });
+  await moveDialog.getByLabel("Destination deck").selectOption("default-deck");
+  await moveDialog
+    .getByRole("button", { name: "Move cards and delete" })
+    .click();
+
+  expect((await lastRequest(page, "delete_deck"))?.args).toMatchObject({
+    request: {
+      deck_id: "travel-deck",
+      move_cards_to_deck_id: "default-deck",
+      confirmation: "Travel phrases",
+    },
+  });
+});
+
+test("clears a focused study queue when its deck is deleted", async ({
+  page,
+}) => {
+  await page.goto("/?deckDeletion=focused-session");
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Decks", exact: true })
+    .click();
+  const travelDeck = page.getByTestId("deck-travel-deck");
+  await travelDeck.getByRole("button", { name: "Study" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Study", level: 1 }),
+  ).toBeVisible();
+
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Decks", exact: true })
+    .click();
+  await expect(page.getByText(/A saved session is active/)).toBeVisible();
+  await travelDeck.getByRole("button", { name: "Open" }).click();
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+
+  await expect(
+    page.getByRole("heading", { name: "Decks", level: 1 }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-active-study-queue")),
+  ).toBeNull();
+  await expect(page.getByText(/A saved session is active/)).toHaveCount(0);
+
+  await page
+    .getByTestId("deck-default-deck")
+    .getByRole("button", { name: "Study" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Study", level: 1 }),
+  ).toBeVisible();
+  expect((await lastRequest(page, "get_scheduler_settings"))?.args).toEqual({
+    deckId: "default-deck",
+  });
+  expect((await lastRequest(page, "prepare_study"))?.args).toMatchObject({
+    request: { deck_id: "default-deck" },
+  });
+  const requestTargetsDeletedDeck = await page.evaluate(() => {
+    const requests = window.__MEIKI_TEST_REQUESTS__ ?? [];
+    const deletionIndex = requests
+      .map((request) => request.command)
+      .lastIndexOf("delete_deck");
+    return requests
+      .slice(deletionIndex + 1)
+      .some((request) => JSON.stringify(request.args).includes("travel-deck"));
+  });
+  expect(requestTargetsDeletedDeck).toBe(false);
+});
+
+test("keeps cards reachable in Unsorted Trash after direct deck deletion", async ({
+  page,
+}) => {
+  await page.goto("/?deckDeletion=only-deck");
+  await openTravelDeck(page);
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+
+  const unsorted = page.getByTestId("deck-default-deck");
+  await expect(unsorted.getByText("Unsorted", { exact: true })).toBeVisible();
+  await expect(unsorted).toContainText("0 cards");
+  await unsorted.getByRole("button", { name: "Open" }).click();
+  await page.getByRole("button", { name: "Show Trash" }).click();
+  const deletedCard = page.getByTestId("card-trashed-card");
+  await expect(deletedCard).toBeVisible();
+  await deletedCard.getByRole("button", { name: "Restore" }).click();
+
+  expect(
+    (await lastRequest(page, "apply_deck_card_action"))?.args,
+  ).toMatchObject({
+    request: {
+      deck_id: "default-deck",
+      card_ids: ["trashed-card"],
+      action: "restore",
+    },
+  });
+  await expect(page.getByText("Restored the card.")).toBeVisible();
+});
