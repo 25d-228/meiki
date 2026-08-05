@@ -12,6 +12,7 @@
   import * as Sheet from "$lib/components/ui/sheet/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import { messages } from "./lib/messages";
+  import { clearStudyQueue, readStudyQueue } from "./lib/study-queue";
   import { screens, type Screen, type ThemeMode } from "./lib/ui";
   import DeckManagementScreen from "./screens/DeckManagementScreen.svelte";
   import DecksScreen from "./screens/DecksScreen.svelte";
@@ -199,6 +200,8 @@
   }
 
   async function finishDeckDeletion(): Promise<void> {
+    const savedQueue = readStudyQueue();
+    if (savedQueue?.deckId === selectedDeckId) clearStudyQueue();
     announcement = `Deleted ${selectedDeckName}. Returning to Decks.`;
     selectedDeckId = "";
     selectedDeckName = "";

@@ -9,6 +9,7 @@ export async function installMockApi(page: Page): Promise<void> {
     const removedDeckCardIds = new Set<string>();
     let deckDeletedToUnsorted = false;
     let deletedDeckCardRestored = false;
+    let focusedSessionDeckDeleted = false;
     const schedulerSettingsByDeck: Record<
       string,
       typeof dtos.schedulerSettings
@@ -232,6 +233,13 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(dtos.decks);
       }
       if (command === "list_deck_summaries") {
+        if (params.get("deckDeletion") === "focused-session") {
+          return clone(
+            focusedSessionDeckDeleted
+              ? dtos.deckSummaries.filter((deck) => deck.id === "default-deck")
+              : dtos.deckSummaries,
+          );
+        }
         if (params.get("deckDeletion") === "only-deck") {
           return clone(
             deckDeletedToUnsorted
@@ -263,6 +271,10 @@ export async function installMockApi(page: Page): Promise<void> {
       if (command === "create_deck") return clone(dtos.createdDeck);
       if (command === "rename_deck") return clone(dtos.renamedDeck);
       if (command === "delete_deck") {
+        if (params.get("deckDeletion") === "focused-session") {
+          focusedSessionDeckDeleted = true;
+          return clone(dtos.movedDeck);
+        }
         if (params.get("deckDeletion") === "only-deck") {
           deckDeletedToUnsorted = true;
           return { deleted_deck_id: "travel-deck", affected_cards: 1 };

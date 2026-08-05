@@ -199,6 +199,65 @@ test("moves active cards to another deck before deleting when requested", async 
   });
 });
 
+test("clears a focused study queue when its deck is deleted", async ({
+  page,
+}) => {
+  await page.goto("/?deckDeletion=focused-session");
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Decks", exact: true })
+    .click();
+  const travelDeck = page.getByTestId("deck-travel-deck");
+  await travelDeck.getByRole("button", { name: "Study" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Study", level: 1 }),
+  ).toBeVisible();
+
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Decks", exact: true })
+    .click();
+  await expect(page.getByText(/A saved session is active/)).toBeVisible();
+  await travelDeck.getByRole("button", { name: "Open" }).click();
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+
+  await expect(
+    page.getByRole("heading", { name: "Decks", level: 1 }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-active-study-queue")),
+  ).toBeNull();
+  await expect(page.getByText(/A saved session is active/)).toHaveCount(0);
+
+  await page
+    .getByTestId("deck-default-deck")
+    .getByRole("button", { name: "Study" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Study", level: 1 }),
+  ).toBeVisible();
+  expect((await lastRequest(page, "get_scheduler_settings"))?.args).toEqual({
+    deckId: "default-deck",
+  });
+  expect((await lastRequest(page, "prepare_study"))?.args).toMatchObject({
+    request: { deck_id: "default-deck" },
+  });
+  const requestTargetsDeletedDeck = await page.evaluate(() => {
+    const requests = window.__MEIKI_TEST_REQUESTS__ ?? [];
+    const deletionIndex = requests
+      .map((request) => request.command)
+      .lastIndexOf("delete_deck");
+    return requests
+      .slice(deletionIndex + 1)
+      .some((request) => JSON.stringify(request.args).includes("travel-deck"));
+  });
+  expect(requestTargetsDeletedDeck).toBe(false);
+});
+
 test("keeps cards reachable in Unsorted Trash after direct deck deletion", async ({
   page,
 }) => {
