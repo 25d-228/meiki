@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Select as SelectPrimitive } from "bits-ui";
-  import ChevronDownIcon from "@lucide/svelte/icons/chevron-down";
+  import RiArrowDownSLine from "remixicon-svelte/icons/arrow-down-s-line";
   import { cn, type WithoutChildrenOrChild } from "$lib/utils.js";
 
   let {
@@ -19,5 +19,5 @@
   )}
   {...restProps}
 >
-  <ChevronDownIcon />
+  <RiArrowDownSLine />
 </SelectPrimitive.ScrollDownButton>

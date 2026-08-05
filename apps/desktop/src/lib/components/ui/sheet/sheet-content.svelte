@@ -4,7 +4,7 @@
 
 <script lang="ts">
   import { Dialog as SheetPrimitive } from "bits-ui";
-  import XIcon from "@lucide/svelte/icons/x";
+  import RiCloseLine from "remixicon-svelte/icons/close-line";
   import { Button } from "$lib/components/ui/button/index.js";
   import { cn, type WithoutChildrenOrChild } from "$lib/utils.js";
   import SheetOverlay from "./sheet-overlay.svelte";
@@ -46,11 +46,11 @@
         {#snippet child({ props })}
           <Button
             variant="ghost"
-            class="absolute top-3 right-3"
+            class="absolute top-4 right-4"
             size="icon-sm"
             {...props}
           >
-            <XIcon />
+            <RiCloseLine />
             <span class="sr-only">Close</span>
           </Button>
         {/snippet}

@@ -763,7 +763,7 @@
     width: 3rem;
     height: 3rem;
     border: 1px solid var(--border);
-    border-radius: 50%;
+    border-radius: var(--radius-lg);
     color: var(--primary);
     background: var(--accent);
     font-size: var(--text-xl);

@@ -1120,7 +1120,7 @@
     display: inline-flex;
     margin: 1rem 0;
     padding: 0.5rem 0.75rem;
-    border-radius: 999px;
+    border-radius: var(--radius-lg);
     color: var(--destructive);
     background: color-mix(in oklch, var(--destructive) 12%, transparent);
     font-size: var(--text-xs);
@@ -1213,7 +1213,7 @@
     width: 3.4rem;
     height: 3.4rem;
     margin-inline: auto;
-    border-radius: 50%;
+    border-radius: var(--radius-lg);
     color: var(--foreground);
     background: var(--secondary);
     font-size: var(--text-xl);
@@ -1226,7 +1226,7 @@
     margin-inline: auto;
     border: 2px solid var(--border);
     border-top-color: var(--primary);
-    border-radius: 50%;
+    border-radius: var(--radius-lg);
     animation: spin 0.8s linear infinite;
   }
 
