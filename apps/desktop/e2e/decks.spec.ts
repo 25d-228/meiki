@@ -65,6 +65,9 @@ test("keeps Unsorted visible when active cards exist but hides rename and delete
   await expect(page.getByRole("button", { name: "Delete deck" })).toHaveCount(
     0,
   );
+  await expect(
+    page.getByRole("button", { name: "Daily time", exact: true }),
+  ).toHaveCount(0);
 });
 
 test("creates a deck from its name only", async ({ page }) => {
@@ -182,4 +185,36 @@ test("manages deck identity and daily time without Settings deck controls", asyn
     0,
   );
   await expect(page.getByText("Override for this deck")).toHaveCount(0);
+});
+
+test("collection Settings ignores and clears a legacy Unsorted time override", async ({
+  page,
+}) => {
+  await page.goto("/?settings=legacy-default-override");
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Settings", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Save preferences" }),
+  ).toBeEnabled();
+
+  expect(
+    (await lastRequest(page, "preview_scheduler_policy"))?.args,
+  ).toMatchObject({
+    request: {
+      deck_id: "default-deck",
+      deck_daily_time_budget_minutes: null,
+    },
+  });
+  await expect(page.getByText(/Collection budget/).first()).toBeVisible();
+  await page.getByRole("button", { name: "Save preferences" }).click();
+  expect(
+    (await lastRequest(page, "update_scheduler_settings"))?.args,
+  ).toMatchObject({
+    request: {
+      deck_id: "default-deck",
+      deck_daily_time_budget_minutes: null,
+    },
+  });
 });

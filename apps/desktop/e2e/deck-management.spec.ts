@@ -198,3 +198,35 @@ test("moves active cards to another deck before deleting when requested", async 
     },
   });
 });
+
+test("keeps cards reachable in Unsorted Trash after direct deck deletion", async ({
+  page,
+}) => {
+  await page.goto("/?deckDeletion=only-deck");
+  await openTravelDeck(page);
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+
+  const unsorted = page.getByTestId("deck-default-deck");
+  await expect(unsorted.getByText("Unsorted", { exact: true })).toBeVisible();
+  await expect(unsorted).toContainText("0 cards");
+  await unsorted.getByRole("button", { name: "Open" }).click();
+  await page.getByRole("button", { name: "Show Trash" }).click();
+  const deletedCard = page.getByTestId("card-trashed-card");
+  await expect(deletedCard).toBeVisible();
+  await deletedCard.getByRole("button", { name: "Restore" }).click();
+
+  expect(
+    (await lastRequest(page, "apply_deck_card_action"))?.args,
+  ).toMatchObject({
+    request: {
+      deck_id: "default-deck",
+      card_ids: ["trashed-card"],
+      action: "restore",
+    },
+  });
+  await expect(page.getByText("Restored the card.")).toBeVisible();
+});

@@ -177,6 +177,7 @@ pub struct SchedulingWorkload {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeckCardCounts {
     pub deck_id: String,
+    pub all_cards: u64,
     pub total_cards: u64,
     pub due_cards: u64,
     pub new_cards: u64,

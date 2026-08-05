@@ -117,8 +117,7 @@
       deck_id: settingsDeckId,
       scheduling_mode: schedulingMode,
       collection_daily_time_budget_minutes: collectionBudgetTotal(),
-      deck_daily_time_budget_minutes:
-        settings?.deck_daily_time_budget_minutes ?? null,
+      deck_daily_time_budget_minutes: null,
       target_retention_basis_points: targetRetention,
       new_cards_per_day: newCardsPerDay,
       maximum_interval_days: maximumIntervalDays,

@@ -331,13 +331,11 @@
         <Button variant="outline" disabled={busyDeckAction} onclick={openRename}
           >Rename deck</Button
         >
-      {/if}
-      <Button
-        variant="outline"
-        disabled={busyDeckAction}
-        onclick={() => void openTimeOverride()}>Daily time</Button
-      >
-      {#if selectedDeckId !== defaultDeckId}
+        <Button
+          variant="outline"
+          disabled={busyDeckAction}
+          onclick={() => void openTimeOverride()}>Daily time</Button
+        >
         <Button
           variant="destructive"
           disabled={busyDeckAction}

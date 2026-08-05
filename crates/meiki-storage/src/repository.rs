@@ -528,6 +528,7 @@ impl Storage {
         let mut statement = self.connection.prepare(
             "SELECT
                 decks.id,
+                COUNT(cards.id),
                 COALESCE(SUM(CASE
                     WHEN source_items.deleted_at_ms IS NULL
                      AND cards.id IS NOT NULL
@@ -558,9 +559,10 @@ impl Storage {
             .query_map([now_ms], |row| {
                 Ok(DeckCardCounts {
                     deck_id: row.get(0)?,
-                    total_cards: row.get(1)?,
-                    due_cards: row.get(2)?,
-                    new_cards: row.get(3)?,
+                    all_cards: row.get(1)?,
+                    total_cards: row.get(2)?,
+                    due_cards: row.get(3)?,
+                    new_cards: row.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()

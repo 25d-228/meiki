@@ -93,7 +93,7 @@ impl ApplicationService {
             let counts = counts.get(&deck.id).ok_or_else(|| {
                 ApplicationError::InvalidDeck("deck card counts are incomplete".into())
             })?;
-            if deck.id == DEFAULT_DECK_ID && counts.total_cards == 0 {
+            if deck.id == DEFAULT_DECK_ID && counts.all_cards == 0 {
                 continue;
             }
             summaries.push(DeckSummaryDto {
@@ -246,14 +246,17 @@ fn ensure_unique_name(
 #[cfg(test)]
 mod tests {
     use meiki_domain::{
-        Card, CardLifecycle, Cloze, Direction, MatchingPolicy, ScheduleState, SegmentContent,
-        SemanticSegment, SourceItem,
+        Card, CardLifecycle, Cloze, Direction, MatchingPolicy, ReviewEvent, ScheduleState,
+        SegmentContent, SemanticSegment, SourceItem,
     };
     use meiki_storage::{CardRepository, SourceNoteRepository, Storage, StoredSourceNote};
     use tempfile::tempdir;
 
-    use super::{CreateDeckRequest, DeleteDeckRequest, RenameDeckRequest};
-    use crate::{ApplicationService, GradeDto, GradeReviewRequest};
+    use super::{CreateDeckRequest, DeckSummaryDto, DeleteDeckRequest, RenameDeckRequest};
+    use crate::{
+        ApplicationService, DeckCardActionDto, DeckCardActionRequest, DeckCardRequest,
+        DeckCardTrashDto, GradeDto, GradeReviewRequest,
+    };
 
     fn add_card(
         storage: &mut Storage,
@@ -333,6 +336,38 @@ mod tests {
             .unwrap();
     }
 
+    fn review_card(
+        service: &ApplicationService,
+        card_id: &str,
+        review_event_id: &str,
+        reviewed_at_ms: i64,
+    ) -> (ScheduleState, Vec<ReviewEvent>) {
+        let card = service.get_study_card(card_id).unwrap();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: review_event_id.into(),
+                    card_id: card.card_id,
+                    card_content_version: card.card_content_version,
+                    schedule_version: card.schedule_version,
+                    raw_response: card_id.into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 900,
+                },
+                reviewed_at_ms,
+            )
+            .unwrap();
+        let storage = service.open_storage().unwrap();
+        (
+            storage.load_schedule(card_id).unwrap(),
+            storage.review_events(card_id).unwrap(),
+        )
+    }
+
+    fn deck_summary<'a>(summaries: &'a [DeckSummaryDto], deck_id: &str) -> &'a DeckSummaryDto {
+        summaries.iter().find(|deck| deck.id == deck_id).unwrap()
+    }
+
     #[test]
     fn rename_preserves_the_deck_cards_review_history_and_schedule() {
         let directory = tempdir().unwrap();
@@ -355,25 +390,8 @@ mod tests {
             false,
         );
         drop(storage);
-        let card = service.get_study_card("listening-card").unwrap();
-        service
-            .grade_review_at(
-                &GradeReviewRequest {
-                    review_event_id: "listening-review".into(),
-                    card_id: card.card_id,
-                    card_content_version: card.card_content_version,
-                    schedule_version: card.schedule_version,
-                    raw_response: "listening-card".into(),
-                    chosen_grade: GradeDto::Good,
-                    response_duration_ms: 900,
-                },
-                2_000,
-            )
-            .unwrap();
-        let storage = service.open_storage().unwrap();
-        let schedule_before = storage.load_schedule("listening-card").unwrap();
-        let history_before = storage.review_events("listening-card").unwrap();
-        drop(storage);
+        let (schedule_before, history_before) =
+            review_card(&service, "listening-card", "listening-review", 2_000);
 
         let renamed = service
             .rename_deck(&RenameDeckRequest {
@@ -433,25 +451,8 @@ mod tests {
             .set_library_notes_deleted(&["already-trashed-card-source".into()], Some(1_500), 1_500)
             .unwrap();
         drop(storage);
-        let card = service.get_study_card("active-card").unwrap();
-        service
-            .grade_review_at(
-                &GradeReviewRequest {
-                    review_event_id: "active-card-review".into(),
-                    card_id: card.card_id,
-                    card_content_version: card.card_content_version,
-                    schedule_version: card.schedule_version,
-                    raw_response: "active-card".into(),
-                    chosen_grade: GradeDto::Good,
-                    response_duration_ms: 900,
-                },
-                1_750,
-            )
-            .unwrap();
-        let storage = service.open_storage().unwrap();
-        let schedule_before = storage.load_schedule("active-card").unwrap();
-        let history_before = storage.review_events("active-card").unwrap();
-        drop(storage);
+        let (schedule_before, history_before) =
+            review_card(&service, "active-card", "active-card-review", 1_750);
 
         let deleted = service
             .delete_deck(&DeleteDeckRequest {
@@ -483,6 +484,34 @@ mod tests {
             storage.review_events("active-card").unwrap(),
             history_before
         );
+        drop(storage);
+
+        let summaries = service.list_deck_summaries(2_000).unwrap();
+        let unsorted = deck_summary(&summaries, meiki_storage::DEFAULT_DECK_ID);
+        assert_eq!(unsorted.total_cards, 0);
+        let trash = service
+            .get_deck_cards(&DeckCardRequest {
+                deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+                query: String::new(),
+                trash: DeckCardTrashDto::Trash,
+                now_ms: 2_000,
+                offset: 0,
+                limit: 25,
+            })
+            .unwrap();
+        assert!(trash.cards.iter().any(|card| card.id == "active-card"));
+        service
+            .apply_deck_card_action(&DeckCardActionRequest {
+                deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+                card_ids: vec!["active-card".into()],
+                action: DeckCardActionDto::Restore,
+                destination_deck_id: None,
+                now_ms: 2_001,
+            })
+            .unwrap();
+        let summaries = service.list_deck_summaries(2_001).unwrap();
+        let unsorted = deck_summary(&summaries, meiki_storage::DEFAULT_DECK_ID);
+        assert_eq!(unsorted.total_cards, 1);
     }
 
     #[test]
@@ -653,6 +682,29 @@ mod tests {
         add_card(
             &mut storage,
             meiki_storage::DEFAULT_DECK_ID,
+            "trashed-unsorted-card",
+            CardLifecycle::Unseen,
+            10_000,
+            false,
+        );
+        storage
+            .set_library_notes_deleted(
+                &["trashed-unsorted-card-source".into()],
+                Some(10_000),
+                10_000,
+            )
+            .unwrap();
+        drop(storage);
+        let summaries = service.list_deck_summaries(10_000).unwrap();
+        let unsorted = deck_summary(&summaries, meiki_storage::DEFAULT_DECK_ID);
+        assert_eq!(unsorted.total_cards, 0);
+        assert_eq!(unsorted.due_cards, 0);
+        assert_eq!(unsorted.new_cards, 0);
+
+        let mut storage = service.open_storage().unwrap();
+        add_card(
+            &mut storage,
+            meiki_storage::DEFAULT_DECK_ID,
             "unsorted-card",
             CardLifecycle::Unseen,
             10_000,
@@ -660,10 +712,7 @@ mod tests {
         );
         drop(storage);
         let summaries = service.list_deck_summaries(10_000).unwrap();
-        let unsorted = summaries
-            .iter()
-            .find(|deck| deck.id == meiki_storage::DEFAULT_DECK_ID)
-            .unwrap();
+        let unsorted = deck_summary(&summaries, meiki_storage::DEFAULT_DECK_ID);
         assert_eq!(unsorted.name, "Unsorted");
         assert_eq!(unsorted.total_cards, 1);
         assert_eq!(unsorted.due_cards, 0);
