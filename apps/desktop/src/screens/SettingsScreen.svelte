@@ -32,7 +32,6 @@
   let { theme, onThemeChange }: Props = $props();
   let decks = $state<DeckDto[]>([]);
   let deckId = $state("default-deck");
-  let newDeckName = $state("");
   let deckName = $state("");
   let deleteDestinationId = $state("");
   let settings = $state<SchedulerSettingsDto | null>(null);
@@ -91,27 +90,6 @@
     deckName = selectedDeck()?.name ?? "";
     deleteDestinationId = decks.find((deck) => deck.id !== deckId)?.id ?? "";
     await loadSettings();
-  }
-
-  async function createDeck(): Promise<void> {
-    if (!newDeckName.trim()) return;
-    busy = true;
-    notice = "";
-    error = "";
-    try {
-      const created = await api.createDeck({
-        name: newDeckName,
-        now_ms: Date.now(),
-      });
-      newDeckName = "";
-      await loadDecks(created.id);
-      await loadSettings();
-      notice = `Created deck “${created.name}”.`;
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
   }
 
   async function renameDeck(): Promise<void> {
@@ -577,23 +555,6 @@
               >
             {/each}
           </select>
-          <div class="deck-action-row">
-            <label>
-              <span>New deck</span>
-              <input
-                aria-label="New deck name"
-                bind:value={newDeckName}
-                maxlength="80"
-                disabled={busy}
-              />
-            </label>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy || !newDeckName.trim()}
-              onclick={createDeck}>Create deck</Button
-            >
-          </div>
           {#if selectedDeck()}
             <div class="deck-action-row">
               <label>
@@ -644,8 +605,7 @@
           {/if}
         </div>
         <p class="field-description">
-          Choose a flat deck to rename or configure. New decks inherit the
-          collection budget.
+          Choose a flat deck to rename or configure. Create decks from Decks.
         </p>
       </div>
 

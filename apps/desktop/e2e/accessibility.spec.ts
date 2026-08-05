@@ -4,7 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { installMockApi } from "./support/mock-api";
 
 type Theme = "light" | "dark";
-type Screen = "Today" | "Study" | "Library" | "Add / Edit" | "Settings";
+type Screen = "Today" | "Decks" | "Add" | "Settings";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
@@ -25,7 +25,10 @@ async function navigate(page: Page, screen: Screen): Promise<void> {
     .getByRole("button", { name: screen, exact: true })
     .click();
   await expect(
-    page.getByRole("heading", { name: screen, level: 1 }),
+    page.getByRole("heading", {
+      name: screen === "Add" ? "Add / Edit" : screen,
+      level: 1,
+    }),
   ).toBeVisible();
 }
 
@@ -41,7 +44,10 @@ async function openStudyScenario(
   });
   await page.reload();
   await chooseTheme(page, theme);
-  await navigate(page, "Study");
+  await page.getByRole("button", { name: "Start study" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Study", level: 1 }),
+  ).toBeVisible();
 }
 
 async function expectNoAccessibilityViolations(page: Page): Promise<void> {
@@ -62,13 +68,7 @@ async function expectNoAccessibilityViolations(page: Page): Promise<void> {
 }
 
 for (const theme of ["light", "dark"] as const) {
-  for (const screen of [
-    "Today",
-    "Study",
-    "Library",
-    "Add / Edit",
-    "Settings",
-  ] as const) {
+  for (const screen of ["Today", "Decks", "Add", "Settings"] as const) {
     test(`${screen} in ${theme} has no automated WCAG A/AA violations`, async ({
       page,
     }) => {
@@ -77,6 +77,20 @@ for (const theme of ["light", "dark"] as const) {
       await expectNoAccessibilityViolations(page);
     });
   }
+
+  test(`transient Study and deck management in ${theme} have no automated WCAG A/AA violations`, async ({
+    page,
+  }) => {
+    await chooseTheme(page, theme);
+    await page.getByRole("button", { name: "Start study" }).click();
+    await expectNoAccessibilityViolations(page);
+    await navigate(page, "Decks");
+    await page
+      .getByTestId("deck-travel-deck")
+      .getByRole("button", { name: "Open" })
+      .click();
+    await expectNoAccessibilityViolations(page);
+  });
 }
 
 for (const theme of ["light", "dark"] as const) {
@@ -89,7 +103,7 @@ for (const theme of ["light", "dark"] as const) {
     ).toBeVisible();
     await expectNoAccessibilityViolations(page);
 
-    await openStudyScenario(page, "/?collection=empty", theme);
+    await openStudyScenario(page, "/?today=empty&collection=empty", theme);
     await expect(
       page.getByRole("heading", { name: "Your collection is empty" }),
     ).toBeVisible();
@@ -112,7 +126,11 @@ for (const theme of ["light", "dark"] as const) {
     page,
   }) => {
     await chooseTheme(page, theme);
-    await navigate(page, "Library");
+    await navigate(page, "Decks");
+    await page
+      .getByTestId("deck-travel-deck")
+      .getByRole("button", { name: "Open" })
+      .click();
     await page.getByText("Select this page").click();
     await page.getByRole("button", { name: "Move to Trash" }).click();
     await expect(
@@ -146,9 +164,10 @@ test("skip navigation, focus transfer, and live study states are exposed", async
   await page.keyboard.press("Enter");
   await expect(page.locator("#main-content")).toBeFocused();
 
-  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
   await expect(page.locator("#main-content")).toBeFocused();
-  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await page.getByRole("button", { name: "Start study" }).click();
   const answer = page.getByLabel("Your answer");
   await expect(answer).toBeFocused();
   await answer.fill("行きます");
@@ -166,7 +185,7 @@ test("RTL learning content does not reverse application controls", async ({
   page,
 }) => {
   await page.goto("/?fixture=rtl");
-  await page.getByRole("button", { name: "Study", exact: true }).click();
+  await page.getByRole("button", { name: "Start study" }).click();
   await expect(page.locator("#study-prompt")).toHaveAttribute("dir", "rtl");
   await expect(page.getByTestId("app-shell")).toHaveAttribute("dir", "ltr");
   await expectNoAccessibilityViolations(page);

@@ -42,6 +42,7 @@ import type { StudyQueueEntryDto } from "./generated/StudyQueueEntryDto";
 import type { StudyPlanDto } from "./generated/StudyPlanDto";
 import type { CreateDeckRequest } from "./generated/CreateDeckRequest";
 import type { DeckDto } from "./generated/DeckDto";
+import type { DeckSummaryDto } from "./generated/DeckSummaryDto";
 import type { DeleteDeckRequest } from "./generated/DeleteDeckRequest";
 import type { DeleteDeckResultDto } from "./generated/DeleteDeckResultDto";
 import type { RenameDeckRequest } from "./generated/RenameDeckRequest";
@@ -187,6 +188,10 @@ export const api = {
 
   listDecks(): Promise<DeckDto[]> {
     return invoke("list_decks");
+  },
+
+  listDeckSummaries(nowMs: number): Promise<DeckSummaryDto[]> {
+    return invoke("list_deck_summaries", { nowMs });
   },
 
   createDeck(request: CreateDeckRequest): Promise<DeckDto> {

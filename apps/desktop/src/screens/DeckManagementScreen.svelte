@@ -21,13 +21,16 @@
   import type { LibraryTrashFilterDto } from "../lib/generated/LibraryTrashFilterDto";
 
   type Props = {
-    onNavigate: (screen: string) => void;
+    selectedDeckId: string;
+    deckName: string;
+    onBack: () => void;
+    onCreate: () => void;
     onEdit: (cardId: string) => void;
   };
 
   const pageSize = 25;
 
-  let { onNavigate, onEdit }: Props = $props();
+  let { selectedDeckId, deckName, onBack, onCreate, onEdit }: Props = $props();
   let query = $state("");
   let deckId = $state("");
   let tagId = $state("");
@@ -62,7 +65,8 @@
   } | null>(null);
 
   onMount(() => {
-    void loadLibrary();
+    deckId = selectedDeckId;
+    void loadDeckCards();
     return () => {
       if (searchTimer) clearTimeout(searchTimer);
     };
@@ -72,11 +76,11 @@
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       offset = 0;
-      void loadLibrary();
+      void loadDeckCards();
     }, 160);
   }
 
-  async function loadLibrary(): Promise<void> {
+  async function loadDeckCards(): Promise<void> {
     loading = true;
     error = "";
     try {
@@ -107,7 +111,7 @@
 
   function applyFilter(): void {
     offset = 0;
-    void loadLibrary();
+    void loadDeckCards();
   }
 
   function toggleSelection(sourceId: string): void {
@@ -171,7 +175,7 @@
         : null;
       selectedIds = [];
       tagName = "";
-      await loadLibrary();
+      await loadDeckCards();
     } catch (reason) {
       error = message(reason);
     } finally {
@@ -197,7 +201,7 @@
         result.affected_notes === 1 ? "note" : "notes"
       }.`;
       undoRequest = null;
-      await loadLibrary();
+      await loadDeckCards();
     } catch (reason) {
       error = message(reason);
     } finally {
@@ -229,32 +233,35 @@
   function changePage(nextOffset: number): void {
     offset = Math.max(0, nextOffset);
     selectedIds = [];
-    void loadLibrary();
+    void loadDeckCards();
   }
 </script>
 
-<section class="screen library-screen" aria-labelledby="library-title">
+<section
+  class="screen deck-management-screen"
+  aria-labelledby="deck-management-title"
+>
   <header class="screen-header">
     <div>
-      <span class="eyebrow">Your collection</span>
-      <h1 id="library-title" class="screen-title">Library</h1>
+      <span class="eyebrow">Deck management</span>
+      <h1 id="deck-management-title" class="screen-title">{deckName}</h1>
       <p class="screen-description">
-        Search every script and manage selected notes without changing review
-        history.
+        Search and manage this deck without changing review history.
       </p>
     </div>
-    <Button
-      variant="default"
-      data-primary-action
-      onclick={() => onNavigate("editor")}>Add a source note</Button
-    >
+    <div class="flex flex-wrap gap-2">
+      <Button variant="ghost" onclick={onBack}>Back to decks</Button>
+      <Button variant="default" data-primary-action onclick={onCreate}
+        >Add a source note</Button
+      >
+    </div>
   </header>
 
   <Collapsible.Root bind:open={filtersOpen}>
     <div
       class="flex flex-wrap items-end gap-3 rounded-lg border bg-card p-3"
       role="search"
-      aria-label="Library tools"
+      aria-label="Deck tools"
     >
       <div class="field min-w-60 flex-1">
         <Label for="library-search">Search</Label>
@@ -281,16 +288,7 @@
 
     <Collapsible.Content>
       <Card.Root class="mt-4 bg-muted/40 p-4 shadow-none">
-        <div class="filter-grid" aria-label="Library filters">
-          <div class="field">
-            <Label for="filter-deck">Deck</Label>
-            <select id="filter-deck" bind:value={deckId} onchange={applyFilter}>
-              <option value="">All decks</option>
-              {#each overview?.decks ?? [] as deck (deck.id)}
-                <option value={deck.id}>{deck.name}</option>
-              {/each}
-            </select>
-          </div>
+        <div class="filter-grid" aria-label="Deck filters">
           <div class="field">
             <Label for="filter-tag">Tag</Label>
             <select id="filter-tag" bind:value={tagId} onchange={applyFilter}>
@@ -345,9 +343,9 @@
           <div class="field">
             <Label for="filter-trash">Location</Label>
             <select id="filter-trash" bind:value={trash} onchange={applyFilter}>
-              <option value="active">Library</option>
+              <option value="active">Active</option>
               <option value="deleted">Trash</option>
-              <option value="all">Library and Trash</option>
+              <option value="all">Active and Trash</option>
             </select>
           </div>
         </div>
@@ -357,10 +355,10 @@
 
   {#if error}
     <Alert.Root variant="destructive" role="alert">
-      <Alert.Title>The Library action was not completed</Alert.Title>
+      <Alert.Title>The deck action was not completed</Alert.Title>
       <Alert.Description>
         <p>{error}</p>
-        <Button class="mt-3" variant="outline" onclick={loadLibrary}
+        <Button class="mt-3" variant="outline" onclick={loadDeckCards}
           >Try again</Button
         >
       </Alert.Description>
@@ -567,7 +565,7 @@
     {:else}
       <div class="empty-state">
         <span class="empty-mark" aria-hidden="true">＋</span>
-        <h2>{query ? "No matching notes" : "Your library is ready"}</h2>
+        <h2>{query ? "No matching notes" : "Your deck is ready"}</h2>
         <p>
           {#if trash === "deleted"}
             Trash is empty. Deleted notes stay recoverable here.
@@ -578,9 +576,7 @@
             clozes.
           {/if}
         </p>
-        <Button variant="outline" onclick={() => onNavigate("editor")}
-          >Add a source note</Button
-        >
+        <Button variant="outline" onclick={onCreate}>Add a source note</Button>
       </div>
     {/if}
   </Card.Root>
@@ -643,7 +639,7 @@
 </AlertDialog.Root>
 
 <style>
-  .library-screen {
+  .deck-management-screen {
     width: min(100%, 76rem);
   }
 

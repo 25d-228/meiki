@@ -43,7 +43,8 @@ pub use authoring::{
     RemoveClozeRequest, ReorderSegmentsRequest,
 };
 pub use decks::{
-    CreateDeckRequest, DeckDto, DeleteDeckRequest, DeleteDeckResultDto, RenameDeckRequest,
+    CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckRequest, DeleteDeckResultDto,
+    RenameDeckRequest,
 };
 pub use library::{
     LibraryBulkActionDto, LibraryBulkRequest, LibraryBulkResultDto, LibraryCardDto, LibraryDeckDto,
@@ -1723,6 +1724,7 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     ImportSchedulerParametersRequest::export_all_to(output)?;
     SchedulerParametersExportDto::export_all_to(output)?;
     DeckDto::export_all_to(output)?;
+    DeckSummaryDto::export_all_to(output)?;
     CreateDeckRequest::export_all_to(output)?;
     RenameDeckRequest::export_all_to(output)?;
     DeleteDeckRequest::export_all_to(output)?;

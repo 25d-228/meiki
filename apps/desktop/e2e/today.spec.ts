@@ -40,9 +40,7 @@ test("shows empty, overdue, and capped workload states", async ({ page }) => {
   await openToday(page);
   await expect(page.getByText("You’re caught up")).toBeVisible();
   await expect(page.getByText(/Next review:/)).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Start study" }),
-  ).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Start study" })).toBeEnabled();
 
   await page.goto("/?today=overdue");
   await openToday(page);

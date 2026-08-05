@@ -1,7 +1,7 @@
 use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckDto, DeleteDeckRequest,
+    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckRequest,
     DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
     ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto, LibraryOverviewDto,
     LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
@@ -172,6 +172,13 @@ pub(crate) fn export_scheduler_parameters(
 
 pub(crate) fn list_decks(service: &ApplicationService) -> CommandResult<Vec<DeckDto>> {
     map_error(service.list_decks())
+}
+
+pub(crate) fn list_deck_summaries(
+    service: &ApplicationService,
+    now_ms: i64,
+) -> CommandResult<Vec<DeckSummaryDto>> {
+    map_error(service.list_deck_summaries(now_ms))
 }
 
 pub(crate) fn create_deck(

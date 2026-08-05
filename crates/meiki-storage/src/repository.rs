@@ -8,10 +8,11 @@ use meiki_domain::{
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::{
-    DEFAULT_SCHEDULER_PARAMETER_SET_ID, PristineDeckImport, PristineDeckImportStatus,
-    SchedulingWorkload, Storage, StorageError, StoredLibraryCard, StoredLibraryNote,
-    StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
-    entity_not_found, matching_policy_from_database, matching_policy_to_database,
+    DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, PristineDeckImport,
+    PristineDeckImportStatus, SchedulingWorkload, Storage, StorageError, StoredLibraryCard,
+    StoredLibraryNote, StoredSourceNote, StoredStudyCard, direction_from_database,
+    direction_to_database, entity_not_found, matching_policy_from_database,
+    matching_policy_to_database,
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
@@ -514,6 +515,54 @@ impl Storage {
             [deck_id],
             |row| row.get(0),
         )?)
+    }
+
+    /// Aggregates card counts for every flat deck in one bounded query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the aggregate query fails.
+    pub fn deck_card_counts(&self, now_ms: i64) -> Result<Vec<DeckCardCounts>, StorageError> {
+        let mut statement = self.connection.prepare(
+            "SELECT
+                decks.id,
+                COALESCE(SUM(CASE
+                    WHEN source_items.deleted_at_ms IS NULL
+                     AND cards.id IS NOT NULL
+                    THEN 1 ELSE 0
+                END), 0),
+                COALESCE(SUM(CASE
+                    WHEN source_items.deleted_at_ms IS NULL
+                     AND cards.suspended = 0
+                     AND schedule_states.lifecycle = 'introduced'
+                     AND schedule_states.due_at_ms <= ?1
+                    THEN 1 ELSE 0
+                END), 0),
+                COALESCE(SUM(CASE
+                    WHEN source_items.deleted_at_ms IS NULL
+                     AND cards.suspended = 0
+                     AND schedule_states.lifecycle = 'unseen'
+                    THEN 1 ELSE 0
+                END), 0)
+             FROM decks
+             LEFT JOIN source_items ON source_items.deck_id = decks.id
+             LEFT JOIN clozes ON clozes.source_item_id = source_items.id
+             LEFT JOIN cards ON cards.cloze_id = clozes.id
+             LEFT JOIN schedule_states ON schedule_states.card_id = cards.id
+             GROUP BY decks.id
+             ORDER BY decks.id",
+        )?;
+        statement
+            .query_map([now_ms], |row| {
+                Ok(DeckCardCounts {
+                    deck_id: row.get(0)?,
+                    total_cards: row.get(1)?,
+                    due_cards: row.get(2)?,
+                    new_cards: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::from)
     }
 
     /// Deletes a deck atomically, moving all of its notes when a destination is
