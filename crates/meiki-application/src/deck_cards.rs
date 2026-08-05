@@ -10,7 +10,7 @@ use ts_rs::TS;
 
 use crate::{ApplicationError, ApplicationService, DirectionDto, desktop_u32};
 
-const DEFAULT_PAGE_SIZE: usize = 25;
+const DEFAULT_PAGE_SIZE: u32 = 25;
 const MAX_PAGE_SIZE: u32 = 100;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -105,47 +105,47 @@ impl ApplicationService {
     ) -> Result<DeckCardOverviewDto, ApplicationError> {
         validate_request(request)?;
         let storage = self.open_storage()?;
-        let deck = storage.get_deck(&request.deck_id)?;
+        storage.get_deck(&request.deck_id)?;
         let normalized_query = normalize_for_search(&request.query);
-        let mut cards = Vec::new();
-        for stored in storage.deck_library_notes(&request.deck_id)? {
-            let is_trashed = stored.deleted_at_ms.is_some();
-            if is_trashed != (request.trash == DeckCardTrashDto::Trash) {
-                continue;
-            }
-            for (cloze, stored_card) in stored.note.clozes.iter().zip(&stored.cards) {
-                let sentence = card_sentence(&stored.note.source_item, &cloze.id);
-                if !card_matches(
-                    &stored.note.source_item,
-                    cloze,
-                    &sentence,
-                    &normalized_query,
-                ) {
-                    continue;
-                }
-                cards.push(DeckCardDto {
-                    id: stored_card.card.id.clone(),
-                    sentence,
-                    answer: cloze.answer.clone(),
-                    status: card_status(
-                        stored_card.card.suspended,
-                        stored_card.schedule.lifecycle,
-                        stored_card.schedule.due_at_ms,
-                        request.now_ms,
-                    ),
-                    language_tag: cloze
-                        .language_tag
-                        .clone()
-                        .or_else(|| stored.note.source_item.language_tag.clone())
-                        .or_else(|| deck.language_tag.clone()),
-                    direction: resolved_direction(cloze.direction, &stored.note.source_item, &deck),
-                });
-            }
-        }
-        let total_matches = desktop_u32(cards.len() as u64, "deck card match count")?;
-        let offset = usize::try_from(request.offset).unwrap_or(usize::MAX);
+        let trashed = request.trash == DeckCardTrashDto::Trash;
+        let matching_card_ids = if normalized_query.is_empty() {
+            None
+        } else {
+            Some(
+                storage
+                    .deck_card_search(&request.deck_id, trashed)?
+                    .into_iter()
+                    .filter(|card| normalize_for_search(&card.text).contains(&normalized_query))
+                    .map(|card| card.card_id)
+                    .collect::<Vec<_>>(),
+            )
+        };
         let limit = page_size(request.limit);
-        let cards = cards.into_iter().skip(offset).take(limit).collect();
+        let page = storage.deck_card_page(
+            &request.deck_id,
+            trashed,
+            matching_card_ids.as_deref(),
+            request.offset,
+            limit,
+        )?;
+        let total_matches = desktop_u32(page.total_matches, "deck card match count")?;
+        let cards = page
+            .cards
+            .into_iter()
+            .map(|card| DeckCardDto {
+                id: card.id,
+                sentence: card.sentence,
+                answer: card.answer,
+                status: card_status(
+                    card.suspended,
+                    card.lifecycle,
+                    card.due_at_ms,
+                    request.now_ms,
+                ),
+                language_tag: card.language_tag,
+                direction: card.direction.into(),
+            })
+            .collect();
         let decks = storage
             .list_decks()?
             .into_iter()
@@ -159,8 +159,7 @@ impl ApplicationService {
             decks,
             total_matches,
             offset: request.offset,
-            limit: u32::try_from(limit)
-                .map_err(|_| ApplicationError::NumericRange("deck card page size"))?,
+            limit,
         })
     }
 
@@ -308,43 +307,12 @@ fn validate_action_request(request: &DeckCardActionRequest) -> Result<(), Applic
     Ok(())
 }
 
-fn page_size(requested: u32) -> usize {
+fn page_size(requested: u32) -> u32 {
     if requested == 0 {
         DEFAULT_PAGE_SIZE
     } else {
-        usize::try_from(requested).unwrap_or(DEFAULT_PAGE_SIZE)
+        requested
     }
-}
-
-fn card_sentence(source: &SourceItem, active_cloze_id: &str) -> String {
-    source
-        .segments
-        .iter()
-        .map(|segment| match &segment.content {
-            SegmentContent::Cloze { cloze_id, .. } if cloze_id == active_cloze_id => "[…]",
-            SegmentContent::Text(text) | SegmentContent::Cloze { text, .. } => text,
-        })
-        .collect()
-}
-
-fn card_matches(
-    source: &SourceItem,
-    cloze: &meiki_domain::Cloze,
-    sentence: &str,
-    normalized_query: &str,
-) -> bool {
-    if normalized_query.is_empty() {
-        return true;
-    }
-    let mut values = vec![sentence, cloze.answer.as_str()];
-    values.extend(cloze.accepted_answers.iter().map(String::as_str));
-    values.extend(source.tags.iter().map(|tag| tag.name.as_str()));
-    if let Some(hint) = &cloze.hint {
-        values.push(&hint.value);
-    }
-    values
-        .into_iter()
-        .any(|value| normalize_for_search(value).contains(normalized_query))
 }
 
 fn card_status(
@@ -361,20 +329,6 @@ fn card_status(
         DeckCardStatusDto::Due
     } else {
         DeckCardStatusDto::Scheduled
-    }
-}
-
-fn resolved_direction(
-    cloze_direction: meiki_domain::Direction,
-    source: &SourceItem,
-    deck: &Deck,
-) -> DirectionDto {
-    match cloze_direction {
-        meiki_domain::Direction::Auto => match source.direction {
-            meiki_domain::Direction::Auto => deck.direction.into(),
-            direction => direction.into(),
-        },
-        direction => direction.into(),
     }
 }
 
@@ -400,9 +354,7 @@ mod tests {
     };
     use tempfile::tempdir;
 
-    use super::{
-        DeckCardActionDto, DeckCardActionRequest, DeckCardRequest, DeckCardTrashDto, card_sentence,
-    };
+    use super::{DeckCardActionDto, DeckCardActionRequest, DeckCardRequest, DeckCardTrashDto};
     use crate::{
         ApplicationService, CreateDeckRequest, GradeDto, GradeReviewRequest, TodayRequest,
     };
@@ -678,10 +630,16 @@ mod tests {
         let sibling_before = storage.load_study_card("legacy-card-1").unwrap();
         let sibling_card = sibling_before.card.clone();
         let sibling_cloze = sibling_before.cloze.clone();
-        let sibling_sentence = card_sentence(&sibling_before.source_item, &sibling_cloze.id);
         let sibling_schedule = storage.load_schedule("legacy-card-1").unwrap();
         let selected_schedule = storage.load_schedule("legacy-card-0").unwrap();
         drop(storage);
+        let sibling_row = service
+            .get_deck_cards(&request(DEFAULT_DECK_ID, "", DeckCardTrashDto::Active))
+            .unwrap()
+            .cards
+            .into_iter()
+            .find(|card| card.id == "legacy-card-1")
+            .unwrap();
 
         let mut draft = service
             .get_authoring_draft_for_card("legacy-card-0")
@@ -718,10 +676,6 @@ mod tests {
         let sibling = storage.load_study_card("legacy-card-1").unwrap();
         assert_eq!(sibling.card, sibling_card);
         assert_eq!(sibling.cloze, sibling_cloze);
-        assert_eq!(
-            card_sentence(&sibling.source_item, &sibling.cloze.id),
-            sibling_sentence
-        );
         assert_eq!(sibling.schedule, sibling_schedule);
         assert_eq!(sibling.source_item.deck_id, DEFAULT_DECK_ID);
         let selected = storage.load_study_card("legacy-card-0").unwrap();
@@ -729,14 +683,10 @@ mod tests {
         assert_eq!(selected.schedule, selected_schedule);
         assert_eq!(selected.cloze.answer, "changed");
         drop(storage);
-        assert_eq!(
-            service
-                .get_deck_cards(&request(DEFAULT_DECK_ID, "", DeckCardTrashDto::Active,))
-                .unwrap()
-                .cards
-                .len(),
-            1
-        );
+        let sibling_page = service
+            .get_deck_cards(&request(DEFAULT_DECK_ID, "", DeckCardTrashDto::Active))
+            .unwrap();
+        assert_eq!(sibling_page.cards, vec![sibling_row]);
         assert_eq!(
             service
                 .get_deck_cards(&request(&destination.id, "", DeckCardTrashDto::Trash,))
@@ -751,12 +701,12 @@ mod tests {
     fn three_thousand_card_deck_returns_one_bounded_page_through_sqlite() {
         let directory = tempdir().unwrap();
         let service = ApplicationService::new(directory.path().join("collection.db"));
-        let answers = (0..3_000)
-            .map(|index| format!("answer-{index}"))
-            .collect::<Vec<_>>();
-        let answer_refs = answers.iter().map(String::as_str).collect::<Vec<_>>();
         let mut storage = service.open_storage().unwrap();
-        add_note(&mut storage, DEFAULT_DECK_ID, "large", &answer_refs);
+        for index in 0..3_000 {
+            let source_id = format!("large-source-{index:04}");
+            let answer = format!("answer-{index}");
+            add_note(&mut storage, DEFAULT_DECK_ID, &source_id, &[&answer]);
+        }
         drop(storage);
 
         let started = Instant::now();

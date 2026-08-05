@@ -123,3 +123,30 @@ test("moves, suspends, trashes, and restores the selected card identity", async 
     request: { card_ids: ["trashed-card"], action: "restore" },
   });
 });
+
+test("returns to the previous page after trash removes the final later-page card", async ({
+  page,
+}) => {
+  await page.goto("/?deckCards=last-page");
+  await openTravelDeck(page);
+  await page.getByRole("button", { name: "Next" }).click();
+  const finalCard = page.getByTestId("card-page-card-26");
+  await expect(finalCard).toBeVisible();
+
+  await finalCard.getByRole("button", { name: "Move to Trash" }).click();
+
+  await expect(page.getByTestId("card-page-card-1")).toBeVisible();
+  await expect(finalCard).toHaveCount(0);
+  await expect(
+    page.getByRole("navigation", { name: "Card pages" }),
+  ).toHaveCount(0);
+  const offsets = await page.evaluate(() =>
+    (window.__MEIKI_TEST_REQUESTS__ ?? [])
+      .filter((request) => request.command === "get_deck_cards")
+      .map(
+        (request) =>
+          (request.args as { request: { offset: number } }).request.offset,
+      ),
+  );
+  expect(offsets.slice(-3)).toEqual([25, 25, 0]);
+});

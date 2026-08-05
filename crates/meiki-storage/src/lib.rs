@@ -16,7 +16,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use meiki_domain::{Card, Cloze, Deck, Direction, MatchingPolicy, ScheduleState, SourceItem};
+use meiki_domain::{
+    Card, CardLifecycle, Cloze, Deck, Direction, MatchingPolicy, ScheduleState, SourceItem,
+};
 #[cfg(any(test, feature = "test-fixtures"))]
 use rusqlite::params;
 use rusqlite::{Connection, MAIN_DB, OptionalExtension};
@@ -112,6 +114,30 @@ pub struct StoredLibraryNote {
     pub note: StoredSourceNote,
     pub cards: Vec<StoredLibraryCard>,
     pub deleted_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredDeckCardSearch {
+    pub card_id: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredDeckCard {
+    pub id: String,
+    pub sentence: String,
+    pub answer: String,
+    pub suspended: bool,
+    pub lifecycle: CardLifecycle,
+    pub due_at_ms: i64,
+    pub language_tag: Option<String>,
+    pub direction: Direction,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredDeckCardPage {
+    pub cards: Vec<StoredDeckCard>,
+    pub total_matches: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

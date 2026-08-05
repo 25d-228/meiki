@@ -489,6 +489,23 @@ const deckCards = {
     offset: 0,
     limit: 25,
   },
+  pagination: {
+    cards: Array.from({ length: 26 }, (_, index) => ({
+      id: `page-card-${index + 1}`,
+      sentence: `Sentence […] ${index + 1}`,
+      answer: `answer-${index + 1}`,
+      status: "new",
+      language_tag: "en",
+      direction: "ltr",
+    })),
+    decks: [
+      { id: "default-deck", name: "Unsorted" },
+      { id: "travel-deck", name: "Travel phrases" },
+    ],
+    total_matches: 26,
+    offset: 0,
+    limit: 25,
+  },
   trash: {
     cards: [
       {

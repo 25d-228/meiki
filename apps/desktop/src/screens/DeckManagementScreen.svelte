@@ -49,7 +49,7 @@
     loading = true;
     error = "";
     try {
-      overview = await api.getDeckCards({
+      let nextOverview = await api.getDeckCards({
         deck_id: selectedDeckId,
         query,
         trash,
@@ -57,6 +57,21 @@
         offset,
         limit: pageSize,
       });
+      const lastOffset = nextOverview.total_matches
+        ? Math.floor((nextOverview.total_matches - 1) / pageSize) * pageSize
+        : 0;
+      if (offset > lastOffset) {
+        offset = lastOffset;
+        nextOverview = await api.getDeckCards({
+          deck_id: selectedDeckId,
+          query,
+          trash,
+          now_ms: Date.now(),
+          offset,
+          limit: pageSize,
+        });
+      }
+      overview = nextOverview;
       destinationDeckId =
         overview.decks.find((deck) => deck.id !== selectedDeckId)?.id ?? "";
     } catch (reason) {
@@ -338,7 +353,11 @@
     </Dialog.Header>
     <div class="grid gap-2">
       <Label for="destination-deck">Destination deck</Label>
-      <select id="destination-deck" bind:value={destinationDeckId}>
+      <select
+        id="destination-deck"
+        class="w-full"
+        bind:value={destinationDeckId}
+      >
         {#each overview?.decks.filter((deck) => deck.id !== selectedDeckId) ?? [] as deck (deck.id)}
           <option value={deck.id}>{deck.name}</option>
         {/each}
@@ -392,18 +411,8 @@
     justify-content: center;
     gap: 1rem;
     margin-top: 1.25rem;
-    color: hsl(var(--muted-foreground));
+    color: var(--muted-foreground);
     font-size: 0.875rem;
-  }
-
-  select {
-    min-height: 2.5rem;
-    width: 100%;
-    border: 1px solid hsl(var(--border));
-    border-radius: 0.5rem;
-    background: hsl(var(--background));
-    color: hsl(var(--foreground));
-    padding: 0.5rem 0.75rem;
   }
 
   @media (max-width: 40rem) {
