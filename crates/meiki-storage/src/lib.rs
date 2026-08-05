@@ -173,6 +173,13 @@ pub struct PristineBundleImportPlan {
     pub unassociated_deck_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstalledBundle {
+    pub language_tag: String,
+    pub deck_count: u64,
+    pub active_card_count: u64,
+}
+
 impl PristineBundleImportPlan {
     #[must_use]
     pub fn requires_changes(&self) -> bool {
@@ -769,6 +776,76 @@ impl Storage {
                 }
             }
         }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Builds the fixed six-stage, 9,700-card bundle-removal release fixture
+    /// with an equally sized unrelated collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the fixture cannot be committed.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn seed_bundle_removal_release_fixture(&mut self, now_ms: i64) -> Result<(), StorageError> {
+        const BUNDLE_CARD_COUNT: u32 = 9_700;
+        const STAGE_COUNT: u64 = 6;
+        self.seed_large_performance_fixture(BUNDLE_CARD_COUNT * 2, now_ms)?;
+
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "UPDATE decks
+             SET name = 'Japanese 00', language_tag = 'ja-JP', updated_at_ms = ?1
+             WHERE id = 'performance-deck'",
+            [now_ms],
+        )?;
+        transaction.execute(
+            "INSERT INTO bundle_installations(language_tag, installed_at_ms)
+             VALUES ('ja-JP', ?1)",
+            [now_ms],
+        )?;
+        for ordinal in 0..STAGE_COUNT {
+            let deck_id = if ordinal == 0 {
+                "performance-deck".to_owned()
+            } else {
+                format!("bundle-removal-stage-{ordinal}")
+            };
+            if ordinal > 0 {
+                transaction.execute(
+                    "INSERT INTO decks(
+                        id, name, language_tag, direction, matching_policy,
+                        created_at_ms, updated_at_ms
+                     ) VALUES (?1, ?2, 'ja-JP', 'auto', 'strict', ?3, ?3)",
+                    params![deck_id, format!("Japanese {ordinal:02}"), now_ms],
+                )?;
+                transaction.execute(
+                    "INSERT INTO scheduler_profiles(
+                        deck_id, engine_version, active_parameter_set_id, updated_at_ms
+                     ) VALUES (?1, 'fsrs-7', ?2, ?3)",
+                    params![deck_id, DEFAULT_SCHEDULER_PARAMETER_SET_ID, now_ms],
+                )?;
+                transaction.execute(
+                    "UPDATE source_items
+                     SET deck_id = ?1
+                     WHERE deck_id = 'performance-deck'
+                       AND (CAST(SUBSTR(id, 20) AS INTEGER) / 2) % ?2 = ?3",
+                    params![deck_id, STAGE_COUNT, ordinal],
+                )?;
+            }
+            transaction.execute(
+                "INSERT INTO bundle_decks(language_tag, deck_id, ordinal)
+                 VALUES ('ja-JP', ?1, ?2)",
+                params![deck_id, ordinal],
+            )?;
+        }
+        transaction.execute_batch(
+            "CREATE TRIGGER reject_unrelated_bundle_removal_update
+             BEFORE UPDATE ON source_items
+             WHEN OLD.deck_id = 'default-deck'
+             BEGIN
+                 SELECT RAISE(ABORT, 'bundle removal touched unrelated content');
+             END;",
+        )?;
         transaction.commit()?;
         Ok(())
     }

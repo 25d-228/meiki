@@ -4,6 +4,7 @@
 
   import { api } from "../lib/api";
   import * as Alert from "$lib/components/ui/alert/index.js";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
@@ -12,6 +13,8 @@
   import type { DeckSummaryDto } from "../lib/generated/DeckSummaryDto";
   import type { BundleImportProgressDto } from "../lib/generated/BundleImportProgressDto";
   import type { BundlePreviewDto } from "../lib/generated/BundlePreviewDto";
+  import type { BundleRemovalPreviewDto } from "../lib/generated/BundleRemovalPreviewDto";
+  import type { BundleRemovalProgressDto } from "../lib/generated/BundleRemovalProgressDto";
   import { localDayBounds } from "../lib/local-day";
   import {
     clearStudyQueue,
@@ -26,6 +29,9 @@
     onOpen: (deckId: string, deckName: string) => void;
     onDeckContextChange: (value: string) => void;
   };
+
+  const selectedTodayDeckKey = "meiki-today-deck";
+  const allDecksId = "__all_decks__";
 
   let { onStudy, onOpen, onDeckContextChange }: Props = $props();
   let decks = $state<DeckSummaryDto[]>([]);
@@ -42,6 +48,14 @@
   let importingBundle = $state(false);
   let bundleProgress = $state<BundleImportProgressDto | null>(null);
   let bundleError = $state("");
+  let installedBundles = $state<BundleRemovalPreviewDto[]>([]);
+  let bundleActionsDialogOpen = $state(false);
+  let bundleRemovalConfirmationOpen = $state(false);
+  let bundleRemovalProgressDialogOpen = $state(false);
+  let selectedBundle = $state<BundleRemovalPreviewDto | null>(null);
+  let removingBundle = $state(false);
+  let bundleRemovalProgress = $state<BundleRemovalProgressDto | null>(null);
+  let bundleRemovalError = $state("");
   let error = $state("");
   let notice = $state("");
 
@@ -60,7 +74,20 @@
     loading = true;
     error = "";
     try {
-      decks = await api.listDeckSummaries(Date.now());
+      const [loadedDecks, loadedBundles] = await Promise.all([
+        api.listDeckSummaries(Date.now()),
+        api.listInstalledBundles(),
+      ]);
+      decks = loadedDecks;
+      installedBundles = loadedBundles;
+      if (
+        activeQueue &&
+        activeQueue.deckId !== allDecksId &&
+        !loadedDecks.some((deck) => deck.id === activeQueue?.deckId)
+      ) {
+        clearStudyQueue();
+        activeQueue = null;
+      }
     } catch (cause) {
       error = message(cause);
     } finally {
@@ -131,6 +158,56 @@
     }
   }
 
+  function confirmBundleRemoval(bundle: BundleRemovalPreviewDto): void {
+    selectedBundle = bundle;
+    bundleActionsDialogOpen = false;
+    bundleRemovalConfirmationOpen = true;
+  }
+
+  async function removeBundle(): Promise<void> {
+    if (!selectedBundle || removingBundle) return;
+    const bundle = selectedBundle;
+    bundleRemovalConfirmationOpen = false;
+    bundleRemovalProgressDialogOpen = true;
+    removingBundle = true;
+    bundleRemovalError = "";
+    notice = "";
+    const deckIdsBeforeRemoval = new Set(decks.map((deck) => deck.id));
+    bundleRemovalProgress = {
+      removed_decks: 0,
+      total_decks: bundle.decks,
+      moved_cards: 0,
+      total_cards: bundle.cards,
+    };
+    try {
+      const result = await api.removeBundle(
+        {
+          language_tag: bundle.language_tag,
+          expected_decks: bundle.decks,
+          expected_cards: bundle.cards,
+          now_ms: Date.now(),
+        },
+        (progress) => (bundleRemovalProgress = progress),
+      );
+      await loadDecks();
+      const selectedTodayDeck = localStorage.getItem(selectedTodayDeckKey);
+      if (
+        selectedTodayDeck &&
+        deckIdsBeforeRemoval.has(selectedTodayDeck) &&
+        !decks.some((deck) => deck.id === selectedTodayDeck)
+      ) {
+        localStorage.setItem(selectedTodayDeckKey, allDecksId);
+      }
+      bundleRemovalProgressDialogOpen = false;
+      selectedBundle = null;
+      notice = `Removed ${languageName(result.language_tag)}. ${result.removed_decks.toLocaleString()} ${result.removed_decks === 1 ? "deck" : "decks"} and ${result.moved_cards.toLocaleString()} ${result.moved_cards === 1 ? "card" : "cards"} moved to Trash.`;
+    } catch (cause) {
+      bundleRemovalError = message(cause);
+    } finally {
+      removingBundle = false;
+    }
+  }
+
   async function beginStudy(deck: DeckSummaryDto): Promise<void> {
     if (activeQueue && remainingStudyCards(activeQueue) > 0) {
       if (activeQueue.deckId === deck.id) onStudy(deck.name);
@@ -195,6 +272,13 @@
       </p>
     </div>
     <div class="screen-actions">
+      {#if installedBundles.length > 0}
+        <Button
+          variant="outline"
+          onclick={() => (bundleActionsDialogOpen = true)}
+          >Bundle actions</Button
+        >
+      {/if}
       <Button variant="outline" onclick={() => void chooseBundle()}
         >Import bundle</Button
       >
@@ -326,6 +410,114 @@
         </Button>
       </Dialog.Footer>
     </form>
+  </Dialog.Content>
+</Dialog.Root>
+
+<Dialog.Root bind:open={bundleActionsDialogOpen}>
+  <Dialog.Content>
+    <Dialog.Header>
+      <Dialog.Title>Bundle actions</Dialog.Title>
+      <Dialog.Description>
+        Manage language bundles installed in this collection.
+      </Dialog.Description>
+    </Dialog.Header>
+    <div class="bundle-action-list">
+      {#each installedBundles as bundle (bundle.language_tag)}
+        <Button variant="outline" onclick={() => confirmBundleRemoval(bundle)}>
+          Remove {languageName(bundle.language_tag)}
+          <span>
+            {bundle.decks.toLocaleString()}
+            {bundle.decks === 1 ? "deck" : "decks"}, {bundle.cards.toLocaleString()}
+            {bundle.cards === 1 ? "card" : "cards"}
+          </span>
+        </Button>
+      {/each}
+    </div>
+    <Dialog.Footer>
+      <Button
+        variant="outline"
+        onclick={() => (bundleActionsDialogOpen = false)}>Close</Button
+      >
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
+<AlertDialog.Root bind:open={bundleRemovalConfirmationOpen}>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>
+        Remove {selectedBundle
+          ? languageName(selectedBundle.language_tag)
+          : "bundle"}?
+      </AlertDialog.Title>
+      <AlertDialog.Description>
+        {#if selectedBundle}
+          {`This removes ${selectedBundle.decks.toLocaleString()} ${selectedBundle.decks === 1 ? "deck" : "decks"} and moves their ${selectedBundle.cards.toLocaleString()} ${selectedBundle.cards === 1 ? "card" : "cards"} to Trash.`}
+        {/if}
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action
+        class="bg-destructive/10 text-destructive hover:bg-destructive/20"
+        onclick={() => void removeBundle()}>Remove bundle</AlertDialog.Action
+      >
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
+<Dialog.Root bind:open={bundleRemovalProgressDialogOpen}>
+  <Dialog.Content
+    class="sm:max-w-xl"
+    showCloseButton={!removingBundle}
+    onEscapeKeydown={(event) => removingBundle && event.preventDefault()}
+    onInteractOutside={(event) => removingBundle && event.preventDefault()}
+  >
+    <Dialog.Header>
+      <Dialog.Title>Removing bundle</Dialog.Title>
+      <Dialog.Description>
+        The collection is updated only after every deck is ready.
+      </Dialog.Description>
+    </Dialog.Header>
+    {#if bundleRemovalError}
+      <Alert.Root variant="destructive" role="alert">
+        <Alert.Title>The bundle was not removed</Alert.Title>
+        <Alert.Description>{bundleRemovalError}</Alert.Description>
+      </Alert.Root>
+    {:else if bundleRemovalProgress}
+      <div class="bundle-removal-progress" role="status" aria-live="polite">
+        <strong>Moving cards to Trash</strong>
+        <label>
+          Decks
+          <progress
+            max={Math.max(1, bundleRemovalProgress.total_decks)}
+            value={bundleRemovalProgress.removed_decks}
+          ></progress>
+          <span>
+            {bundleRemovalProgress.removed_decks.toLocaleString()} / {bundleRemovalProgress.total_decks.toLocaleString()}
+          </span>
+        </label>
+        <label>
+          Cards
+          <progress
+            max={Math.max(1, bundleRemovalProgress.total_cards)}
+            value={bundleRemovalProgress.moved_cards}
+          ></progress>
+          <span>
+            {bundleRemovalProgress.moved_cards.toLocaleString()} / {bundleRemovalProgress.total_cards.toLocaleString()}
+          </span>
+        </label>
+      </div>
+    {/if}
+    {#if !removingBundle}
+      <Dialog.Footer>
+        <Button
+          variant="outline"
+          onclick={() => (bundleRemovalProgressDialogOpen = false)}
+          >Close</Button
+        >
+      </Dialog.Footer>
+    {/if}
   </Dialog.Content>
 </Dialog.Root>
 
@@ -511,6 +703,29 @@
   }
 
   .bundle-progress progress {
+    width: 100%;
+  }
+
+  .bundle-action-list,
+  .bundle-removal-progress,
+  .bundle-removal-progress label {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .bundle-action-list :global(button) {
+    height: auto;
+    justify-content: space-between;
+    text-align: left;
+  }
+
+  .bundle-action-list span,
+  .bundle-removal-progress span {
+    color: var(--muted-foreground);
+    font-size: 0.8rem;
+  }
+
+  .bundle-removal-progress progress {
     width: 100%;
   }
 

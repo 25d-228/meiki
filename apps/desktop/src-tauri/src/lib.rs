@@ -4,7 +4,8 @@ use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
     BackupDto, BundleImportProgressDto, BundleImportRequest, BundleImportResultDto,
-    BundlePreviewDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
+    BundlePreviewDto, BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
+    BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
     DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
     DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
     ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
@@ -34,6 +35,8 @@ macro_rules! desktop_commands {
             preview_archive,
             preview_bundle,
             import_bundle,
+            list_installed_bundles,
+            remove_bundle,
             add_archive_deck,
             import_archive,
             list_backups,
@@ -193,6 +196,31 @@ async fn import_bundle(
     let service = state.service();
     tauri::async_runtime::spawn_blocking(move || {
         commands::import_bundle(&service, &request, |progress| {
+            drop(on_progress.send(progress));
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_installed_bundles(
+    state: State<'_, AppContext>,
+) -> Result<Vec<BundleRemovalPreviewDto>, String> {
+    commands::list_installed_bundles(&state.service())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn remove_bundle(
+    request: BundleRemovalRequest,
+    on_progress: Channel<BundleRemovalProgressDto>,
+    state: State<'_, AppContext>,
+) -> Result<BundleRemovalResultDto, String> {
+    let service = state.service();
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::remove_bundle(&service, &request, |progress| {
             drop(on_progress.send(progress));
         })
     })
@@ -475,6 +503,8 @@ mod tests {
         "preview_archive",
         "preview_bundle",
         "import_bundle",
+        "list_installed_bundles",
+        "remove_bundle",
         "add_archive_deck",
         "import_archive",
         "list_backups",

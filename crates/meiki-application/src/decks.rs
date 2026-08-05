@@ -58,7 +58,110 @@ pub struct DeleteDeckResultDto {
     pub affected_cards: u32,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct BundleRemovalPreviewDto {
+    pub language_tag: String,
+    #[ts(type = "number")]
+    pub decks: u64,
+    #[ts(type = "number")]
+    pub cards: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct BundleRemovalRequest {
+    pub language_tag: String,
+    #[ts(type = "number")]
+    pub expected_decks: u64,
+    #[ts(type = "number")]
+    pub expected_cards: u64,
+    #[ts(type = "number")]
+    pub now_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct BundleRemovalProgressDto {
+    #[ts(type = "number")]
+    pub removed_decks: u64,
+    #[ts(type = "number")]
+    pub total_decks: u64,
+    #[ts(type = "number")]
+    pub moved_cards: u64,
+    #[ts(type = "number")]
+    pub total_cards: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct BundleRemovalResultDto {
+    pub language_tag: String,
+    #[ts(type = "number")]
+    pub removed_decks: u64,
+    #[ts(type = "number")]
+    pub moved_cards: u64,
+}
+
 impl ApplicationService {
+    /// Lists installed bundles with the remaining decks and active cards that
+    /// a bundle removal would affect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when persisted associations or card counts cannot be
+    /// loaded.
+    pub fn list_installed_bundles(&self) -> Result<Vec<BundleRemovalPreviewDto>, ApplicationError> {
+        Ok(self
+            .open_storage()?
+            .installed_bundles()?
+            .into_iter()
+            .map(|bundle| BundleRemovalPreviewDto {
+                language_tag: bundle.language_tag,
+                decks: bundle.deck_count,
+                cards: bundle.active_card_count,
+            })
+            .collect())
+    }
+
+    /// Removes all remaining decks in one installed bundle atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, stale confirmation counts, missing
+    /// bundle associations, or a failed durable write.
+    pub fn remove_bundle(
+        &self,
+        request: &BundleRemovalRequest,
+        mut on_progress: impl FnMut(BundleRemovalProgressDto),
+    ) -> Result<BundleRemovalResultDto, ApplicationError> {
+        if request.language_tag.trim().is_empty()
+            || request.expected_decks == 0
+            || request.now_ms < 0
+        {
+            return Err(ApplicationError::InvalidDeck(
+                "bundle removal requires a language, at least one deck, and a valid timestamp"
+                    .into(),
+            ));
+        }
+        let mut storage = self.open_storage()?;
+        let removed = storage.remove_bundle(
+            &request.language_tag,
+            request.expected_decks,
+            request.expected_cards,
+            request.now_ms,
+            |removed_decks, moved_cards| {
+                on_progress(BundleRemovalProgressDto {
+                    removed_decks,
+                    total_decks: request.expected_decks,
+                    moved_cards,
+                    total_cards: request.expected_cards,
+                });
+            },
+        )?;
+        Ok(BundleRemovalResultDto {
+            language_tag: removed.language_tag,
+            removed_decks: removed.deck_count,
+            moved_cards: removed.active_card_count,
+        })
+    }
+
     /// Lists the collection's flat decks with their local note counts.
     ///
     /// # Errors
@@ -252,7 +355,10 @@ mod tests {
     use meiki_storage::{CardRepository, SourceNoteRepository, Storage, StoredSourceNote};
     use tempfile::tempdir;
 
-    use super::{CreateDeckRequest, DeckSummaryDto, DeleteDeckRequest, RenameDeckRequest};
+    use super::{
+        BundleRemovalProgressDto, BundleRemovalRequest, CreateDeckRequest, DeckSummaryDto,
+        DeleteDeckRequest, RenameDeckRequest,
+    };
     use crate::{
         ApplicationService, DeckCardActionDto, DeckCardActionRequest, DeckCardRequest,
         DeckCardTrashDto, GradeDto, GradeReviewRequest,
@@ -717,5 +823,88 @@ mod tests {
         assert_eq!(unsorted.total_cards, 1);
         assert_eq!(unsorted.due_cards, 0);
         assert_eq!(unsorted.new_cards, 0);
+    }
+
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    fn release_budget_bundle_removal_9700_cards_ignores_unrelated_content() {
+        const NOW_MS: i64 = 1_000_000_000;
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("bundle-removal.db");
+        let mut storage = Storage::open(&collection_path).unwrap();
+        storage.seed_bundle_removal_release_fixture(NOW_MS).unwrap();
+        let unrelated_note = storage
+            .get_source_note("performance-source-0000000")
+            .unwrap();
+        let unrelated_schedule = storage.load_schedule("performance-card-0000000").unwrap();
+        let unrelated_history = storage.review_events("performance-card-0000000").unwrap();
+        drop(storage);
+
+        let service = ApplicationService::new(&collection_path);
+        let preview = service.list_installed_bundles().unwrap().remove(0);
+        assert_eq!((preview.decks, preview.cards), (6, 9_700));
+        let mut progress = Vec::<BundleRemovalProgressDto>::new();
+        let started = std::time::Instant::now();
+        let removed = service
+            .remove_bundle(
+                &BundleRemovalRequest {
+                    language_tag: preview.language_tag,
+                    expected_decks: preview.decks,
+                    expected_cards: preview.cards,
+                    now_ms: NOW_MS + 1,
+                },
+                |update| progress.push(update),
+            )
+            .unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!((removed.removed_decks, removed.moved_cards), (6, 9_700));
+        assert_eq!(progress.len(), 6);
+        assert_eq!(
+            progress.last(),
+            Some(&BundleRemovalProgressDto {
+                removed_decks: 6,
+                total_decks: 6,
+                moved_cards: 9_700,
+                total_cards: 9_700,
+            })
+        );
+        assert!(progress.windows(2).all(|updates| {
+            updates[0].removed_decks <= updates[1].removed_decks
+                && updates[0].moved_cards <= updates[1].moved_cards
+        }));
+        assert!(
+            elapsed <= std::time::Duration::from_secs(60),
+            "9,700-card bundle removal exceeded 60 s: {elapsed:?}"
+        );
+
+        let storage = Storage::open(&collection_path).unwrap();
+        assert!(storage.installed_bundles().unwrap().is_empty());
+        assert_eq!(
+            storage
+                .get_source_note("performance-source-0000000")
+                .unwrap(),
+            unrelated_note
+        );
+        assert_eq!(
+            storage.load_schedule("performance-card-0000000").unwrap(),
+            unrelated_schedule
+        );
+        assert_eq!(
+            storage.review_events("performance-card-0000000").unwrap(),
+            unrelated_history
+        );
+        drop(storage);
+        let unsorted = service
+            .list_deck_summaries(NOW_MS + 1)
+            .unwrap()
+            .into_iter()
+            .find(|deck| deck.id == meiki_storage::DEFAULT_DECK_ID)
+            .unwrap();
+        assert_eq!(unsorted.total_cards, 9_700);
+        eprintln!(
+            "release-budget bundle_removal_9700 elapsed_ms={}",
+            elapsed.as_millis()
+        );
     }
 }

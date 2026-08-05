@@ -2,7 +2,8 @@ use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
     BackupDto, BundleImportProgressDto, BundleImportRequest, BundleImportResultDto,
-    BundlePreviewDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
+    BundlePreviewDto, BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
+    BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
     DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
     DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
     ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
@@ -103,6 +104,20 @@ pub(crate) fn import_bundle(
     on_progress: impl FnMut(BundleImportProgressDto),
 ) -> CommandResult<BundleImportResultDto> {
     map_error(service.import_bundle(request, on_progress))
+}
+
+pub(crate) fn list_installed_bundles(
+    service: &ApplicationService,
+) -> CommandResult<Vec<BundleRemovalPreviewDto>> {
+    map_error(service.list_installed_bundles())
+}
+
+pub(crate) fn remove_bundle(
+    service: &ApplicationService,
+    request: &BundleRemovalRequest,
+    on_progress: impl FnMut(BundleRemovalProgressDto),
+) -> CommandResult<BundleRemovalResultDto> {
+    map_error(service.remove_bundle(request, on_progress))
 }
 
 pub(crate) fn add_archive_deck(

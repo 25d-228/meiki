@@ -11,6 +11,7 @@ export async function installMockApi(page: Page): Promise<void> {
     let deletedDeckCardRestored = false;
     let focusedSessionDeckDeleted = false;
     let bundleImported = false;
+    let bundleRemoved = false;
     const schedulerSettingsByDeck: Record<
       string,
       typeof dtos.schedulerSettings
@@ -234,7 +235,10 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(dtos.decks);
       }
       if (command === "list_deck_summaries") {
-        if (bundleImported) {
+        if (
+          (bundleImported || params.get("bundleRemoval") === "installed") &&
+          !bundleRemoved
+        ) {
           return clone([...dtos.deckSummaries, ...dtos.bundleDeckSummaries]);
         }
         if (params.get("deckDeletion") === "focused-session") {
@@ -467,6 +471,33 @@ export async function installMockApi(page: Page): Promise<void> {
           added_cards: 9_700,
           imported_media_objects: 9_700,
           deduplicated_media_objects: 0,
+        };
+      }
+      if (command === "list_installed_bundles") {
+        if (
+          (bundleImported || params.get("bundleRemoval") === "installed") &&
+          !bundleRemoved
+        ) {
+          return [{ language_tag: "ja-JP", decks: 6, cards: 9_700 }];
+        }
+        return [];
+      }
+      if (command === "remove_bundle") {
+        const cardTotals = [300, 1_100, 2_100, 3_700, 6_700, 9_700];
+        for (const [index, movedCards] of cardTotals.entries()) {
+          window.__MEIKI_TEST_BUNDLE_REMOVAL_PROGRESS__?.({
+            removed_decks: index + 1,
+            total_decks: 6,
+            moved_cards: movedCards,
+            total_cards: 9_700,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        bundleRemoved = true;
+        return {
+          language_tag: "ja-JP",
+          removed_decks: 6,
+          moved_cards: 9_700,
         };
       }
       if (command === "preview_archive") return clone(dtos.archivePreview);
