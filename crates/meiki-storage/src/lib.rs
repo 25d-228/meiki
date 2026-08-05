@@ -170,6 +170,20 @@ pub struct PristineBundleImport {
 pub struct PristineBundleImportPlan {
     pub installed_deck_ids: Vec<String>,
     pub missing_deck_ids: Vec<String>,
+    pub unassociated_deck_ids: Vec<String>,
+}
+
+impl PristineBundleImportPlan {
+    #[must_use]
+    pub fn requires_changes(&self) -> bool {
+        !self.missing_deck_ids.is_empty() || !self.unassociated_deck_ids.is_empty()
+    }
+}
+
+#[derive(Debug)]
+pub enum PristineBundleImportError<E> {
+    Storage(StorageError),
+    BeforeCommit(E),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

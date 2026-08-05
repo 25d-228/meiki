@@ -106,6 +106,24 @@ test("marks installed bundle decks and disables an already installed bundle", as
   ).toBeDisabled();
 });
 
+test("reports installation when existing decks only need bundle associations", async ({
+  page,
+}) => {
+  await page.goto("/?bundle=unassociated");
+  await openDecks(page);
+  await page.getByRole("button", { name: "Import bundle" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Import bundle" });
+  await expect(dialog.getByText("Installed", { exact: true })).toHaveCount(6);
+  await expect(
+    dialog.getByRole("button", { name: "Add bundle" }),
+  ).toBeEnabled();
+  await dialog.getByRole("button", { name: "Add bundle" }).click();
+
+  await expect(page.getByText("Japanese is now installed.")).toBeVisible();
+  await expect(page.getByText(/Added Japanese with 0 decks/)).toHaveCount(0);
+});
+
 test("keeps Unsorted visible when active cards exist but hides rename and delete", async ({
   page,
 }) => {

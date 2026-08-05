@@ -419,7 +419,8 @@ export async function installMockApi(page: Page): Promise<void> {
       if (command === "export_archive") return clone(dtos.archiveExport);
       if (command === "preview_bundle") {
         const installedDecks =
-          params.get("bundle") === "installed"
+          params.get("bundle") === "installed" ||
+          params.get("bundle") === "unassociated"
             ? dtos.bundlePreview.decks.length
             : params.get("bundle") === "partial"
               ? 2
@@ -430,7 +431,9 @@ export async function installMockApi(page: Page): Promise<void> {
             ...deck,
             status: index < installedDecks ? "installed" : "missing",
           })),
-          can_import: installedDecks < dtos.bundlePreview.decks.length,
+          can_import:
+            params.get("bundle") === "unassociated" ||
+            installedDecks < dtos.bundlePreview.decks.length,
         });
       }
       if (command === "import_bundle") {
@@ -449,6 +452,15 @@ export async function installMockApi(page: Page): Promise<void> {
         await report("adding_audio", 0, 9_700);
         await report("adding_audio", 9_700, 9_700);
         bundleImported = true;
+        if (params.get("bundle") === "unassociated") {
+          return {
+            language_tag: "ja-JP",
+            added_decks: 0,
+            added_cards: 0,
+            imported_media_objects: 0,
+            deduplicated_media_objects: 0,
+          };
+        }
         return {
           language_tag: "ja-JP",
           added_decks: 6,

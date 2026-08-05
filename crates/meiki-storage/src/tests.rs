@@ -623,14 +623,17 @@ fn pristine_bundle_import_adds_only_missing_decks_with_associations_and_inherite
         language_tag: bundle.language_tag.clone(),
         decks: vec![bundle.decks[0].clone()],
     };
-    storage.import_pristine_bundle(&first_stage, || {}).unwrap();
+    storage
+        .import_pristine_bundle(&first_stage, || {}, || Ok::<(), ()>(()))
+        .unwrap();
 
     let plan = storage.validate_pristine_bundle_import(&bundle).unwrap();
     assert_eq!(plan.installed_deck_ids, [bundle.decks[0].deck.id.clone()]);
     assert_eq!(plan.missing_deck_ids, [bundle.decks[1].deck.id.clone()]);
+    assert!(plan.unassociated_deck_ids.is_empty());
     let mut imported_cards = 0;
-    let completed = storage
-        .import_pristine_bundle(&bundle, || imported_cards += 1)
+    let (completed, ()) = storage
+        .import_pristine_bundle(&bundle, || imported_cards += 1, || Ok::<(), ()>(()))
         .unwrap();
     assert_eq!(completed, plan);
     assert_eq!(imported_cards, 2);
@@ -660,11 +663,29 @@ fn pristine_bundle_import_adds_only_missing_decks_with_associations_and_inherite
     );
 
     let mut unexpected_callback = false;
-    let no_op = storage
-        .import_pristine_bundle(&bundle, || unexpected_callback = true)
+    let (no_op, ()) = storage
+        .import_pristine_bundle(&bundle, || unexpected_callback = true, || Ok::<(), ()>(()))
         .unwrap();
     assert!(no_op.missing_deck_ids.is_empty());
+    assert!(no_op.unassociated_deck_ids.is_empty());
     assert!(!unexpected_callback);
+}
+
+#[test]
+fn pristine_bundle_validation_rejects_an_existing_deck_associated_with_another_stage() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let mut reordered = bundle.clone();
+    reordered.decks.swap(0, 1);
+
+    assert!(matches!(
+        storage.validate_pristine_bundle_import(&reordered),
+        Err(StorageError::InvalidAggregate(message))
+            if message.contains("associated with another bundle or stage")
+    ));
 }
 
 #[test]

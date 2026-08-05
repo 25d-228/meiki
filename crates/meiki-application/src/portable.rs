@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
@@ -12,8 +13,8 @@ use meiki_portable::{
 };
 use meiki_storage::{
     CardRepository, DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckRepository,
-    PristineBundleImport, PristineBundleImportPlan, PristineDeckCard, PristineDeckImport,
-    PristineDeckImportStatus, PristineDeckNote, PristineDeckRepository,
+    PristineBundleImport, PristineBundleImportError, PristineBundleImportPlan, PristineDeckCard,
+    PristineDeckImport, PristineDeckImportStatus, PristineDeckNote, PristineDeckRepository,
     SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository, Storage,
     StorageError, StoredSourceNote,
 };
@@ -250,9 +251,8 @@ impl ApplicationService {
 
     /// Adds every missing deck from one pristine language bundle.
     ///
-    /// Full media checks run once before durable completion. Missing decks are
-    /// committed in one database transaction and newly written media is rolled
-    /// back if validation fails.
+    /// Full media checks run once before durable completion. Missing decks and
+    /// associations are committed only after required media is safely present.
     ///
     /// # Errors
     ///
@@ -261,7 +261,7 @@ impl ApplicationService {
     pub fn import_bundle(
         &self,
         request: &BundleImportRequest,
-        mut on_progress: impl FnMut(BundleImportProgressDto),
+        on_progress: impl FnMut(BundleImportProgressDto),
     ) -> Result<BundleImportResultDto, ApplicationError> {
         if request.now_ms < 0 {
             return Err(ApplicationError::InvalidPortable(
@@ -274,14 +274,15 @@ impl ApplicationService {
         let fast_plan = self
             .open_storage()?
             .validate_pristine_bundle_import(&fast_import)?;
-        if fast_plan.missing_deck_ids.is_empty() {
+        if !fast_plan.requires_changes() {
             return Ok(bundle_import_result(&fast_import.language_tag));
         }
         let missing_decks = count(
             fast_plan.missing_deck_ids.len(),
             "missing bundle deck count",
         )?;
-        on_progress(BundleImportProgressDto {
+        let progress = RefCell::new(on_progress);
+        (progress.borrow_mut())(BundleImportProgressDto {
             stage: BundleImportStageDto::PreparingDecks,
             current: 0,
             total: missing_decks,
@@ -291,74 +292,78 @@ impl ApplicationService {
         let bundle = build_pristine_bundle_import(&archive.collection, request.now_ms)?;
         let mut storage = self.open_storage()?;
         let plan = storage.validate_pristine_bundle_import(&bundle)?;
-        if plan.missing_deck_ids.is_empty() {
+        if !plan.requires_changes() {
             return Ok(bundle_import_result(&bundle.language_tag));
         }
         let missing_content = missing_bundle_content(&archive.collection, &bundle, &plan)?;
         let added_decks = count(plan.missing_deck_ids.len(), "added bundle deck count")?;
-        on_progress(BundleImportProgressDto {
+        (progress.borrow_mut())(BundleImportProgressDto {
             stage: BundleImportStageDto::PreparingDecks,
             current: added_decks,
             total: added_decks,
         });
 
-        let backup_path = self.create_recovery_backup(&storage, "pre-add-bundle")?;
+        self.create_recovery_backup(&storage, "pre-add-bundle")?;
         let mut imported_cards = 0_u64;
-        on_progress(BundleImportProgressDto {
+        (progress.borrow_mut())(BundleImportProgressDto {
             stage: BundleImportStageDto::AddingCards,
             current: 0,
             total: missing_content.cards,
         });
-        let imported_plan = storage.import_pristine_bundle(&bundle, || {
-            imported_cards += 1;
-            on_progress(BundleImportProgressDto {
-                stage: BundleImportStageDto::AddingCards,
-                current: imported_cards,
-                total: missing_content.cards,
-            });
-        })?;
-
         let audio_total = count(missing_content.audio_hashes.len(), "bundle audio count")?;
         let mut imported_audio = 0_u64;
-        on_progress(BundleImportProgressDto {
-            stage: BundleImportStageDto::AddingAudio,
-            current: 0,
-            total: audio_total,
-        });
         let media_store = self.media_store();
-        let media_import = import_archive_media_subset(
-            &archive,
-            &media_store,
-            &missing_content.media_hashes,
-            |content_hash| {
-                if missing_content.audio_hashes.contains(content_hash) {
-                    imported_audio += 1;
-                    on_progress(BundleImportProgressDto {
-                        stage: BundleImportStageDto::AddingAudio,
-                        current: imported_audio,
-                        total: audio_total,
-                    });
-                }
+        let mut staged_media_hashes = Vec::new();
+        let imported = storage.import_pristine_bundle(
+            &bundle,
+            || {
+                imported_cards += 1;
+                (progress.borrow_mut())(BundleImportProgressDto {
+                    stage: BundleImportStageDto::AddingCards,
+                    current: imported_cards,
+                    total: missing_content.cards,
+                });
+            },
+            || {
+                (progress.borrow_mut())(BundleImportProgressDto {
+                    stage: BundleImportStageDto::AddingAudio,
+                    current: 0,
+                    total: audio_total,
+                });
+                let media_import = import_archive_media_subset(
+                    &archive,
+                    &media_store,
+                    &missing_content.media_hashes,
+                    |content_hash| {
+                        if missing_content.audio_hashes.contains(content_hash) {
+                            imported_audio += 1;
+                            (progress.borrow_mut())(BundleImportProgressDto {
+                                stage: BundleImportStageDto::AddingAudio,
+                                current: imported_audio,
+                                total: audio_total,
+                            });
+                        }
+                        Ok(())
+                    },
+                )?;
+                // A commit failure happens after media validation, so retain
+                // exactly the new hashes that must be removed in that case.
+                staged_media_hashes.clone_from(&media_import.new_hashes);
+                Ok(media_import)
             },
         );
-        let media_import = match media_import {
+        let (imported_plan, media_import) = match imported {
             Ok(imported) => imported,
-            Err(error) => {
-                drop(storage);
-                drop(Storage::replace_from_backup(
-                    &backup_path,
-                    &self.collection_path,
-                )?);
-                return Err(error);
+            Err(PristineBundleImportError::BeforeCommit(error)) => return Err(error),
+            Err(PristineBundleImportError::Storage(error)) => {
+                rollback_archive_media(&media_store, &staged_media_hashes)?;
+                return Err(error.into());
             }
         };
 
         Ok(BundleImportResultDto {
             language_tag: bundle.language_tag,
-            added_decks: count(
-                imported_plan.missing_deck_ids.len(),
-                "imported bundle deck count",
-            )?,
+            added_decks: count(imported_plan.missing_deck_ids.len(), "imported deck count")?,
             added_cards: missing_content.cards,
             imported_media_objects: media_import.imported,
             deduplicated_media_objects: media_import.deduplicated,
@@ -951,7 +956,7 @@ fn preview_bundle_archive(
         decks,
         total_cards: archive.manifest.counts.cards,
         audio_objects: count(audio_objects.len(), "bundle audio count")?,
-        can_import: !plan.missing_deck_ids.is_empty(),
+        can_import: plan.requires_changes(),
     })
 }
 
@@ -1157,14 +1162,14 @@ fn import_archive_media(
         .iter()
         .map(|media| media.content_hash.clone())
         .collect::<HashSet<_>>();
-    import_archive_media_subset(archive, store, &hashes, |_| {})
+    import_archive_media_subset(archive, store, &hashes, |_| Ok(()))
 }
 
 fn import_archive_media_subset(
     archive: &ValidatedArchive,
     store: &meiki_media::MediaStore,
     included_hashes: &HashSet<String>,
-    mut on_media_imported: impl FnMut(&str),
+    mut on_media_imported: impl FnMut(&str) -> Result<(), ApplicationError>,
 ) -> Result<ArchiveMediaImport, ApplicationError> {
     let mut import = ArchiveMediaImport::default();
     for media in archive
@@ -1189,7 +1194,10 @@ fn import_archive_media_subset(
             rollback_archive_media(store, &import.new_hashes)?;
             return Err(error);
         }
-        on_media_imported(&media.content_hash);
+        if let Err(error) = on_media_imported(&media.content_hash) {
+            rollback_archive_media(store, &import.new_hashes)?;
+            return Err(error);
+        }
     }
     Ok(import)
 }
@@ -1267,7 +1275,7 @@ mod tests {
     use meiki_portable::{ArchiveMediaSource, PortableCollection, read_archive, write_archive};
     use meiki_storage::{
         CardRepository, DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckRepository,
-        SAMPLE_CARD_ID, SAMPLE_SOURCE_ID, SchedulerParameterSetRepository,
+        PristineDeckRepository, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID, SchedulerParameterSetRepository,
         SchedulerProfileRepository, SourceNoteRepository, Storage,
     };
     use tempfile::tempdir;
@@ -1275,7 +1283,8 @@ mod tests {
     use super::{
         ArchiveAddDeckRequest, ArchiveExportRequest, ArchiveImportRequest,
         BundleDeckInstallStatusDto, BundleImportProgressDto, BundleImportRequest,
-        BundleImportStageDto, build_collection, imported_media_metadata_matches,
+        BundleImportStageDto, build_collection, build_pristine_bundle_import,
+        imported_media_metadata_matches,
     };
     use crate::{
         ApplicationService, BudgetSourceDto, CheckAnswerRequest, GradeDto, GradeReviewRequest,
@@ -1738,7 +1747,124 @@ mod tests {
     }
 
     #[test]
-    fn bundle_import_restores_the_collection_and_media_after_technical_metadata_failure() {
+    #[allow(clippy::too_many_lines)]
+    fn bundle_import_associates_existing_stages_without_changing_their_learning_state() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let archive_path = write_bundle_fixture(directory.path(), "bundle-existing", 6, |_| {});
+        let archive = read_archive(&archive_path).unwrap();
+        let bundle = build_pristine_bundle_import(&archive.collection, 400_000).unwrap();
+        let mut storage = Storage::open(&collection_path).unwrap();
+        for stage in &bundle.decks {
+            assert_eq!(
+                storage.import_pristine_deck(stage).unwrap(),
+                meiki_storage::PristineDeckImportStatus::Ready
+            );
+        }
+        let first_deck_id = bundle_deck_id(0);
+        let mut personalized_deck = storage.get_deck(&first_deck_id).unwrap();
+        personalized_deck.name = "My Japanese foundation".into();
+        personalized_deck.settings = StudySettingsOverride {
+            new_cards_per_day: Some(7),
+            ..StudySettingsOverride::default()
+        };
+        personalized_deck.updated_at_ms = 410_000;
+        storage.update_deck(&personalized_deck).unwrap();
+        drop(storage);
+
+        service
+            .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
+                deck_id: first_deck_id.clone(),
+                scheduling_mode: SchedulingModeDto::Expert,
+                collection_daily_time_budget_minutes: 25,
+                deck_daily_time_budget_minutes: Some(12),
+                target_retention_basis_points: 9_200,
+                new_cards_per_day: 7,
+                maximum_interval_days: 20_000,
+                day_boundary_minutes: 240,
+                now_ms: 420_000,
+                day_start_ms: 0,
+            })
+            .unwrap();
+        let card = service.get_study_card(&bundle_card_id(0)).unwrap();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "review-before-association".into(),
+                    card_id: card.card_id,
+                    card_content_version: card.card_content_version,
+                    schedule_version: card.schedule_version,
+                    raw_response: "晴れです".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 700,
+                },
+                430_000,
+            )
+            .unwrap();
+        let before = {
+            let storage = Storage::open(&collection_path).unwrap();
+            (
+                storage.get_deck(&first_deck_id).unwrap(),
+                storage.load_study_card(&bundle_card_id(0)).unwrap(),
+                storage.review_events(&bundle_card_id(0)).unwrap(),
+                storage.get_scheduler_profile(&first_deck_id).unwrap(),
+                storage.collection_scheduling_settings().unwrap(),
+            )
+        };
+
+        let preview = service
+            .preview_bundle(&archive_path.to_string_lossy())
+            .unwrap();
+        assert!(preview.can_import);
+        assert!(
+            preview
+                .decks
+                .iter()
+                .all(|deck| deck.status == BundleDeckInstallStatusDto::Installed)
+        );
+        let result = service
+            .import_bundle(
+                &BundleImportRequest {
+                    path: archive_path.to_string_lossy().into_owned(),
+                    now_ms: 500_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!((result.added_decks, result.added_cards), (0, 0));
+        assert_eq!(
+            (
+                result.imported_media_objects,
+                result.deduplicated_media_objects
+            ),
+            (0, 0)
+        );
+
+        let storage = Storage::open(&collection_path).unwrap();
+        let after = (
+            storage.get_deck(&first_deck_id).unwrap(),
+            storage.load_study_card(&bundle_card_id(0)).unwrap(),
+            storage.review_events(&bundle_card_id(0)).unwrap(),
+            storage.get_scheduler_profile(&first_deck_id).unwrap(),
+            storage.collection_scheduling_settings().unwrap(),
+        );
+        assert_eq!(after, before);
+        let installed = storage.validate_pristine_bundle_import(&bundle).unwrap();
+        assert_eq!(installed.installed_deck_ids.len(), 6);
+        assert!(installed.missing_deck_ids.is_empty());
+        assert!(installed.unassociated_deck_ids.is_empty());
+        drop(storage);
+        assert!(
+            !service
+                .preview_bundle(&archive_path.to_string_lossy())
+                .unwrap()
+                .can_import
+        );
+    }
+
+    #[test]
+    fn bundle_import_failure_after_processing_media_leaves_no_content_or_media() {
         let directory = tempdir().unwrap();
         let collection_path = directory.path().join("collection.db");
         let service = ApplicationService::new(&collection_path);
@@ -1773,6 +1899,7 @@ mod tests {
         let storage = Storage::open(&collection_path).unwrap();
         assert_eq!(storage.list_decks().unwrap().len(), 1);
         assert!(storage.get_deck(&bundle_deck_id(0)).is_err());
+        assert!(storage.load_study_card(&bundle_card_id(0)).is_err());
         drop(storage);
         assert!(
             service
@@ -1780,6 +1907,54 @@ mod tests {
                 .resolve("sha256:4f8734c5e13ac599e168cf247a51c1dd0758537ce00bf16d7fed1a3d14d07041")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn bundle_transaction_fault_after_one_media_object_rolls_back_database_and_media() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let archive_path = write_bundle_fixture(directory.path(), "bundle-media-fault", 2, |_| {});
+        let archive = read_archive(&archive_path).unwrap();
+        let bundle = build_pristine_bundle_import(&archive.collection, 400_000).unwrap();
+        let mut storage = Storage::open(&collection_path).unwrap();
+        let plan = storage.validate_pristine_bundle_import(&bundle).unwrap();
+        let missing = super::missing_bundle_content(&archive.collection, &bundle, &plan).unwrap();
+        let media_store = service.media_store();
+        let media_hash = archive.media_objects[0].content_hash.clone();
+        let mut processed_media = 0;
+
+        let result = storage.import_pristine_bundle(
+            &bundle,
+            || {},
+            || {
+                super::import_archive_media_subset(
+                    &archive,
+                    &media_store,
+                    &missing.media_hashes,
+                    |_| {
+                        processed_media += 1;
+                        Err(crate::ApplicationError::InvalidPortable(
+                            "injected fault after media processing".into(),
+                        ))
+                    },
+                )
+            },
+        );
+
+        assert_eq!(processed_media, 1);
+        assert!(matches!(
+            result,
+            Err(meiki_storage::PristineBundleImportError::BeforeCommit(
+                crate::ApplicationError::InvalidPortable(message)
+            )) if message == "injected fault after media processing"
+        ));
+        drop(storage);
+        let reopened = Storage::open(&collection_path).unwrap();
+        assert!(reopened.get_deck(&bundle_deck_id(0)).is_err());
+        assert!(reopened.load_study_card(&bundle_card_id(0)).is_err());
+        drop(reopened);
+        assert!(media_store.resolve(&media_hash).is_err());
     }
 
     #[test]

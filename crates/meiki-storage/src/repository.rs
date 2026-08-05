@@ -11,11 +11,11 @@ use rusqlite::{
 
 use crate::{
     DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, PristineBundleImport,
-    PristineBundleImportPlan, PristineDeckImport, PristineDeckImportStatus, SchedulingWorkload,
-    Storage, StorageError, StoredDeckCard, StoredDeckCardPage, StoredDeckCardSearch,
-    StoredLibraryCard, StoredLibraryNote, StoredSourceNote, StoredStudyCard,
-    direction_from_database, direction_to_database, entity_not_found,
-    matching_policy_from_database, matching_policy_to_database,
+    PristineBundleImportError, PristineBundleImportPlan, PristineDeckImport,
+    PristineDeckImportStatus, SchedulingWorkload, Storage, StorageError, StoredDeckCard,
+    StoredDeckCardPage, StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote,
+    StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
+    entity_not_found, matching_policy_from_database, matching_policy_to_database,
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
@@ -1080,23 +1080,36 @@ impl Storage {
 
     /// Adds every missing pristine bundle deck in one transaction.
     ///
-    /// The callback runs after each missing card has been staged in the open
-    /// transaction and is intended only for bundle-specific progress.
+    /// The card callback runs after each missing card is staged. The final
+    /// callback runs after all database writes are staged but before commit.
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError`] when validation or any staged write fails. No
-    /// bundle deck is committed in that case.
-    pub fn import_pristine_bundle(
+    /// Returns [`PristineBundleImportError::Storage`] when validation or a
+    /// database write fails, or [`PristineBundleImportError::BeforeCommit`]
+    /// when the final callback fails. No bundle change is committed in either
+    /// case.
+    pub fn import_pristine_bundle<T, E>(
         &mut self,
         import: &PristineBundleImport,
         mut on_card_imported: impl FnMut(),
-    ) -> Result<PristineBundleImportPlan, StorageError> {
-        let transaction = self.connection.transaction()?;
-        let plan = validate_pristine_bundle_import(&transaction, import)?;
-        persist_pristine_bundle_import(&transaction, import, &plan, &mut on_card_imported)?;
-        transaction.commit()?;
-        Ok(plan)
+        before_commit: impl FnOnce() -> Result<T, E>,
+    ) -> Result<(PristineBundleImportPlan, T), PristineBundleImportError<E>> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(StorageError::from)
+            .map_err(PristineBundleImportError::Storage)?;
+        let plan = validate_pristine_bundle_import(&transaction, import)
+            .map_err(PristineBundleImportError::Storage)?;
+        persist_pristine_bundle_import(&transaction, import, &plan, &mut on_card_imported)
+            .map_err(PristineBundleImportError::Storage)?;
+        let prepared = before_commit().map_err(PristineBundleImportError::BeforeCommit)?;
+        transaction
+            .commit()
+            .map_err(StorageError::from)
+            .map_err(PristineBundleImportError::Storage)?;
+        Ok((plan, prepared))
     }
 
     /// Exercises rollback after all pristine-deck writes but before commit.
@@ -1180,8 +1193,11 @@ fn validate_pristine_bundle_import(
     let mut identities = PristineImportIdentities::default();
     let mut installed_deck_ids = Vec::new();
     let mut missing_deck_ids = Vec::new();
+    let mut unassociated_deck_ids = Vec::new();
     for (ordinal, imported_deck) in import.decks.iter().enumerate() {
         let deck = &imported_deck.deck;
+        let ordinal = u64::try_from(ordinal)
+            .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?;
         if !deck_ids.insert(deck.id.as_str()) {
             return Err(StorageError::InvalidAggregate(format!(
                 "bundle deck identity {} is duplicated",
@@ -1194,27 +1210,44 @@ fn validate_pristine_bundle_import(
                 deck.id, import.language_tag
             )));
         }
-        if entity_id_exists(connection, "SELECT 1 FROM decks WHERE id = ?1", &deck.id)? {
-            installed_deck_ids.push(deck.id.clone());
-            continue;
+        let deck_association = connection
+            .query_row(
+                "SELECT language_tag, ordinal FROM bundle_decks WHERE deck_id = ?1",
+                [&deck.id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+            )
+            .optional()?;
+        if deck_association
+            .as_ref()
+            .is_some_and(|(associated_language, associated_ordinal)| {
+                associated_language != &import.language_tag || *associated_ordinal != ordinal
+            })
+        {
+            return Err(StorageError::InvalidAggregate(format!(
+                "bundle deck {} is already associated with another bundle or stage",
+                deck.id
+            )));
         }
-        let associated_deck = connection
+        let associated_stage_deck = connection
             .query_row(
                 "SELECT deck_id
                  FROM bundle_decks
                  WHERE language_tag = ?1 AND ordinal = ?2",
-                params![
-                    import.language_tag,
-                    u64::try_from(ordinal)
-                        .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?
-                ],
+                params![import.language_tag, ordinal],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
-        if associated_deck.is_some_and(|associated| associated != deck.id) {
+        if associated_stage_deck.is_some_and(|associated| associated != deck.id) {
             return Err(StorageError::InvalidAggregate(format!(
                 "bundle stage {ordinal} is already associated with another deck"
             )));
+        }
+        if entity_id_exists(connection, "SELECT 1 FROM decks WHERE id = ?1", &deck.id)? {
+            installed_deck_ids.push(deck.id.clone());
+            if deck_association.is_none() {
+                unassociated_deck_ids.push(deck.id.clone());
+            }
+            continue;
         }
         for imported_note in &imported_deck.notes {
             validate_pristine_note(imported_note, &deck.id, &mut identities)?;
@@ -1226,6 +1259,7 @@ fn validate_pristine_bundle_import(
     Ok(PristineBundleImportPlan {
         installed_deck_ids,
         missing_deck_ids,
+        unassociated_deck_ids,
     })
 }
 
@@ -1477,7 +1511,7 @@ fn persist_pristine_bundle_import(
     plan: &PristineBundleImportPlan,
     on_card_imported: &mut impl FnMut(),
 ) -> Result<(), StorageError> {
-    if plan.missing_deck_ids.is_empty() {
+    if !plan.requires_changes() {
         return Ok(());
     }
     let installed_at_ms = import
@@ -1496,21 +1530,28 @@ fn persist_pristine_bundle_import(
         .iter()
         .map(String::as_str)
         .collect::<HashSet<_>>();
+    let unassociated = plan
+        .unassociated_deck_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
     for (ordinal, imported_deck) in import.decks.iter().enumerate() {
-        if !missing.contains(imported_deck.deck.id.as_str()) {
-            continue;
+        let deck_id = imported_deck.deck.id.as_str();
+        if missing.contains(deck_id) {
+            persist_pristine_deck_import(transaction, imported_deck, on_card_imported)?;
         }
-        persist_pristine_deck_import(transaction, imported_deck, on_card_imported)?;
-        transaction.execute(
-            "INSERT INTO bundle_decks(language_tag, deck_id, ordinal)
-             VALUES (?1, ?2, ?3)",
-            params![
-                import.language_tag,
-                imported_deck.deck.id,
-                u64::try_from(ordinal)
-                    .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?
-            ],
-        )?;
+        if missing.contains(deck_id) || unassociated.contains(deck_id) {
+            transaction.execute(
+                "INSERT INTO bundle_decks(language_tag, deck_id, ordinal)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    import.language_tag,
+                    imported_deck.deck.id,
+                    u64::try_from(ordinal)
+                        .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?
+                ],
+            )?;
+        }
     }
     Ok(())
 }

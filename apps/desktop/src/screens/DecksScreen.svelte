@@ -120,7 +120,10 @@
       );
       await loadDecks();
       bundleDialogOpen = false;
-      notice = `Added ${languageName(result.language_tag)} with ${result.added_decks.toLocaleString()} ${result.added_decks === 1 ? "deck" : "decks"} and ${result.added_cards.toLocaleString()} ${result.added_cards === 1 ? "card" : "cards"}.`;
+      notice =
+        result.added_decks === 0
+          ? `${languageName(result.language_tag)} is now installed.`
+          : `Added ${languageName(result.language_tag)} with ${result.added_decks.toLocaleString()} ${result.added_decks === 1 ? "deck" : "decks"} and ${result.added_cards.toLocaleString()} ${result.added_cards === 1 ? "card" : "cards"}.`;
     } catch (cause) {
       bundleError = message(cause);
     } finally {
