@@ -6,11 +6,14 @@ use std::{
 };
 
 use crate::{ApplicationError, ApplicationService};
-use meiki_domain::{CardLifecycle, MediaKind, MediaReference, StudySettingsOverride};
+use meiki_domain::{
+    CardLifecycle, MediaKind, MediaReference, ScheduleState, SchedulingMode, StudySettingsOverride,
+};
 use meiki_portable::{
     ArchiveMediaSource, ArchivePreview, ArchiveScope, PortableCard, PortableCollection,
     PortableNote, ValidatedArchive, read_archive, read_archive_preview, write_archive,
 };
+use meiki_scheduler::{BASELINE_TARGET_RETENTION_BASIS_POINTS, CONTROLLER_VERSION};
 use meiki_storage::{
     CardRepository, DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckRepository,
     PristineBundleImport, PristineBundleImportError, PristineBundleImportPlan, PristineDeckCard,
@@ -23,6 +26,8 @@ use ts_rs::TS;
 
 const BACKUP_RETENTION: usize = 5;
 const REPLACE_CONFIRMATION: &str = "REPLACE";
+const BUNDLE_DEFAULT_NEW_CARDS_PER_DAY: u32 = 20;
+const BUNDLE_DEFAULT_DAY_BOUNDARY_MINUTES: u16 = 240;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct ArchiveExportRequest {
@@ -162,6 +167,13 @@ pub struct BundleImportResultDto {
     pub imported_media_objects: u64,
     #[ts(type = "number")]
     pub deduplicated_media_objects: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct BundleExportRequest {
+    pub language_tag: String,
+    #[ts(type = "number")]
+    pub now_ms: i64,
 }
 
 struct MissingBundleContent {
@@ -367,6 +379,43 @@ impl ApplicationService {
             added_cards: missing_content.cards,
             imported_media_objects: media_import.imported,
             deduplicated_media_objects: media_import.deduplicated,
+        })
+    }
+
+    /// Exports the remaining decks in one installed language bundle without
+    /// personal study state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, a bundle without remaining decks,
+    /// inconsistent stored content, missing or corrupt media, or failed
+    /// archive persistence.
+    pub fn export_bundle(
+        &self,
+        request: &BundleExportRequest,
+    ) -> Result<PortableExportResultDto, ApplicationError> {
+        if request.language_tag.trim().is_empty() || request.now_ms < 0 {
+            return Err(ApplicationError::InvalidPortable(
+                "bundle export requires a language and a valid timestamp".into(),
+            ));
+        }
+        let storage = self.open_storage()?;
+        let collection = build_bundle_collection(&storage, &request.language_tag)?;
+        let media = media_sources(&collection, &self.media_store())?;
+        let directory = self.export_directory()?;
+        let path = directory.join(format!(
+            "meiki-bundle-{}-{}.meiki",
+            request.now_ms,
+            self.next_id("portable-bundle")
+        ));
+        let manifest = write_archive(&path, &collection, &media, request.now_ms)?;
+        Ok(PortableExportResultDto {
+            path: path.to_string_lossy().into_owned(),
+            decks: manifest.counts.decks,
+            notes: manifest.counts.notes,
+            cards: manifest.counts.cards,
+            review_events: manifest.counts.review_events,
+            media_objects: manifest.counts.media_objects,
         })
     }
 
@@ -729,6 +778,111 @@ fn build_collection(storage: &Storage) -> Result<PortableCollection, Application
         decks,
         notes: portable_notes,
         scheduler_parameter_sets,
+        scheduler_profiles,
+    })
+}
+
+fn build_bundle_collection(
+    storage: &Storage,
+    language_tag: &str,
+) -> Result<PortableCollection, ApplicationError> {
+    let deck_ids = storage.bundle_deck_ids(language_tag)?;
+    if deck_ids.is_empty() {
+        return Err(ApplicationError::InvalidPortable(format!(
+            "No installed decks remain for {language_tag}."
+        )));
+    }
+    let deck_id_set = deck_ids.iter().map(String::as_str).collect::<HashSet<_>>();
+    let mut decks = deck_ids
+        .iter()
+        .map(|deck_id| storage.get_deck(deck_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    for deck in &mut decks {
+        deck.settings = StudySettingsOverride::default();
+    }
+
+    let mut notes = storage
+        .library_notes()?
+        .into_iter()
+        .filter(|note| {
+            note.deleted_at_ms.is_none()
+                && deck_id_set.contains(note.note.source_item.deck_id.as_str())
+        })
+        .map(|stored| {
+            let mut cards = stored
+                .cards
+                .into_iter()
+                .map(|stored_card| {
+                    let mut card = stored_card.card;
+                    card.suspended = false;
+                    let schedule = ScheduleState {
+                        card_id: card.id.clone(),
+                        version: 0,
+                        lifecycle: CardLifecycle::Unseen,
+                        due_at_ms: 0,
+                        ideal_due_at_ms: 0,
+                        interval_milliseconds: 0,
+                        interval_seconds: 0,
+                        repetitions: 0,
+                        stability_milliseconds: 0,
+                        difficulty_millipoints: 0,
+                        last_reviewed_at_ms: None,
+                        last_review_event_id: None,
+                    };
+                    PortableCard {
+                        card,
+                        baseline: schedule.clone(),
+                        schedule,
+                        review_events: Vec::new(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            cards.sort_by(|left, right| left.card.id.cmp(&right.card.id));
+            let mut clozes = stored.note.clozes;
+            clozes.sort_by(|left, right| left.id.cmp(&right.id));
+            PortableNote {
+                source_item: stored.note.source_item,
+                clozes,
+                cards,
+                deleted_at_ms: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    notes.sort_by(|left, right| left.source_item.id.cmp(&right.source_item.id));
+
+    let scheduler_parameter_set =
+        storage.get_scheduler_parameter_set(DEFAULT_SCHEDULER_PARAMETER_SET_ID)?;
+    let scheduler_profiles = deck_ids
+        .iter()
+        .map(|deck_id| {
+            let mut profile = storage.get_scheduler_profile(deck_id)?;
+            profile
+                .engine_version
+                .clone_from(&scheduler_parameter_set.engine_version);
+            profile.active_parameter_set_id = DEFAULT_SCHEDULER_PARAMETER_SET_ID.into();
+            profile.scheduling_mode = SchedulingMode::Automatic;
+            profile.deck_daily_time_budget_minutes = None;
+            profile.controller_version = CONTROLLER_VERSION.into();
+            profile.controller_target_retention_basis_points =
+                BASELINE_TARGET_RETENTION_BASIS_POINTS;
+            profile.controller_new_cards_per_day = BUNDLE_DEFAULT_NEW_CARDS_PER_DAY;
+            profile.controller_last_evaluated_day_start_ms = None;
+            profile.controller_review_count = 0;
+            profile.controller_unseen_count = 0;
+            profile.controller_forecast_review_seconds_per_day = 0;
+            profile.controller_backlog_exceeds_budget = false;
+            profile.controller_explanation.clear();
+            profile.day_boundary_minutes = BUNDLE_DEFAULT_DAY_BOUNDARY_MINUTES;
+            profile.updated_at_ms = 0;
+            Ok(profile)
+        })
+        .collect::<Result<Vec<_>, StorageError>>()?;
+
+    Ok(PortableCollection {
+        collection_scheduling_settings: meiki_domain::CollectionSchedulingSettings::default(),
+        decks,
+        notes,
+        scheduler_parameter_sets: vec![scheduler_parameter_set],
         scheduler_profiles,
     })
 }
@@ -1282,8 +1436,8 @@ mod tests {
 
     use super::{
         ArchiveAddDeckRequest, ArchiveExportRequest, ArchiveImportRequest,
-        BundleDeckInstallStatusDto, BundleImportProgressDto, BundleImportRequest,
-        BundleImportStageDto, build_collection, build_pristine_bundle_import,
+        BundleDeckInstallStatusDto, BundleExportRequest, BundleImportProgressDto,
+        BundleImportRequest, BundleImportStageDto, build_collection, build_pristine_bundle_import,
         imported_media_metadata_matches,
     };
     use crate::{
@@ -1416,6 +1570,10 @@ mod tests {
 
     fn bundle_card_id(stage: usize) -> String {
         format!("{FIXTURE_CARD_ID}-{stage:02}")
+    }
+
+    fn bundle_source_id(stage: usize) -> String {
+        format!("{FIXTURE_SOURCE_ID}-{stage:02}")
     }
 
     #[test]
@@ -1955,6 +2113,380 @@ mod tests {
         assert!(reopened.load_study_card(&bundle_card_id(0)).is_err());
         drop(reopened);
         assert!(media_store.resolve(&media_hash).is_err());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn bundle_export_contains_only_pristine_active_content_and_imports_additively() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        service.seed_test_collection(100_000).unwrap();
+        let bundle_path = write_bundle_fixture(directory.path(), "bundle-export", 5, |_| {});
+        service
+            .import_bundle(
+                &BundleImportRequest {
+                    path: bundle_path.to_string_lossy().into_owned(),
+                    now_ms: 400_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+
+        let reviewed = service.get_study_card(&bundle_card_id(0)).unwrap();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "bundle-export-review".into(),
+                    card_id: reviewed.card_id,
+                    card_content_version: reviewed.card_content_version,
+                    schedule_version: reviewed.schedule_version,
+                    raw_response: "晴れです".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 800,
+                },
+                410_000,
+            )
+            .unwrap();
+
+        let mut storage = Storage::open(&collection_path).unwrap();
+        storage
+            .move_library_notes(&[SAMPLE_SOURCE_ID.into()], &bundle_deck_id(0), 420_000)
+            .unwrap();
+        storage
+            .set_library_notes_suspended(&[SAMPLE_SOURCE_ID.into()], true, 421_000)
+            .unwrap();
+        storage
+            .move_library_notes(&[bundle_source_id(2)], DEFAULT_DECK_ID, 430_000)
+            .unwrap();
+        storage
+            .set_library_notes_deleted(&[bundle_source_id(3)], Some(440_000), 440_000)
+            .unwrap();
+        storage
+            .delete_deck_and_rehome_notes(&bundle_deck_id(4), None, 450_000)
+            .unwrap();
+        drop(storage);
+
+        service
+            .update_scheduler_settings(&UpdateSchedulerSettingsRequest {
+                deck_id: bundle_deck_id(0),
+                scheduling_mode: SchedulingModeDto::Expert,
+                collection_daily_time_budget_minutes: 777,
+                deck_daily_time_budget_minutes: Some(321),
+                target_retention_basis_points: 9_500,
+                new_cards_per_day: 999,
+                maximum_interval_days: 12_345,
+                day_boundary_minutes: 600,
+                now_ms: 460_000,
+                day_start_ms: 0,
+            })
+            .unwrap();
+        let stable_stage = Storage::open(&collection_path)
+            .unwrap()
+            .get_source_note(&bundle_source_id(0))
+            .unwrap();
+        let stable_cloze_ids = stable_stage
+            .clozes
+            .iter()
+            .map(|cloze| cloze.id.clone())
+            .collect::<Vec<_>>();
+        let stable_media_reference_ids = stable_stage
+            .source_item
+            .media
+            .iter()
+            .chain(
+                stable_stage
+                    .clozes
+                    .iter()
+                    .flat_map(|cloze| cloze.media.iter()),
+            )
+            .map(|media| media.id.clone())
+            .collect::<Vec<_>>();
+
+        let exported = service
+            .export_bundle(&BundleExportRequest {
+                language_tag: "ja-JP".into(),
+                now_ms: 500_000,
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                exported.decks,
+                exported.notes,
+                exported.cards,
+                exported.review_events,
+                exported.media_objects,
+            ),
+            (4, 3, 3, 0, 1)
+        );
+
+        let archive = read_archive(Path::new(&exported.path)).unwrap();
+        assert_eq!(
+            archive
+                .collection
+                .decks
+                .iter()
+                .map(|deck| deck.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                bundle_deck_id(0),
+                bundle_deck_id(1),
+                bundle_deck_id(2),
+                bundle_deck_id(3),
+            ]
+        );
+        assert!(
+            archive
+                .collection
+                .decks
+                .iter()
+                .all(|deck| deck.settings == StudySettingsOverride::default())
+        );
+        assert_eq!(
+            archive.collection.collection_scheduling_settings,
+            meiki_domain::CollectionSchedulingSettings::default()
+        );
+        assert_eq!(archive.collection.scheduler_parameter_sets.len(), 1);
+        assert_eq!(
+            archive.collection.scheduler_parameter_sets[0].id,
+            DEFAULT_SCHEDULER_PARAMETER_SET_ID
+        );
+        assert!(archive.collection.scheduler_profiles.iter().all(|profile| {
+            profile.scheduling_mode == SchedulingMode::Automatic
+                && profile.active_parameter_set_id == DEFAULT_SCHEDULER_PARAMETER_SET_ID
+                && profile.deck_daily_time_budget_minutes.is_none()
+                && profile.controller_last_evaluated_day_start_ms.is_none()
+                && profile.controller_review_count == 0
+                && profile.controller_unseen_count == 0
+                && profile.controller_forecast_review_seconds_per_day == 0
+                && !profile.controller_backlog_exceeds_budget
+                && profile.controller_explanation.is_empty()
+        }));
+
+        let exported_source_ids = archive
+            .collection
+            .notes
+            .iter()
+            .map(|note| note.source_item.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            exported_source_ids,
+            [
+                bundle_source_id(0),
+                bundle_source_id(1),
+                SAMPLE_SOURCE_ID.into(),
+            ]
+        );
+        assert!(!exported_source_ids.contains(&bundle_source_id(2).as_str()));
+        assert!(!exported_source_ids.contains(&bundle_source_id(3).as_str()));
+        let exported_stage = archive
+            .collection
+            .notes
+            .iter()
+            .find(|note| note.source_item.id == stable_stage.source_item.id)
+            .unwrap();
+        assert_eq!(
+            exported_stage
+                .clozes
+                .iter()
+                .map(|cloze| &cloze.id)
+                .collect::<Vec<_>>(),
+            stable_cloze_ids.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            exported_stage
+                .source_item
+                .media
+                .iter()
+                .chain(
+                    exported_stage
+                        .clozes
+                        .iter()
+                        .flat_map(|cloze| cloze.media.iter()),
+                )
+                .map(|media| &media.id)
+                .collect::<Vec<_>>(),
+            stable_media_reference_ids.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            exported_stage.source_item.annotations,
+            stable_stage.source_item.annotations
+        );
+        assert_eq!(
+            exported_stage
+                .clozes
+                .iter()
+                .flat_map(|cloze| cloze.annotations.iter())
+                .collect::<Vec<_>>(),
+            stable_stage
+                .clozes
+                .iter()
+                .flat_map(|cloze| cloze.annotations.iter())
+                .collect::<Vec<_>>()
+        );
+        for portable in archive
+            .collection
+            .notes
+            .iter()
+            .flat_map(|note| note.cards.iter())
+        {
+            assert!(!portable.card.suspended);
+            assert_eq!(portable.baseline, portable.schedule);
+            assert_eq!(portable.schedule.version, 0);
+            assert_eq!(portable.schedule.lifecycle, CardLifecycle::Unseen);
+            assert_eq!(portable.schedule.due_at_ms, 0);
+            assert_eq!(portable.schedule.ideal_due_at_ms, 0);
+            assert!(portable.review_events.is_empty());
+        }
+
+        let imported_path = directory.path().join("imported.db");
+        let imported_service = ApplicationService::new(&imported_path);
+        let imported = imported_service
+            .import_bundle(
+                &BundleImportRequest {
+                    path: exported.path,
+                    now_ms: 600_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                imported.added_decks,
+                imported.added_cards,
+                imported.imported_media_objects,
+            ),
+            (4, 3, 1)
+        );
+        let imported_storage = Storage::open(&imported_path).unwrap();
+        let imported_user_note = imported_storage.get_source_note(SAMPLE_SOURCE_ID).unwrap();
+        assert_eq!(imported_user_note.source_item.deck_id, bundle_deck_id(0));
+        let imported_stage = imported_storage
+            .get_source_note(&stable_stage.source_item.id)
+            .unwrap();
+        assert_eq!(
+            imported_stage
+                .clozes
+                .iter()
+                .map(|cloze| &cloze.id)
+                .collect::<Vec<_>>(),
+            stable_cloze_ids.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            imported_stage
+                .source_item
+                .media
+                .iter()
+                .chain(
+                    imported_stage
+                        .clozes
+                        .iter()
+                        .flat_map(|cloze| cloze.media.iter()),
+                )
+                .map(|media| &media.id)
+                .collect::<Vec<_>>(),
+            stable_media_reference_ids.iter().collect::<Vec<_>>()
+        );
+        for (card_id, deck_id) in [
+            (bundle_card_id(0), bundle_deck_id(0)),
+            (bundle_card_id(1), bundle_deck_id(1)),
+            (SAMPLE_CARD_ID.into(), bundle_deck_id(0)),
+        ] {
+            let card = imported_storage.load_study_card(&card_id).unwrap();
+            assert_eq!(card.source_item.deck_id, deck_id);
+            assert_eq!(card.schedule.version, 0);
+            assert_eq!(card.schedule.lifecycle, CardLifecycle::Unseen);
+            assert_eq!(card.schedule.due_at_ms, 600_000);
+            assert!(imported_storage.review_events(&card_id).unwrap().is_empty());
+        }
+        drop(imported_storage);
+        for (deck_id, expected_new_cards) in [(bundle_deck_id(0), 2), (bundle_deck_id(1), 1)] {
+            let overview = imported_service
+                .get_today_overview(&TodayRequest {
+                    deck_id,
+                    now_ms: 600_000,
+                    day_start_ms: 0,
+                    day_end_ms: 86_400_000,
+                })
+                .unwrap();
+            assert_eq!(
+                overview.new_cards + overview.deferred_new_cards,
+                expected_new_cards
+            );
+        }
+    }
+
+    #[test]
+    fn bundle_export_failure_leaves_the_collection_and_final_files_unchanged() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let bundle_path =
+            write_bundle_fixture(directory.path(), "bundle-export-failure", 1, |_| {});
+        service
+            .import_bundle(
+                &BundleImportRequest {
+                    path: bundle_path.to_string_lossy().into_owned(),
+                    now_ms: 400_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+        let before = build_collection(&Storage::open(&collection_path).unwrap()).unwrap();
+        let media_hash = before.notes[0].source_item.media[0].content_hash.clone();
+        std::fs::write(
+            service.media_store().resolve(&media_hash).unwrap(),
+            b"corrupt media",
+        )
+        .unwrap();
+
+        assert!(
+            service
+                .export_bundle(&BundleExportRequest {
+                    language_tag: "ja-JP".into(),
+                    now_ms: 500_000,
+                })
+                .is_err()
+        );
+        let exports = directory.path().join("exports");
+        assert!(!exports.exists() || std::fs::read_dir(exports).unwrap().next().is_none());
+        assert_eq!(
+            build_collection(&Storage::open(&collection_path).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn bundle_export_reports_when_no_associated_deck_remains() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let bundle_path = write_bundle_fixture(directory.path(), "bundle-export-empty", 1, |_| {});
+        service
+            .import_bundle(
+                &BundleImportRequest {
+                    path: bundle_path.to_string_lossy().into_owned(),
+                    now_ms: 400_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+        Storage::open(&collection_path)
+            .unwrap()
+            .delete_deck_and_rehome_notes(&bundle_deck_id(0), None, 500_000)
+            .unwrap();
+
+        let error = service
+            .export_bundle(&BundleExportRequest {
+                language_tag: "ja-JP".into(),
+                now_ms: 600_000,
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("No installed decks remain for ja-JP.")
+        );
     }
 
     #[test]

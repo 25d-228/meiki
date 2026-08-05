@@ -3,18 +3,18 @@ use std::path::PathBuf;
 use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, BundleImportProgressDto, BundleImportRequest, BundleImportResultDto,
-    BundlePreviewDto, BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
-    BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
-    DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
-    DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
-    ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
-    LibraryOverviewDto, LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto,
-    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
-    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
-    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
-    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
-    UpdateSchedulerSettingsRequest,
+    BackupDto, BundleExportRequest, BundleImportProgressDto, BundleImportRequest,
+    BundleImportResultDto, BundlePreviewDto, BundleRemovalPreviewDto, BundleRemovalProgressDto,
+    BundleRemovalRequest, BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest,
+    DeckCardActionRequest, DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto,
+    DeckSummaryDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest,
+    GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest,
+    LibraryBulkResultDto, LibraryOverviewDto, LibraryRequest, MakeClozeRequest,
+    PortableArchivePreviewDto, PortableExportResultDto, ReconcileStudyQueueRequest,
+    RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest, RevealDto,
+    SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto,
+    StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto,
+    TodayRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State, ipc::Channel};
 
@@ -36,6 +36,7 @@ macro_rules! desktop_commands {
             preview_bundle,
             import_bundle,
             list_installed_bundles,
+            export_bundle,
             remove_bundle,
             add_archive_deck,
             import_archive,
@@ -209,6 +210,15 @@ fn list_installed_bundles(
     state: State<'_, AppContext>,
 ) -> Result<Vec<BundleRemovalPreviewDto>, String> {
     commands::list_installed_bundles(&state.service())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn export_bundle(
+    request: BundleExportRequest,
+    state: State<'_, AppContext>,
+) -> Result<PortableExportResultDto, String> {
+    commands::export_bundle(&state.service(), &request)
 }
 
 #[tauri::command]
@@ -504,6 +514,7 @@ mod tests {
         "preview_bundle",
         "import_bundle",
         "list_installed_bundles",
+        "export_bundle",
         "remove_bundle",
         "add_archive_deck",
         "import_archive",

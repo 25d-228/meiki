@@ -1065,6 +1065,25 @@ impl PristineDeckRepository for Storage {
 }
 
 impl Storage {
+    /// Lists the remaining deck identities for one installed bundle in their
+    /// original stage order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when bundle associations cannot be read.
+    pub fn bundle_deck_ids(&self, language_tag: &str) -> Result<Vec<String>, StorageError> {
+        let mut statement = self.connection.prepare(
+            "SELECT deck_id
+             FROM bundle_decks
+             WHERE language_tag = ?1
+             ORDER BY ordinal",
+        )?;
+        statement
+            .query_map([language_tag], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::from)
+    }
+
     /// Lists installed language bundles that still have associated decks.
     ///
     /// # Errors

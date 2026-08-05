@@ -54,6 +54,7 @@ import type { BundlePreviewDto } from "./generated/BundlePreviewDto";
 import type { BundleImportRequest } from "./generated/BundleImportRequest";
 import type { BundleImportProgressDto } from "./generated/BundleImportProgressDto";
 import type { BundleImportResultDto } from "./generated/BundleImportResultDto";
+import type { BundleExportRequest } from "./generated/BundleExportRequest";
 import type { BundleRemovalPreviewDto } from "./generated/BundleRemovalPreviewDto";
 import type { BundleRemovalProgressDto } from "./generated/BundleRemovalProgressDto";
 import type { BundleRemovalRequest } from "./generated/BundleRemovalRequest";
@@ -151,6 +152,10 @@ export const api = {
 
   listInstalledBundles(): Promise<BundleRemovalPreviewDto[]> {
     return invoke("list_installed_bundles");
+  },
+
+  exportBundle(request: BundleExportRequest): Promise<PortableExportResultDto> {
+    return invoke("export_bundle", { request });
   },
 
   removeBundle(
