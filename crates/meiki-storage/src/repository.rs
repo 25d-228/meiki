@@ -12,10 +12,10 @@ use rusqlite::{
 use crate::{
     DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, InstalledBundle,
     PristineBundleImport, PristineBundleImportError, PristineBundleImportPlan, PristineDeckImport,
-    PristineDeckImportStatus, SchedulingWorkload, Storage, StorageError, StoredDeckCard,
-    StoredDeckCardPage, StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote,
-    StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
-    entity_not_found, matching_policy_from_database, matching_policy_to_database,
+    SchedulingWorkload, Storage, StorageError, StoredDeckCard, StoredDeckCardPage,
+    StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote, StoredSourceNote, StoredStudyCard,
+    direction_from_database, direction_to_database, entity_not_found,
+    matching_policy_from_database, matching_policy_to_database,
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
@@ -156,24 +156,6 @@ pub trait CardRepository {
     fn get_card_for_cloze(&self, cloze_id: &str) -> Result<Card, StorageError>;
     fn update_card(&mut self, card: &Card) -> Result<(), StorageError>;
     fn delete_card(&mut self, id: &str) -> Result<(), StorageError>;
-}
-
-/// Persistence operations for adding one validated pristine archive deck.
-///
-/// # Errors
-///
-/// Methods return [`StorageError`] when imported identities collide, the
-/// aggregate is invalid, or the transaction cannot be committed.
-#[allow(clippy::missing_errors_doc)]
-pub trait PristineDeckRepository {
-    fn validate_pristine_deck_import(
-        &self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError>;
-    fn import_pristine_deck(
-        &mut self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError>;
 }
 
 impl DeckRepository for Storage {
@@ -1041,29 +1023,6 @@ impl CardRepository for Storage {
     }
 }
 
-impl PristineDeckRepository for Storage {
-    fn validate_pristine_deck_import(
-        &self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError> {
-        validate_pristine_deck_import(&self.connection, import)
-    }
-
-    fn import_pristine_deck(
-        &mut self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError> {
-        let transaction = self.connection.transaction()?;
-        let status = validate_pristine_deck_import(&transaction, import)?;
-        if status == PristineDeckImportStatus::AlreadyInstalled {
-            return Ok(status);
-        }
-        persist_pristine_deck_import(&transaction, import, &mut || {})?;
-        transaction.commit()?;
-        Ok(PristineDeckImportStatus::Ready)
-    }
-}
-
 impl Storage {
     /// Lists the remaining deck identities for one installed bundle in their
     /// original stage order.
@@ -1253,32 +1212,6 @@ impl Storage {
         Ok((plan, prepared))
     }
 
-    /// Exercises rollback after all pristine-deck writes but before commit.
-    ///
-    /// This bounded fault is available only to local tests and fixture builds.
-    ///
-    /// # Errors
-    ///
-    /// Always returns [`StorageError::InjectedTestFailure`] after issuing the
-    /// same database writes as
-    /// [`PristineDeckRepository::import_pristine_deck`] inside an uncommitted
-    /// transaction.
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn import_pristine_deck_failing_before_commit(
-        &mut self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError> {
-        let transaction = self.connection.transaction()?;
-        let status = validate_pristine_deck_import(&transaction, import)?;
-        if status == PristineDeckImportStatus::AlreadyInstalled {
-            return Ok(status);
-        }
-        persist_pristine_deck_import(&transaction, import, &mut || {})?;
-        Err(StorageError::InjectedTestFailure(
-            "pristine deck transaction before commit",
-        ))
-    }
-
     /// Exercises rollback after all pristine-bundle writes but before commit.
     ///
     /// # Errors
@@ -1297,27 +1230,6 @@ impl Storage {
             "pristine bundle transaction before commit",
         ))
     }
-}
-
-fn validate_pristine_deck_import(
-    connection: &Connection,
-    import: &PristineDeckImport,
-) -> Result<PristineDeckImportStatus, StorageError> {
-    if entity_id_exists(
-        connection,
-        "SELECT 1 FROM decks WHERE id = ?1",
-        &import.deck.id,
-    )? {
-        return Ok(PristineDeckImportStatus::AlreadyInstalled);
-    }
-
-    let mut identities = PristineImportIdentities::default();
-    for imported_note in &import.notes {
-        validate_pristine_note(imported_note, &import.deck.id, &mut identities)?;
-    }
-    ensure_pristine_identities_available(connection, &identities)?;
-
-    Ok(PristineDeckImportStatus::Ready)
 }
 
 fn validate_pristine_bundle_import(

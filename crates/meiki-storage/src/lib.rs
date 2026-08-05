@@ -7,8 +7,8 @@ mod review;
 
 pub use repository::{
     AnnotationRepository, CardRepository, ClozeRepository, DeckRepository, MediaRepository,
-    PristineDeckRepository, SchedulerParameterSetRepository, SchedulerProfileRepository,
-    SourceNoteRepository, TagRepository,
+    SchedulerParameterSetRepository, SchedulerProfileRepository, SourceNoteRepository,
+    TagRepository,
 };
 
 use std::{
@@ -191,12 +191,6 @@ impl PristineBundleImportPlan {
 pub enum PristineBundleImportError<E> {
     Storage(StorageError),
     BeforeCommit(E),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PristineDeckImportStatus {
-    Ready,
-    AlreadyInstalled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

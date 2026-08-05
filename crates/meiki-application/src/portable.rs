@@ -860,9 +860,9 @@ mod tests {
     use meiki_media::{DetectedMediaKind, ImportedMedia};
     use meiki_portable::{ArchiveMediaSource, PortableCollection, read_archive, write_archive};
     use meiki_storage::{
-        DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckRepository,
-        PristineDeckRepository, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID, SchedulerProfileRepository,
-        SourceNoteRepository, Storage,
+        CardRepository, DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckRepository,
+        SAMPLE_CARD_ID, SAMPLE_SOURCE_ID, SchedulerProfileRepository, SourceNoteRepository,
+        Storage,
     };
     use tempfile::tempdir;
 
@@ -1332,10 +1332,15 @@ mod tests {
         let bundle = build_pristine_bundle_import(&archive.collection, 400_000).unwrap();
         let mut storage = Storage::open(&collection_path).unwrap();
         for stage in &bundle.decks {
-            assert_eq!(
-                storage.import_pristine_deck(stage).unwrap(),
-                meiki_storage::PristineDeckImportStatus::Ready
-            );
+            storage.create_deck(&stage.deck).unwrap();
+            for imported_note in &stage.notes {
+                storage.create_source_note(&imported_note.note).unwrap();
+                for imported_card in &imported_note.cards {
+                    storage
+                        .create_card(&imported_card.card, &imported_card.initial_schedule)
+                        .unwrap();
+                }
+            }
         }
         let first_deck_id = bundle_deck_id(0);
         let mut personalized_deck = storage.get_deck(&first_deck_id).unwrap();
