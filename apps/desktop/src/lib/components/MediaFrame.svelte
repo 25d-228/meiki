@@ -42,7 +42,7 @@
         : `No ${kind} added`;
     }
     if (availability === "missing") return "Media file is missing";
-    if (availability === "corrupt") return "Media checksum verification failed";
+    if (availability === "corrupt") return "Media integrity check failed";
     return "Media format is unsupported";
   }
 </script>

@@ -1,20 +1,18 @@
 use std::path::PathBuf;
 
 use meiki_application::{
-    ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
-    ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, BundleExportRequest, BundleImportProgressDto, BundleImportRequest,
-    BundleImportResultDto, BundlePreviewDto, BundleRemovalPreviewDto, BundleRemovalProgressDto,
-    BundleRemovalRequest, BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest,
-    DeckCardActionRequest, DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto,
-    DeckSummaryDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest,
-    GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest,
-    LibraryBulkResultDto, LibraryOverviewDto, LibraryRequest, MakeClozeRequest,
-    PortableArchivePreviewDto, PortableExportResultDto, ReconcileStudyQueueRequest,
-    RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest, RevealDto,
-    SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto,
-    StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto,
-    TodayRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
+    ApplicationService, AuthoringDraftDto, AuthoringPreviewDto, BundleExportRequest,
+    BundleImportProgressDto, BundleImportRequest, BundleImportResultDto, BundlePreviewDto,
+    BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
+    BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
+    DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
+    DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
+    ImportMediaRequest, ImportSchedulerParametersRequest, MakeClozeRequest,
+    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
+    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
+    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
+    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State, ipc::Channel};
 
@@ -27,21 +25,13 @@ macro_rules! desktop_commands {
             get_today_overview,
             prepare_study,
             reconcile_study_queue,
-            get_library,
-            apply_library_bulk_action,
             get_deck_cards,
             apply_deck_card_action,
-            export_archive,
-            preview_archive,
             preview_bundle,
             import_bundle,
             list_installed_bundles,
             export_bundle,
             remove_bundle,
-            add_archive_deck,
-            import_archive,
-            list_backups,
-            restore_backup,
             get_authoring_draft_for_card,
             check_answer,
             grade_review,
@@ -129,24 +119,6 @@ fn reconcile_study_queue(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn get_library(
-    request: LibraryRequest,
-    state: State<'_, AppContext>,
-) -> Result<LibraryOverviewDto, String> {
-    commands::get_library(&state.service(), &request)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn apply_library_bulk_action(
-    request: LibraryBulkRequest,
-    state: State<'_, AppContext>,
-) -> Result<LibraryBulkResultDto, String> {
-    commands::apply_library_bulk_action(&state.service(), &request)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 fn get_deck_cards(
     request: DeckCardRequest,
     state: State<'_, AppContext>,
@@ -161,24 +133,6 @@ fn apply_deck_card_action(
     state: State<'_, AppContext>,
 ) -> Result<DeckCardActionResultDto, String> {
     commands::apply_deck_card_action(&state.service(), &request)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn export_archive(
-    request: ArchiveExportRequest,
-    state: State<'_, AppContext>,
-) -> Result<PortableExportResultDto, String> {
-    commands::export_archive(&state.service(), &request)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn preview_archive(
-    path: String,
-    state: State<'_, AppContext>,
-) -> Result<PortableArchivePreviewDto, String> {
-    commands::preview_archive(&state.service(), &path)
 }
 
 #[tauri::command]
@@ -236,40 +190,6 @@ async fn remove_bundle(
     })
     .await
     .map_err(|error| error.to_string())?
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn add_archive_deck(
-    request: ArchiveAddDeckRequest,
-    state: State<'_, AppContext>,
-) -> Result<ArchiveAddDeckResultDto, String> {
-    commands::add_archive_deck(&state.service(), &request)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn import_archive(
-    request: ArchiveImportRequest,
-    state: State<'_, AppContext>,
-) -> Result<ArchiveImportResultDto, String> {
-    commands::import_archive(&state.service(), &request)
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn list_backups(state: State<'_, AppContext>) -> Result<Vec<BackupDto>, String> {
-    commands::list_backups(&state.service())
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn restore_backup(
-    path: String,
-    confirmation: String,
-    state: State<'_, AppContext>,
-) -> Result<BackupDto, String> {
-    commands::restore_backup(&state.service(), &path, &confirmation)
 }
 
 #[tauri::command]
@@ -505,21 +425,13 @@ mod tests {
         "get_today_overview",
         "prepare_study",
         "reconcile_study_queue",
-        "get_library",
-        "apply_library_bulk_action",
         "get_deck_cards",
         "apply_deck_card_action",
-        "export_archive",
-        "preview_archive",
         "preview_bundle",
         "import_bundle",
         "list_installed_bundles",
         "export_bundle",
         "remove_bundle",
-        "add_archive_deck",
-        "import_archive",
-        "list_backups",
-        "restore_backup",
         "get_authoring_draft_for_card",
         "check_answer",
         "grade_review",

@@ -7,7 +7,6 @@
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import * as Collapsible from "$lib/components/ui/collapsible/index.js";
-  import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import { Separator } from "$lib/components/ui/separator/index.js";
   import { Switch } from "$lib/components/ui/switch/index.js";
@@ -15,9 +14,7 @@
   import type { SchedulerPolicyPreviewDto } from "../lib/generated/SchedulerPolicyPreviewDto";
   import type { SchedulingModeDto } from "../lib/generated/SchedulingModeDto";
   import type { UpdateSchedulerSettingsRequest } from "../lib/generated/UpdateSchedulerSettingsRequest";
-  import type { BackupDto } from "../lib/generated/BackupDto";
   import type { BudgetSourceDto } from "../lib/generated/BudgetSourceDto";
-  import type { PortableArchivePreviewDto } from "../lib/generated/PortableArchivePreviewDto";
   import type { ThemeMode } from "../lib/ui";
 
   type Props = {
@@ -43,21 +40,11 @@
   let busy = $state(false);
   let notice = $state("");
   let error = $state("");
-  let backups = $state<BackupDto[]>([]);
-  let archivePath = $state("");
-  let importPreview = $state<PortableArchivePreviewDto | null>(null);
-  let importConfirmation = $state("");
-  let restoreTarget = $state<BackupDto | null>(null);
-  let restoreConfirmation = $state("");
 
   onMount(() => {
     autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
-    void initialize();
+    void loadSettings();
   });
-
-  async function initialize(): Promise<void> {
-    await Promise.all([loadSettings(), loadBackups()]);
-  }
 
   function applySettings(next: SchedulerSettingsDto): void {
     settings = next;
@@ -190,118 +177,6 @@
     }
   }
 
-  async function exportArchive(): Promise<void> {
-    busy = true;
-    notice = "";
-    error = "";
-    try {
-      const result = await api.exportArchive({
-        now_ms: Date.now(),
-      });
-      notice = `Exported ${result.notes} notes and ${result.media_objects} media objects to ${result.path}`;
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function chooseArchive(): Promise<void> {
-    const path = await api.pickArchiveFile();
-    if (!path) return;
-    archivePath = path;
-    await previewImport();
-  }
-
-  async function previewImport(): Promise<void> {
-    if (!archivePath) return;
-    busy = true;
-    error = "";
-    importConfirmation = "";
-    try {
-      importPreview = await api.previewArchive(archivePath);
-    } catch (cause) {
-      importPreview = null;
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function addDeck(): Promise<void> {
-    if (!importPreview?.can_add_deck) return;
-    busy = true;
-    notice = "";
-    error = "";
-    try {
-      const result = await api.addArchiveDeck({
-        path: archivePath,
-        now_ms: Date.now(),
-      });
-      const cardLabel = result.imported_cards === 1 ? "card" : "cards";
-      notice = `Added deck “${result.deck_name}” with ${result.imported_cards} ${cardLabel}. Recovery backup: ${result.backup_path}`;
-      importPreview = null;
-      archivePath = "";
-      importConfirmation = "";
-      await loadBackups();
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function runImport(): Promise<void> {
-    if (!importPreview?.can_import) return;
-    busy = true;
-    notice = "";
-    error = "";
-    try {
-      const result = await api.importArchive({
-        path: archivePath,
-        confirmation: importConfirmation,
-      });
-      notice = `Imported ${result.imported_notes} notes. Recovery backup: ${result.backup_path}`;
-      importPreview = null;
-      archivePath = "";
-      importConfirmation = "";
-      await Promise.all([loadSettings(), loadBackups()]);
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function loadBackups(): Promise<void> {
-    try {
-      backups = await api.listBackups();
-    } catch (cause) {
-      error = message(cause);
-    }
-  }
-
-  async function restoreBackup(): Promise<void> {
-    if (!restoreTarget) return;
-    busy = true;
-    notice = "";
-    error = "";
-    try {
-      const recovery = await api.restoreBackup(
-        restoreTarget.path,
-        restoreConfirmation,
-      );
-      notice = `Backup restored. The replaced collection is recoverable at ${recovery.path}`;
-      restoreTarget = null;
-      restoreConfirmation = "";
-      await Promise.all([loadSettings(), loadBackups()]);
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
-  }
-
   async function runAction(
     action: () => Promise<SchedulerSettingsDto>,
     success: string,
@@ -321,12 +196,6 @@
 
   function message(cause: unknown): string {
     return cause instanceof Error ? cause.message : String(cause);
-  }
-
-  function formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-    return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
   }
 
   function formatDuration(minutes: number): string {
@@ -668,188 +537,9 @@
           <span>Enable</span>
         </label>
       </div>
-
-      <div class="setting-row">
-        <div>
-          <strong>Collection</strong>
-          <p>Learning content and scheduler data remain local.</p>
-        </div>
-        <span class="value">On this device</span>
-      </div>
-    </div>
-  </Card.Root>
-
-  <Card.Root class="p-6">
-    <div class="portability">
-      <div>
-        <span class="eyebrow">Data portability</span>
-        <h2>Archives and recovery</h2>
-        <p>
-          Versioned .meiki archives preserve text, review history, scheduling
-          metadata, and checksum-verified media. Imports are validated before
-          they can change this collection.
-        </p>
-      </div>
-      <div class="scheduler-actions">
-        <Button size="sm" disabled={busy} onclick={exportArchive}
-          >Export full collection</Button
-        >
-        <Button
-          variant="default"
-          size="sm"
-          disabled={busy}
-          onclick={chooseArchive}>Preview an import</Button
-        >
-      </div>
-
-      <div class="backup-list">
-        <div>
-          <strong>Rolling backups</strong>
-          <p>
-            The newest five backups are kept for each migration, import, and
-            restore operation.
-          </p>
-        </div>
-        {#if backups.length}
-          {#each backups as backup (backup.path)}
-            <div class="backup-row">
-              <span>
-                <strong>{backup.file_name}</strong>
-                <small>{formatBytes(backup.byte_size)}</small>
-              </span>
-              <Button
-                variant="destructive"
-                size="sm"
-                disabled={busy}
-                onclick={() => {
-                  restoreTarget = backup;
-                  restoreConfirmation = "";
-                }}>Restore</Button
-              >
-            </div>
-          {/each}
-        {:else}
-          <p class="advanced-note">No managed backups yet.</p>
-        {/if}
-      </div>
     </div>
   </Card.Root>
 </section>
-
-<Dialog.Root
-  open={Boolean(importPreview)}
-  onOpenChange={(open) => {
-    if (!open) {
-      importPreview = null;
-      importConfirmation = "";
-    }
-  }}
->
-  <Dialog.Content>
-    <Dialog.Header>
-      <Dialog.Title>Preview archive import</Dialog.Title>
-      <Dialog.Description>
-        Review the validated contents before importing.
-      </Dialog.Description>
-    </Dialog.Header>
-    {#if importPreview}
-      <div class="dialog-stack">
-        <p>{importPreview.add_deck_summary}</p>
-        <dl class="scheduler-status">
-          <div>
-            <dt>Format</dt>
-            <dd>Version {importPreview.format_version}</dd>
-          </div>
-          <div>
-            <dt>Deck</dt>
-            <dd>{importPreview.deck_name ?? "Multiple decks"}</dd>
-          </div>
-          <div>
-            <dt>Notes</dt>
-            <dd>{importPreview.notes}</dd>
-          </div>
-          <div>
-            <dt>Cards</dt>
-            <dd>{importPreview.cards}</dd>
-          </div>
-          <div>
-            <dt>Reviews</dt>
-            <dd>{importPreview.review_events}</dd>
-          </div>
-          <div>
-            <dt>Media</dt>
-            <dd>{importPreview.media_objects}</dd>
-          </div>
-          <div>
-            <dt>Media reused</dt>
-            <dd>{importPreview.duplicate_media_objects}</dd>
-          </div>
-        </dl>
-        {#if importPreview.can_import}
-          <label>
-            <strong
-              >Type {importPreview.confirmation} to replace collection</strong
-            >
-            <input bind:value={importConfirmation} autocomplete="off" />
-          </label>
-        {/if}
-        <p class="advanced-note">
-          Replacing the collection is separate from adding a pristine deck.
-          {importPreview.summary}
-        </p>
-      </div>
-    {/if}
-    <Dialog.Footer>
-      <Button
-        variant="default"
-        disabled={busy || !importPreview?.can_add_deck}
-        onclick={addDeck}>Add deck</Button
-      >
-      <Button
-        variant="destructive"
-        disabled={busy ||
-          !importPreview?.can_import ||
-          importConfirmation !== importPreview?.confirmation}
-        onclick={runImport}>Replace collection</Button
-      >
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
-
-<Dialog.Root
-  open={Boolean(restoreTarget)}
-  onOpenChange={(open) => {
-    if (!open) {
-      restoreTarget = null;
-      restoreConfirmation = "";
-    }
-  }}
->
-  <Dialog.Content>
-    <Dialog.Header>
-      <Dialog.Title>Restore rolling backup</Dialog.Title>
-      <Dialog.Description>
-        This replaces the current database after creating a new recovery backup.
-      </Dialog.Description>
-    </Dialog.Header>
-    {#if restoreTarget}
-      <div class="dialog-stack">
-        <p>{restoreTarget.file_name}</p>
-        <label>
-          <strong>Type the exact filename to confirm</strong>
-          <input bind:value={restoreConfirmation} autocomplete="off" />
-        </label>
-      </div>
-    {/if}
-    <Dialog.Footer>
-      <Button
-        variant="destructive"
-        disabled={busy || restoreConfirmation !== restoreTarget?.file_name}
-        onclick={restoreBackup}>Restore backup</Button
-      >
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
 
 <style>
   .settings-screen {
@@ -935,55 +625,6 @@
     color: var(--foreground);
     background: var(--card);
     font: inherit;
-  }
-
-  .portability,
-  .backup-list,
-  .dialog-stack {
-    display: grid;
-    gap: 1rem;
-  }
-
-  .portability h2,
-  .portability p,
-  .backup-list p,
-  .dialog-stack p {
-    margin: 0;
-  }
-
-  .portability h2 {
-    margin-block: 0.25rem 0.5rem;
-    font-family: var(--font-sans);
-    font-size: var(--text-xl);
-  }
-
-  .portability p,
-  .backup-list p,
-  .backup-row small {
-    color: var(--muted-foreground);
-    font-size: var(--text-sm);
-  }
-
-  .backup-list {
-    padding-top: 1rem;
-    border-top: 1px solid var(--border);
-  }
-
-  .backup-row {
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .backup-row span {
-    display: grid;
-    gap: 0.25rem;
-    min-width: 0;
-  }
-
-  .backup-row strong {
-    overflow-wrap: anywhere;
   }
 
   .setting-row {

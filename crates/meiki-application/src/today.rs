@@ -592,8 +592,7 @@ mod tests {
         plan_today,
     };
     use crate::{
-        GradeDto, GradeReviewRequest, LibraryDueFilterDto, LibraryMediaFilterDto, LibraryRequest,
-        LibrarySuspendedFilterDto, LibraryTrashFilterDto, MakeClozeRequest,
+        DeckCardRequest, DeckCardTrashDto, GradeDto, GradeReviewRequest, MakeClozeRequest,
     };
 
     fn candidate(id: &str, due_at_ms: i64, lifecycle: CardLifecycle) -> QueueCandidate {
@@ -936,7 +935,7 @@ mod tests {
         let (_directory, path, service, request, entry) = seeded_session();
         let mut storage = Storage::open(&path).unwrap();
         storage
-            .set_library_notes_suspended(&[SAMPLE_SOURCE_ID.into()], true, 100_001)
+            .set_deck_cards_suspended(&[SAMPLE_CARD_ID.into()], true, 100_001)
             .unwrap();
         drop(storage);
         assert!(reconcile(&service, &request, vec![entry]).is_empty());
@@ -944,7 +943,7 @@ mod tests {
         let (_directory, path, service, request, entry) = seeded_session();
         let mut storage = Storage::open(&path).unwrap();
         storage
-            .set_library_notes_deleted(&[SAMPLE_SOURCE_ID.into()], Some(100_001), 100_001)
+            .set_deck_cards_deleted(&[SAMPLE_CARD_ID.into()], Some(100_001), 100_001)
             .unwrap();
         drop(storage);
         assert!(reconcile(&service, &request, vec![entry]).is_empty());
@@ -965,7 +964,7 @@ mod tests {
             })
             .unwrap();
         storage
-            .move_library_notes(&[SAMPLE_SOURCE_ID.into()], "moved-deck", 100_001)
+            .move_deck_cards(&[SAMPLE_CARD_ID.into()], "moved-deck", 100_001)
             .unwrap();
         drop(storage);
         assert!(reconcile(&service, &request, vec![entry]).is_empty());
@@ -1155,21 +1154,16 @@ mod tests {
         assert_eq!(study.overview.next_due_at, None);
         assert!(
             service
-                .get_library(&LibraryRequest {
+                .get_deck_cards(&DeckCardRequest {
+                    deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
                     query: String::new(),
-                    deck_id: None,
-                    tag_id: None,
-                    due: LibraryDueFilterDto::All,
-                    suspended: LibrarySuspendedFilterDto::All,
-                    language_tag: None,
-                    media: LibraryMediaFilterDto::All,
-                    trash: LibraryTrashFilterDto::Active,
+                    trash: DeckCardTrashDto::Active,
                     now_ms: request.now_ms,
                     offset: 0,
                     limit: 50,
                 })
                 .unwrap()
-                .notes
+                .cards
                 .is_empty()
         );
         service
@@ -1229,24 +1223,18 @@ mod tests {
         assert_eq!(study.availability, StudyAvailabilityDto::Ready);
         assert_eq!(study.overview.queue.len(), 1);
         assert_eq!(study.overview.queue[0].card_id, saved.clozes[0].card_id);
-        let library = restarted
-            .get_library(&LibraryRequest {
+        let cards = restarted
+            .get_deck_cards(&DeckCardRequest {
+                deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
                 query: String::new(),
-                deck_id: None,
-                tag_id: None,
-                due: LibraryDueFilterDto::All,
-                suspended: LibrarySuspendedFilterDto::All,
-                language_tag: None,
-                media: LibraryMediaFilterDto::All,
-                trash: LibraryTrashFilterDto::Active,
+                trash: DeckCardTrashDto::Active,
                 now_ms: request.now_ms,
                 offset: 0,
                 limit: 50,
             })
             .unwrap();
-        assert_eq!(library.notes.len(), 1);
-        assert_eq!(library.notes[0].source_id, saved.source_id);
-        assert_eq!(library.notes[0].cards[0].card_id, saved.clozes[0].card_id);
+        assert_eq!(cards.cards.len(), 1);
+        assert_eq!(cards.cards[0].id, saved.clozes[0].card_id);
     }
 
     #[test]
@@ -1333,7 +1321,7 @@ mod tests {
 
     #[test]
     #[ignore = "release performance budget; run with scripts/performance"]
-    fn release_budget_storage_backed_today_controller_and_library() {
+    fn release_budget_storage_backed_today_controller_and_deck_search() {
         const CARD_COUNT: u32 = 15_000;
         const NOW_MS: i64 = 1_000_000_000;
         let directory = tempdir().unwrap();
@@ -1361,23 +1349,18 @@ mod tests {
             .unwrap();
         let today_elapsed = today_started.elapsed();
 
-        let library_started = std::time::Instant::now();
-        let library = service
-            .get_library(&LibraryRequest {
+        let deck_search_started = std::time::Instant::now();
+        let deck_search = service
+            .get_deck_cards(&DeckCardRequest {
                 query: "search-target".into(),
-                deck_id: None,
-                tag_id: None,
-                due: LibraryDueFilterDto::All,
-                suspended: LibrarySuspendedFilterDto::All,
-                language_tag: None,
-                media: LibraryMediaFilterDto::All,
-                trash: LibraryTrashFilterDto::Active,
+                deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+                trash: DeckCardTrashDto::Active,
                 now_ms: NOW_MS,
                 offset: 0,
                 limit: 50,
             })
             .unwrap();
-        let library_elapsed = library_started.elapsed();
+        let deck_search_elapsed = deck_search_started.elapsed();
 
         assert_eq!(overview.due_reviews, 10_000);
         assert!(
@@ -1386,23 +1369,23 @@ mod tests {
                 .iter()
                 .any(|card| card.card_id == "performance-card-0000000")
         );
-        assert_eq!(library.total_matches, 3_000);
-        assert_eq!(library.notes.len(), 50);
+        assert_eq!(deck_search.total_matches, 1_500);
+        assert_eq!(deck_search.cards.len(), 50);
         assert!(open_elapsed <= Duration::from_secs(10));
         assert!(
             today_elapsed <= Duration::from_secs(60),
             "storage-backed 15,000-card Today/controller path exceeded 60 s: {today_elapsed:?}"
         );
         assert!(
-            library_elapsed <= Duration::from_secs(60),
-            "storage-backed 15,000-note Library search exceeded 60 s: {library_elapsed:?}"
+            deck_search_elapsed <= Duration::from_secs(60),
+            "storage-backed 15,000-card deck search exceeded 60 s: {deck_search_elapsed:?}"
         );
         eprintln!(
             "release-budget storage_backed_15000 fixture_bytes={fixture_bytes} \
-             open_ms={} today_ms={} library_ms={}",
+             open_ms={} today_ms={} deck_search_ms={}",
             open_elapsed.as_millis(),
             today_elapsed.as_millis(),
-            library_elapsed.as_millis()
+            deck_search_elapsed.as_millis()
         );
     }
 

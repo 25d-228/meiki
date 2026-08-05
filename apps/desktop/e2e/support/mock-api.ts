@@ -295,20 +295,6 @@ export async function installMockApi(page: Page): Promise<void> {
         );
       }
 
-      if (command === "get_library") {
-        return clone(
-          params.get("collection") === "empty"
-            ? dtos.emptyLibrary
-            : dtos.library,
-        );
-      }
-      if (command === "apply_library_bulk_action") {
-        const action = (args as { request: { action: string } }).request.action;
-        return clone(
-          dtos.bulkResults[action as keyof typeof dtos.bulkResults] ??
-            dtos.bulkResults.suspend,
-        );
-      }
       if (command === "get_deck_cards") {
         const request = (
           args as {
@@ -420,7 +406,6 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(dtos.media[role as keyof typeof dtos.media]);
       }
 
-      if (command === "export_archive") return clone(dtos.archiveExport);
       if (command === "preview_bundle") {
         const installedDecks =
           params.get("bundle") === "installed" ||
@@ -510,18 +495,6 @@ export async function installMockApi(page: Page): Promise<void> {
           moved_cards: 9_700,
         };
       }
-      if (command === "preview_archive") return clone(dtos.archivePreview);
-      if (command === "add_archive_deck") return clone(dtos.archiveAddDeck);
-      if (command === "import_archive") return clone(dtos.archiveImport);
-      if (command === "list_backups") return [];
-      if (command === "restore_backup") {
-        return {
-          path: "/tmp/backups/collection.db.pre-restore.bak",
-          file_name: "collection.db.pre-restore.bak",
-          byte_size: 4096,
-        };
-      }
-
       throw new Error(`No DTO fixture for command: ${command}`);
     };
   }, scenarioDtos);

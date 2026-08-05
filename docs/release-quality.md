@@ -29,12 +29,12 @@ The release journey must work without an account or content network:
 2. Create multilingual content and a grapheme-safe cloze.
 3. Study with a keyboard or IME.
 4. Reveal, grade, undo, and resume after restart.
-5. Export a complete `.meiki` archive.
-6. Validate and restore it into a clean collection.
+5. Import a six-deck `.meiki` language bundle and study one deck.
+6. Export a clean bundle and install it into another collection without study state.
 7. Continue review when media is missing, unsupported, or corrupt.
 
 The real `ApplicationService` journeys execute this release path through
-SQLite, text, scheduler, media, backup, and archive production code. The
+SQLite, text, scheduler, media, bundle, and internal-recovery production code. The
 browser suite covers UI request mapping and rendering for Japanese IME,
 Arabic/Persian RTL, Devanagari combining text, Latin diacritics, CJK without
 spaces, mixed direction, mixed script and punctuation, and multi-code-point
@@ -71,21 +71,21 @@ native-input smoke is exploratory and does not block a release.
 Run `./scripts/performance` on a release build. The budgets are deliberately
 generous cross-platform regression limits, not product claims.
 
-| Scenario                                   |                                     Fixture |    Budget |
-| ------------------------------------------ | ------------------------------------------: | --------: |
-| Storage-backed Today queue and controller  | 15,000 cards across two SQLite-backed decks |      60 s |
-| Storage-backed mixed-script Library search |                  15,000 SQLite-backed notes |      60 s |
-| Released-shape large migration             |      10,000-card schema-8 SQLite collection |      60 s |
-| Representative archive export              |                5,000 notes plus local media |      30 s |
-| Representative archive validation          |                5,000 notes plus local media |      30 s |
-| Today queue construction                   |                   1,000,000 in-memory cards |      15 s |
-| Cross-script substring search              |                   250,000 in-memory records |       5 s |
-| Time-budget policy aggregate               |                   1,000,000 aggregate cards |       1 s |
-| Media integrity scan                       |                   10,000 filesystem objects |      30 s |
-| Browser shell startup                      |            Primary action ready in Chromium |       2 s |
-| Packaged shell startup                     |                Clean collection initialized |      10 s |
-| New database migration                     |                              Current schema |       2 s |
-| Warm startup database open                 |                                    50 opens | 5 s total |
+| Scenario                                  |                                     Fixture |    Budget |
+| ----------------------------------------- | ------------------------------------------: | --------: |
+| Storage-backed Today queue and controller | 15,000 cards across two SQLite-backed decks |      60 s |
+| Storage-backed mixed-script deck search   |                  15,000 SQLite-backed cards |      60 s |
+| Released-shape large migration            |      10,000-card schema-8 SQLite collection |      60 s |
+| Representative bundle writer              |                5,000 notes plus local media |      30 s |
+| Representative bundle validation          |                5,000 notes plus local media |      30 s |
+| Today queue construction                  |                   1,000,000 in-memory cards |      15 s |
+| Cross-script substring search             |                   250,000 in-memory records |       5 s |
+| Time-budget policy aggregate              |                   1,000,000 aggregate cards |       1 s |
+| Media integrity scan                      |                   10,000 filesystem objects |      30 s |
+| Browser shell startup                     |            Primary action ready in Chromium |       2 s |
+| Packaged shell startup                    |                Clean collection initialized |      10 s |
+| New database migration                    |                              Current schema |       2 s |
+| Warm startup database open                |                                    50 opens | 5 s total |
 
 The main-branch CI performance job runs serially and prints fixture bytes and
 measurements in its log. Run it locally before merging performance-sensitive
@@ -104,9 +104,9 @@ and archive-version 1 through 3 import coverage remain release inputs. Future
 releases must keep migration fixtures from every released database schema and
 import fixtures from every published archive version.
 
-Database migrations, imports, and restores create recovery points before
-durable state changes. A corrupt database backup or media companion must fail
-validation before replacement. Never repair immutable review events in place.
+Database migrations and transactional bundle operations create internal
+recovery points before durable state changes. These points are not a public
+collection-management workflow. Never repair immutable review events in place.
 
 ## Release procedure
 

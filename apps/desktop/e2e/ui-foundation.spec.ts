@@ -123,9 +123,21 @@ test("budget-first scheduler previews before save and keeps expert controls expl
     .getByRole("navigation", { name: "Primary navigation" })
     .getByRole("button", { name: "Settings" })
     .click();
+  await expect(page.getByRole("group", { name: "Appearance" })).toBeVisible();
   await expect(
     page.getByRole("group", { name: "Scheduling mode" }),
   ).toBeVisible();
+  await expect(
+    page.getByText("Prompt audio autoplay", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Archives and recovery")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Export full collection" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Preview an import" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Rolling backups")).toHaveCount(0);
   await expect(page.getByText("Policy preview", { exact: true })).toBeVisible();
   await page
     .getByRole("group", { name: "Daily study time presets" })

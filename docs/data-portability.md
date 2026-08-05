@@ -4,8 +4,8 @@
 
 A `.meiki` file is a ZIP container with these exact entries:
 
-- `manifest.json`: format name, schema version, full-collection scope, counts, collection
-  checksum, and the expected media paths, sizes, and checksums.
+- `manifest.json`: format name, schema version, the compatibility scope marker,
+  counts, collection checksum, and expected media paths, sizes, and checksums.
 - `collection.json`: canonical compact UTF-8 JSON containing decks, source
   notes, clozes, cards, immutable review events, current and baseline schedule
   projections, scheduler profiles, and every referenced parameter set.
@@ -31,47 +31,32 @@ before validating the projection chain. Version-1 and version-2 fixtures stay
 in the test suite while the writer emits version 4; version-3 archives remain
 readable through the same bounded reader.
 
-## Export and import behavior
+## Bundle export and import behavior
 
-Export always includes the complete collection: every deck, note, scheduler
-profile, parameter set used by profiles or history, and referenced media.
+The product uses `.meiki` files for clean language bundles. Export writes the
+remaining installed decks associated with one language in stable order, their
+active typed-cloze cards and annotations, and referenced local media. Review
+events, learned schedules, the collection study-time setting, unrelated decks,
+moved-out cards, and Trash are omitted. Every exported card has a version-zero
+unseen schedule.
 
-Import always re-reads and validates the archive after preview. A full
-collection archive has two possible actions:
+Import previews the ordered decks and re-reads and validates the file before
+changing the collection. It adds only missing stages, preserves installed
+stages and their study state, validates identities before writes, and commits
+bundle associations transactionally. Equal media objects deduplicate. A
+validation, media, or transaction failure leaves the live collection
+unchanged.
 
-- **Add deck** is available only when the archive contains exactly one
-  non-trashed deck, no review events, and only untouched version-zero unseen
-  cards. It preserves all existing decks, history, schedules, backups, and
-  collection settings. The new deck uses Automatic scheduling, the current
-  default scheduler parameters, the current collection budget, and the import
-  time for its initial timestamps. Archive scheduler policy and controller
-  diagnostics are ignored.
-- **Replace collection** populates a temporary SQLite database and then
-  replaces the live collection after the user types `REPLACE`.
+The version-4 writer retains the published compatibility scope marker because
+changing it would create a new archive format. Product behavior is determined
+by the clean-bundle validation rules, not by offering a collection-replacement
+workflow. Readers retain published-version compatibility required to install
+valid bundles from earlier Meiki data.
 
-Both actions create a managed recovery backup immediately before durable
-changes. Adding a deck preflights every imported identity and commits its
-database rows in one transaction. A repeated deck identity reports **Deck
-already installed**. The live database is unchanged if validation, media
-staging, or the database transaction fails, so the archive can be retried.
-Media identities remain content hashes, equal bytes deduplicate, and checksum
-validation happens both before and during import.
+## Internal recovery policy
 
-## Rolling backup policy
-
-Meiki creates managed database backups before schema migrations, pristine deck
-imports, collection replacement imports, and restores. Application-level recovery
-points pair the SQLite backup with a checksum-verified `.media` directory;
-media objects are merged back before database restore and are never
-overwritten. Migration backups need no media copy because migrations do not
-change the immutable media store.
-
-Backups live in the collection's sibling `backups` directory. Each category
-retains its newest five database files, and orphaned media companions are
-pruned. Names contain a millisecond timestamp and a fixed-width sequence;
-lexical pruning therefore matches creation order.
-
-Restore first validates SQLite integrity, creates a `pre-restore` recovery
-backup, and then uses SQLite's backup API to replace the collection. The UI
-only restores files from the managed directory and requires the exact filename
-as confirmation.
+Schema migrations and transactional bundle operations create managed recovery
+points before durable changes. These files are maintained internally and are
+not listed or restored through the user interface. The newest five files per
+category are retained, with paired media snapshots where the operation can
+change media references.

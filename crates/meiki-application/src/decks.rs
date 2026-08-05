@@ -554,7 +554,7 @@ mod tests {
             false,
         );
         storage
-            .set_library_notes_deleted(&["already-trashed-card-source".into()], Some(1_500), 1_500)
+            .set_deck_cards_deleted(&["already-trashed-card".into()], Some(1_500), 1_500)
             .unwrap();
         drop(storage);
         let (schedule_before, history_before) =
@@ -773,7 +773,7 @@ mod tests {
             false,
         );
         storage
-            .set_library_notes_deleted(&["trashed-card-source".into()], Some(9_000), 9_000)
+            .set_deck_cards_deleted(&["trashed-card".into()], Some(9_000), 9_000)
             .unwrap();
         drop(storage);
 
@@ -794,11 +794,7 @@ mod tests {
             false,
         );
         storage
-            .set_library_notes_deleted(
-                &["trashed-unsorted-card-source".into()],
-                Some(10_000),
-                10_000,
-            )
+            .set_deck_cards_deleted(&["trashed-unsorted-card".into()], Some(10_000), 10_000)
             .unwrap();
         drop(storage);
         let summaries = service.list_deck_summaries(10_000).unwrap();

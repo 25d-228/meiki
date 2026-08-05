@@ -12,10 +12,10 @@ use rusqlite::{
 use crate::{
     DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, InstalledBundle,
     PristineBundleImport, PristineBundleImportError, PristineBundleImportPlan, PristineDeckImport,
-    PristineDeckImportStatus, SchedulingWorkload, Storage, StorageError, StoredDeckCard,
-    StoredDeckCardPage, StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote,
-    StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
-    entity_not_found, matching_policy_from_database, matching_policy_to_database,
+    SchedulingWorkload, Storage, StorageError, StoredDeckCard, StoredDeckCardPage,
+    StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote, StoredSourceNote, StoredStudyCard,
+    direction_from_database, direction_to_database, entity_not_found,
+    matching_policy_from_database, matching_policy_to_database,
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
@@ -156,24 +156,6 @@ pub trait CardRepository {
     fn get_card_for_cloze(&self, cloze_id: &str) -> Result<Card, StorageError>;
     fn update_card(&mut self, card: &Card) -> Result<(), StorageError>;
     fn delete_card(&mut self, id: &str) -> Result<(), StorageError>;
-}
-
-/// Persistence operations for adding one validated pristine archive deck.
-///
-/// # Errors
-///
-/// Methods return [`StorageError`] when imported identities collide, the
-/// aggregate is invalid, or the transaction cannot be committed.
-#[allow(clippy::missing_errors_doc)]
-pub trait PristineDeckRepository {
-    fn validate_pristine_deck_import(
-        &self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError>;
-    fn import_pristine_deck(
-        &mut self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError>;
 }
 
 impl DeckRepository for Storage {
@@ -1041,29 +1023,6 @@ impl CardRepository for Storage {
     }
 }
 
-impl PristineDeckRepository for Storage {
-    fn validate_pristine_deck_import(
-        &self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError> {
-        validate_pristine_deck_import(&self.connection, import)
-    }
-
-    fn import_pristine_deck(
-        &mut self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError> {
-        let transaction = self.connection.transaction()?;
-        let status = validate_pristine_deck_import(&transaction, import)?;
-        if status == PristineDeckImportStatus::AlreadyInstalled {
-            return Ok(status);
-        }
-        persist_pristine_deck_import(&transaction, import, &mut || {})?;
-        transaction.commit()?;
-        Ok(PristineDeckImportStatus::Ready)
-    }
-}
-
 impl Storage {
     /// Lists the remaining deck identities for one installed bundle in their
     /// original stage order.
@@ -1253,32 +1212,6 @@ impl Storage {
         Ok((plan, prepared))
     }
 
-    /// Exercises rollback after all pristine-deck writes but before commit.
-    ///
-    /// This bounded fault is available only to local tests and fixture builds.
-    ///
-    /// # Errors
-    ///
-    /// Always returns [`StorageError::InjectedTestFailure`] after issuing the
-    /// same database writes as
-    /// [`PristineDeckRepository::import_pristine_deck`] inside an uncommitted
-    /// transaction.
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn import_pristine_deck_failing_before_commit(
-        &mut self,
-        import: &PristineDeckImport,
-    ) -> Result<PristineDeckImportStatus, StorageError> {
-        let transaction = self.connection.transaction()?;
-        let status = validate_pristine_deck_import(&transaction, import)?;
-        if status == PristineDeckImportStatus::AlreadyInstalled {
-            return Ok(status);
-        }
-        persist_pristine_deck_import(&transaction, import, &mut || {})?;
-        Err(StorageError::InjectedTestFailure(
-            "pristine deck transaction before commit",
-        ))
-    }
-
     /// Exercises rollback after all pristine-bundle writes but before commit.
     ///
     /// # Errors
@@ -1297,27 +1230,6 @@ impl Storage {
             "pristine bundle transaction before commit",
         ))
     }
-}
-
-fn validate_pristine_deck_import(
-    connection: &Connection,
-    import: &PristineDeckImport,
-) -> Result<PristineDeckImportStatus, StorageError> {
-    if entity_id_exists(
-        connection,
-        "SELECT 1 FROM decks WHERE id = ?1",
-        &import.deck.id,
-    )? {
-        return Ok(PristineDeckImportStatus::AlreadyInstalled);
-    }
-
-    let mut identities = PristineImportIdentities::default();
-    for imported_note in &import.notes {
-        validate_pristine_note(imported_note, &import.deck.id, &mut identities)?;
-    }
-    ensure_pristine_identities_available(connection, &identities)?;
-
-    Ok(PristineDeckImportStatus::Ready)
 }
 
 fn validate_pristine_bundle_import(
@@ -2130,158 +2042,6 @@ impl Storage {
                     WHERE cards.id = ?3
                  )",
                 params![deck_id, updated_at_ms, card_id],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    /// Atomically moves source notes into or out of the recoverable trash.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when a selected note is missing or the
-    /// transaction cannot be committed.
-    pub fn set_library_notes_deleted(
-        &mut self,
-        source_ids: &[String],
-        deleted_at_ms: Option<i64>,
-        updated_at_ms: i64,
-    ) -> Result<(), StorageError> {
-        let transaction = self.connection.transaction()?;
-        ensure_library_notes_exist(&transaction, source_ids)?;
-        for source_id in source_ids {
-            transaction.execute(
-                "UPDATE source_items
-                 SET deleted_at_ms = ?1, updated_at_ms = ?2
-                 WHERE id = ?3",
-                params![deleted_at_ms, updated_at_ms, source_id],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    /// Atomically suspends or unsuspends every card owned by selected notes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when a selected note is missing or the
-    /// transaction cannot be committed.
-    pub fn set_library_notes_suspended(
-        &mut self,
-        source_ids: &[String],
-        suspended: bool,
-        updated_at_ms: i64,
-    ) -> Result<(), StorageError> {
-        let transaction = self.connection.transaction()?;
-        ensure_library_notes_exist(&transaction, source_ids)?;
-        for source_id in source_ids {
-            transaction.execute(
-                "UPDATE cards
-                 SET suspended = ?1, updated_at_ms = ?2, queue_updated_at_ms = ?2
-                 WHERE cloze_id IN (
-                    SELECT id FROM clozes WHERE source_item_id = ?3
-                 )",
-                params![suspended, updated_at_ms, source_id],
-            )?;
-            transaction.execute(
-                "UPDATE source_items SET updated_at_ms = ?1 WHERE id = ?2",
-                params![updated_at_ms, source_id],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    /// Atomically moves selected source notes to an existing deck.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when the deck or a selected note is missing.
-    pub fn move_library_notes(
-        &mut self,
-        source_ids: &[String],
-        deck_id: &str,
-        updated_at_ms: i64,
-    ) -> Result<(), StorageError> {
-        let transaction = self.connection.transaction()?;
-        ensure_entity_exists(&transaction, "decks", "deck", deck_id)?;
-        ensure_library_notes_exist(&transaction, source_ids)?;
-        for source_id in source_ids {
-            transaction.execute(
-                "UPDATE source_items
-                 SET deck_id = ?1, updated_at_ms = ?2
-                 WHERE id = ?3",
-                params![deck_id, updated_at_ms, source_id],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    /// Atomically adds one tag to every selected source note.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when a selected note is missing or the tag
-    /// cannot be stored.
-    pub fn tag_library_notes(
-        &mut self,
-        source_ids: &[String],
-        tag: &Tag,
-        updated_at_ms: i64,
-    ) -> Result<(), StorageError> {
-        let transaction = self.connection.transaction()?;
-        ensure_library_notes_exist(&transaction, source_ids)?;
-        upsert_tag(&transaction, tag)?;
-        for source_id in source_ids {
-            let ordinal = transaction.query_row(
-                "SELECT COALESCE(MAX(ordinal) + 1, 0)
-                 FROM source_item_tags
-                 WHERE source_item_id = ?1",
-                [source_id],
-                |row| row.get::<_, u32>(0),
-            )?;
-            transaction.execute(
-                "INSERT OR IGNORE INTO source_item_tags(
-                    source_item_id, tag_id, ordinal
-                 ) VALUES (?1, ?2, ?3)",
-                params![source_id, tag.id, ordinal],
-            )?;
-            transaction.execute(
-                "UPDATE source_items SET updated_at_ms = ?1 WHERE id = ?2",
-                params![updated_at_ms, source_id],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    /// Atomically removes one tag from every selected source note.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when a selected note is missing or the
-    /// transaction cannot be committed.
-    pub fn untag_library_notes(
-        &mut self,
-        source_ids: &[String],
-        tag_id: &str,
-        updated_at_ms: i64,
-    ) -> Result<(), StorageError> {
-        let transaction = self.connection.transaction()?;
-        ensure_entity_exists(&transaction, "tags", "tag", tag_id)?;
-        ensure_library_notes_exist(&transaction, source_ids)?;
-        for source_id in source_ids {
-            transaction.execute(
-                "DELETE FROM source_item_tags
-                 WHERE source_item_id = ?1 AND tag_id = ?2",
-                params![source_id, tag_id],
-            )?;
-            transaction.execute(
-                "UPDATE source_items SET updated_at_ms = ?1 WHERE id = ?2",
-                params![updated_at_ms, source_id],
             )?;
         }
         transaction.commit()?;
@@ -3907,32 +3667,6 @@ fn ensure_cards_exist(connection: &Connection, card_ids: &[String]) -> Result<()
     }
     for card_id in card_ids {
         ensure_entity_exists(connection, "cards", "card", card_id)?;
-    }
-    Ok(())
-}
-
-fn ensure_library_notes_exist(
-    connection: &Connection,
-    source_ids: &[String],
-) -> Result<(), StorageError> {
-    if source_ids.is_empty() {
-        return Err(StorageError::InvalidAggregate(
-            "a library action requires at least one source note".to_owned(),
-        ));
-    }
-    let unique = source_ids.iter().collect::<HashSet<_>>();
-    if unique.len() != source_ids.len() {
-        return Err(StorageError::InvalidAggregate(
-            "a library action cannot contain duplicate source notes".to_owned(),
-        ));
-    }
-    for source_id in source_ids {
-        ensure_entity_exists(
-            connection,
-            "source_items",
-            "source note",
-            source_id.as_str(),
-        )?;
     }
     Ok(())
 }

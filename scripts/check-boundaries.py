@@ -65,16 +65,58 @@ REMOTE_MEDIA_SCHEME_LITERAL = re.compile(
     flags=re.IGNORECASE,
 )
 REMOVED_DESKTOP_COMMANDS = {
+    "add_archive_deck",
+    "apply_library_bulk_action",
+    "export_archive",
     "export_library_selection",
     "export_scheduler_diagnostics",
+    "get_library",
+    "import_archive",
+    "list_backups",
+    "preview_archive",
+    "restore_backup",
     "rollback_scheduler",
 }
 REMOVED_GENERATED_BINDINGS = {
+    "ArchiveAddDeckRequest.ts",
+    "ArchiveAddDeckResultDto.ts",
+    "ArchiveExportRequest.ts",
+    "ArchiveImportRequest.ts",
     "ArchiveImportModeDto.ts",
+    "ArchiveImportResultDto.ts",
     "ArchiveScopeDto.ts",
+    "BackupDto.ts",
+    "LibraryBulkActionDto.ts",
+    "LibraryBulkRequest.ts",
+    "LibraryBulkResultDto.ts",
+    "LibraryCardDto.ts",
+    "LibraryDeckDto.ts",
+    "LibraryDueFilterDto.ts",
     "LibraryExportRequest.ts",
     "LibraryExportResultDto.ts",
+    "LibraryMediaFilterDto.ts",
+    "LibraryNoteDto.ts",
+    "LibraryOverviewDto.ts",
+    "LibraryRequest.ts",
+    "LibrarySuspendedFilterDto.ts",
+    "LibraryTagDto.ts",
+    "LibraryTrashFilterDto.ts",
+    "PortableArchivePreviewDto.ts",
     "SchedulerDiagnosticsExportDto.ts",
+}
+REMOVED_SETTINGS_TEXT = {
+    "Archives and recovery",
+    "Export full collection",
+    "Preview an import",
+    "Replace collection",
+    "Rolling backups",
+    "Restore backup",
+}
+REMOVED_RUNTIME_ROUTES = {
+    "archive",
+    "backup",
+    "library",
+    "restore",
 }
 REMOVED_DESKTOP_COMPONENTS = {
     "Button.svelte",
@@ -375,6 +417,24 @@ def main() -> int:
             failures.append(
                 f"{(generated_root / binding).relative_to(ROOT)}: removed "
                 "frontend binding exists"
+            )
+
+    settings_path = desktop_source_root / "screens" / "SettingsScreen.svelte"
+    settings_text = settings_path.read_text(encoding="utf-8")
+    for marker in REMOVED_SETTINGS_TEXT:
+        if marker in settings_text:
+            failures.append(
+                f"{settings_path.relative_to(ROOT)}: removed Settings text "
+                f"{marker!r} is visible again"
+            )
+
+    routes_path = desktop_source_root / "lib" / "ui.ts"
+    routes = routes_path.read_text(encoding="utf-8")
+    for route in REMOVED_RUNTIME_ROUTES:
+        if re.search(rf'["\']{re.escape(route)}["\']', routes):
+            failures.append(
+                f"{routes_path.relative_to(ROOT)}: obsolete runtime route "
+                f"{route!r} exists"
             )
 
     if failures:
