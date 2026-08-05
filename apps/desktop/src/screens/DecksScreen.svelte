@@ -30,6 +30,9 @@
     onDeckContextChange: (value: string) => void;
   };
 
+  const selectedTodayDeckKey = "meiki-today-deck";
+  const allDecksId = "__all_decks__";
+
   let { onStudy, onOpen, onDeckContextChange }: Props = $props();
   let decks = $state<DeckSummaryDto[]>([]);
   let activeQueue = $state<StudyQueueSession | null>(null);
@@ -79,6 +82,7 @@
       installedBundles = loadedBundles;
       if (
         activeQueue &&
+        activeQueue.deckId !== allDecksId &&
         !loadedDecks.some((deck) => deck.id === activeQueue?.deckId)
       ) {
         clearStudyQueue();
@@ -168,6 +172,7 @@
     removingBundle = true;
     bundleRemovalError = "";
     notice = "";
+    const deckIdsBeforeRemoval = new Set(decks.map((deck) => deck.id));
     bundleRemovalProgress = {
       removed_decks: 0,
       total_decks: bundle.decks,
@@ -185,6 +190,14 @@
         (progress) => (bundleRemovalProgress = progress),
       );
       await loadDecks();
+      const selectedTodayDeck = localStorage.getItem(selectedTodayDeckKey);
+      if (
+        selectedTodayDeck &&
+        deckIdsBeforeRemoval.has(selectedTodayDeck) &&
+        !decks.some((deck) => deck.id === selectedTodayDeck)
+      ) {
+        localStorage.setItem(selectedTodayDeckKey, allDecksId);
+      }
       bundleRemovalProgressDialogOpen = false;
       selectedBundle = null;
       notice = `Removed ${languageName(result.language_tag)}. ${result.removed_decks.toLocaleString()} ${result.removed_decks === 1 ? "deck" : "decks"} and ${result.moved_cards.toLocaleString()} ${result.moved_cards === 1 ? "card" : "cards"} moved to Trash.`;

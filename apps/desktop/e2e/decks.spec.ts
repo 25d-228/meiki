@@ -27,6 +27,20 @@ async function lastRequest(
   }, command);
 }
 
+async function confirmJapaneseBundleRemoval(
+  page: import("@playwright/test").Page,
+): Promise<void> {
+  await page.getByRole("button", { name: "Bundle actions" }).click();
+  await page
+    .getByRole("dialog", { name: "Bundle actions" })
+    .getByRole("button", { name: /Remove Japanese/ })
+    .click();
+  await page
+    .getByRole("alertdialog", { name: "Remove Japanese?" })
+    .getByRole("button", { name: "Remove bundle" })
+    .click();
+}
+
 test("includes suspended cards in Total and presents the populated default deck as Unsorted", async ({
   page,
 }) => {
@@ -130,14 +144,14 @@ test("removes an installed bundle after one confirmation and leaves unrelated de
   await page.goto("/?bundleRemoval=installed");
   await openDecks(page);
   await page.getByRole("button", { name: "Bundle actions" }).click();
-  let actions = page.getByRole("dialog", { name: "Bundle actions" });
+  const actions = page.getByRole("dialog", { name: "Bundle actions" });
   const removeJapanese = actions.getByRole("button", {
     name: /Remove Japanese/,
   });
   await expect(removeJapanese).toContainText(/6\s*decks, 9,700\s*cards/);
   await removeJapanese.click();
 
-  let confirmation = page.getByRole("alertdialog", {
+  const confirmation = page.getByRole("alertdialog", {
     name: "Remove Japanese?",
   });
   await expect(confirmation).toContainText(
@@ -146,13 +160,7 @@ test("removes an installed bundle after one confirmation and leaves unrelated de
   await confirmation.getByRole("button", { name: "Cancel" }).click();
   await expect(lastRequest(page, "remove_bundle")).resolves.toBeUndefined();
 
-  await page.getByRole("button", { name: "Bundle actions" }).click();
-  actions = page.getByRole("dialog", { name: "Bundle actions" });
-  await actions.getByRole("button", { name: /Remove Japanese/ }).click();
-  confirmation = page.getByRole("alertdialog", {
-    name: "Remove Japanese?",
-  });
-  await confirmation.getByRole("button", { name: "Remove bundle" }).click();
+  await confirmJapaneseBundleRemoval(page);
 
   const progress = page.getByRole("dialog", { name: "Removing bundle" });
   await expect(progress.getByRole("status")).toContainText(/Decks\s*1 \/ 6/);
@@ -170,6 +178,65 @@ test("removes an installed bundle after one confirmation and leaves unrelated de
       expected_decks: 6,
       expected_cards: 9_700,
     },
+  });
+});
+
+test("preserves an all-decks study queue when its bundle decks are removed", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "meiki-active-study-queue",
+      JSON.stringify({
+        version: 2,
+        deckId: "__all_decks__",
+        entries: [
+          {
+            card_id: "due-card",
+            card_content_version: 0,
+            schedule_version: 0,
+          },
+        ],
+        position: 0,
+        startedAtMs: 1_700_000_000_000,
+        pendingReview: null,
+      }),
+    );
+  });
+  await page.goto("/?bundleRemoval=installed");
+  await openDecks(page);
+  await expect(page.getByText(/A saved session is active/)).toBeVisible();
+
+  await confirmJapaneseBundleRemoval(page);
+  await expect(page.getByText(/Removed Japanese/)).toBeVisible();
+  await expect(page.getByText(/A saved session is active/)).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("meiki-active-study-queue") ?? "null"),
+    ),
+  ).toMatchObject({ deckId: "__all_decks__", position: 0 });
+});
+
+test("resets a removed Today deck selection to All decks", async ({ page }) => {
+  await page.goto("/?bundleRemoval=installed");
+  await openDecks(page);
+  await page.evaluate(() => {
+    localStorage.setItem("meiki-today-deck", "deck:ja-JP:05");
+  });
+
+  await confirmJapaneseBundleRemoval(page);
+  await expect(page.getByText(/Removed Japanese/)).toBeVisible();
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-today-deck")),
+  ).toBe("__all_decks__");
+
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Today", exact: true })
+    .click();
+  await expect(page.getByLabel("Deck")).toHaveValue("__all_decks__");
+  expect((await lastRequest(page, "get_today_overview"))?.args).toMatchObject({
+    request: { deck_id: "__all_decks__" },
   });
 });
 
