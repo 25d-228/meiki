@@ -103,10 +103,10 @@ test("opens deck-scoped management and keeps rename and deletion in Settings", a
   await expect(
     page.getByRole("heading", { name: "Travel phrases", level: 1 }),
   ).toBeVisible();
-  expect((await lastRequest(page, "get_library"))?.args).toMatchObject({
+  expect((await lastRequest(page, "get_deck_cards"))?.args).toMatchObject({
     request: { deck_id: "travel-deck" },
   });
-  await page.getByRole("button", { name: "Add a source note" }).click();
+  await page.getByRole("button", { name: "Add card" }).click();
   await expect(page.getByLabel("Deck")).toHaveValue("travel-deck");
 
   await page

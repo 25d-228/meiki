@@ -33,7 +33,7 @@ async function navigatePrimary(
     .click();
   await expect(
     page.getByRole("heading", {
-      name: screen === "Add" ? "Add / Edit" : screen,
+      name: screen === "Add" ? "Add / Edit card" : screen,
       level: 1,
     }),
   ).toBeVisible();
@@ -159,7 +159,7 @@ for (const visualCase of visualCases) {
     await prepare(page, visualCase);
     if (visualCase.screen === "Add") {
       await page
-        .getByLabel("Source text segment 1")
+        .getByLabel("Sentence text segment 1")
         .fill(
           visualCase.name.includes("cjk")
             ? "Cafe\u0301 · 日曜日は図書館に行きます"
@@ -313,56 +313,46 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
-test("visual regression: destructive-confirmation-medium-dark", async ({
-  page,
-}) => {
+test("visual regression: card-trash-success-medium-dark", async ({ page }) => {
   await prepare(page, {
     route: "/",
     screen: "Deck",
     theme: "dark",
     viewport: "medium",
   });
-  await page.getByText("Select this page").click();
-  await page.getByRole("button", { name: "Move to Trash" }).click();
-  await expect(
-    page.getByRole("alertdialog", {
-      name: "Move selected notes to Trash?",
-    }),
-  ).toBeVisible();
-  await expect(page).toHaveScreenshot(
-    "destructive-confirmation-medium-dark.png",
-    {
-      animations: "disabled",
-      caret: "hide",
-      maxDiffPixelRatio: 0.12,
-    },
+  await page
+    .getByTestId("card-card-ar")
+    .getByRole("button", { name: "Move to Trash" })
+    .click();
+  await expect(page.getByTestId("app-shell").getByRole("status")).toContainText(
+    "Moved the card to Trash.",
   );
+  await expect(page).toHaveScreenshot("card-trash-success-medium-dark.png", {
+    animations: "disabled",
+    caret: "hide",
+    maxDiffPixelRatio: 0.12,
+  });
 });
 
-test("visual regression: destructive-confirmation-medium-light", async ({
-  page,
-}) => {
+test("visual regression: card-trash-success-medium-light", async ({ page }) => {
   await prepare(page, {
     route: "/",
     screen: "Deck",
     theme: "light",
     viewport: "medium",
   });
-  await page.getByText("Select this page").click();
-  await page.getByRole("button", { name: "Move to Trash" }).click();
-  await expect(
-    page.getByRole("alertdialog", {
-      name: "Move selected notes to Trash?",
-    }),
-  ).toBeVisible();
-  await expect(page).toHaveScreenshot(
-    "destructive-confirmation-medium-light.png",
-    {
-      animations: "disabled",
-      caret: "hide",
-      maxDiffPixelRatio: 0.12,
-    },
+  await page
+    .getByTestId("card-card-ar")
+    .getByRole("button", { name: "Move to Trash" })
+    .click();
+  await expect(page.getByTestId("app-shell").getByRole("status")).toContainText(
+    "Moved the card to Trash.",
   );
+  await expect(page).toHaveScreenshot("card-trash-success-medium-light.png", {
+    animations: "disabled",
+    caret: "hide",
+    maxDiffPixelRatio: 0.12,
+  });
 });
 
 for (const theme of ["light", "dark"] as const) {
@@ -394,7 +384,7 @@ test("dialogs trap focus and restore it to their launch control", async ({
 }) => {
   await page.goto("/");
   await navigate(page, "Add");
-  const source = page.getByLabel("Source text segment 1");
+  const source = page.getByLabel("Sentence text segment 1");
   await source.fill("Keyboard");
   await source.evaluate((element) => {
     const textarea = element as HTMLTextAreaElement;
@@ -428,12 +418,14 @@ test("alert dialogs trap focus and restore it to their launch control", async ({
   page,
 }) => {
   await page.goto("/");
-  await navigate(page, "Deck");
-  await page.getByText("Select this page").click();
-  const trashButton = page.getByRole("button", { name: "Move to Trash" });
-  await trashButton.click();
+  await navigate(page, "Add");
+  await page.getByLabel("Sentence text segment 1").fill("Unsaved card");
+  const decksButton = page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Decks", exact: true });
+  await decksButton.click();
   const dialog = page.getByRole("alertdialog", {
-    name: "Move selected notes to Trash?",
+    name: "Discard unsaved changes?",
   });
   await expect(dialog).toBeVisible();
 
@@ -450,7 +442,7 @@ test("alert dialogs trap focus and restore it to their launch control", async ({
 
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
-  await expect(trashButton).toBeFocused();
+  await expect(decksButton).toBeFocused();
 });
 
 test("screens reflow at a 200% zoom-equivalent CSS viewport", async ({
@@ -471,7 +463,7 @@ test("screens reflow at a 200% zoom-equivalent CSS viewport", async ({
       page.getByRole("heading", {
         name:
           screen === "Add"
-            ? "Add / Edit"
+            ? "Add / Edit card"
             : screen === "Deck"
               ? "Travel phrases"
               : screen,

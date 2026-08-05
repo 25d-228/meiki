@@ -3,14 +3,15 @@ use std::path::PathBuf;
 use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckRequest,
-    DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
-    ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto, LibraryOverviewDto,
-    LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
-    ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
-    RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto,
-    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
-    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
+    DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
+    DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
+    ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
+    LibraryOverviewDto, LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto,
+    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
+    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
+    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
+    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
     UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State};
@@ -26,6 +27,8 @@ macro_rules! desktop_commands {
             reconcile_study_queue,
             get_library,
             apply_library_bulk_action,
+            get_deck_cards,
+            apply_deck_card_action,
             export_archive,
             preview_archive,
             add_archive_deck,
@@ -133,6 +136,24 @@ fn apply_library_bulk_action(
     state: State<'_, AppContext>,
 ) -> Result<LibraryBulkResultDto, String> {
     commands::apply_library_bulk_action(&state.service(), &request)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_deck_cards(
+    request: DeckCardRequest,
+    state: State<'_, AppContext>,
+) -> Result<DeckCardOverviewDto, String> {
+    commands::get_deck_cards(&state.service(), &request)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn apply_deck_card_action(
+    request: DeckCardActionRequest,
+    state: State<'_, AppContext>,
+) -> Result<DeckCardActionResultDto, String> {
+    commands::apply_deck_card_action(&state.service(), &request)
 }
 
 #[tauri::command]
@@ -406,7 +427,10 @@ pub fn run() {
 mod tests {
     use std::collections::HashSet;
 
-    use meiki_application::{ALL_DECKS_ID, CreateDeckRequest, StudyAvailabilityDto, TodayRequest};
+    use meiki_application::{
+        ALL_DECKS_ID, CreateDeckRequest, DeckCardRequest, DeckCardTrashDto, StudyAvailabilityDto,
+        TodayRequest,
+    };
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -419,6 +443,8 @@ mod tests {
         "reconcile_study_queue",
         "get_library",
         "apply_library_bulk_action",
+        "get_deck_cards",
+        "apply_deck_card_action",
         "export_archive",
         "preview_archive",
         "add_archive_deck",
@@ -493,6 +519,19 @@ mod tests {
         assert_eq!(summary.total_cards, 0);
         assert_eq!(summary.due_cards, 0);
         assert_eq!(summary.new_cards, 0);
+        let cards = commands::get_deck_cards(
+            &service,
+            &DeckCardRequest {
+                deck_id: created.id.clone(),
+                query: String::new(),
+                trash: DeckCardTrashDto::Active,
+                now_ms: request.now_ms,
+                offset: 0,
+                limit: 25,
+            },
+        )
+        .expect("map the deck card page request to ApplicationService");
+        assert!(cards.cards.is_empty());
 
         let serialized = serde_json::to_value(created).expect("serialize the desktop DTO");
         assert_eq!(serialized["name"], json!("Adapter contract"));

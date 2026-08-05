@@ -1433,26 +1433,223 @@ impl Storage {
                 .collect::<Result<Vec<_>, _>>()?
         };
 
-        stored
-            .into_iter()
-            .map(|(source_id, deleted_at_ms)| {
-                let note = load_source_note(&self.connection, &source_id)?;
-                let cards = note
-                    .clozes
-                    .iter()
-                    .map(|cloze| {
-                        let card = self.get_card_for_cloze(&cloze.id)?;
-                        let schedule = self.load_schedule(&card.id)?;
-                        Ok(StoredLibraryCard { card, schedule })
-                    })
-                    .collect::<Result<Vec<_>, StorageError>>()?;
-                Ok(StoredLibraryNote {
-                    note,
-                    cards,
-                    deleted_at_ms,
-                })
-            })
-            .collect()
+        load_library_notes(self, stored)
+    }
+
+    /// Loads source records owned by one deck for card-first management.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when any stored aggregate cannot be decoded.
+    pub fn deck_library_notes(
+        &self,
+        deck_id: &str,
+    ) -> Result<Vec<StoredLibraryNote>, StorageError> {
+        let stored = {
+            let mut statement = self.connection.prepare(
+                "SELECT id, deleted_at_ms
+                 FROM source_items
+                 WHERE deck_id = ?1
+                 ORDER BY updated_at_ms DESC, id",
+            )?;
+            statement
+                .query_map([deck_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        load_library_notes(self, stored)
+    }
+
+    /// Moves one card into an independent source record without changing its
+    /// card, schedule, or review identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the requested card and isolated record do
+    /// not describe the same cloze, or when the transaction cannot be committed.
+    pub fn isolate_card_source(
+        &mut self,
+        card_id: &str,
+        isolated: &StoredSourceNote,
+    ) -> Result<(), StorageError> {
+        validate_note(isolated)?;
+        if isolated.clozes.len() != 1 {
+            return Err(StorageError::InvalidAggregate(
+                "an isolated card source must contain exactly one cloze".into(),
+            ));
+        }
+        let transaction = self.connection.transaction()?;
+        let (cloze_id, source_id) = transaction
+            .query_row(
+                "SELECT cards.cloze_id, clozes.source_item_id
+                 FROM cards
+                 JOIN clozes ON clozes.id = cards.cloze_id
+                 WHERE cards.id = ?1",
+                [card_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| entity_not_found("card", card_id))?;
+        let cloze_count = transaction.query_row(
+            "SELECT COUNT(*) FROM clozes WHERE source_item_id = ?1",
+            [&source_id],
+            |row| row.get::<_, u64>(0),
+        )?;
+        if cloze_count == 1 {
+            return Ok(());
+        }
+        let isolated_cloze = &isolated.clozes[0];
+        if isolated_cloze.id != cloze_id
+            || isolated_cloze.source_item_id != isolated.source_item.id
+            || isolated.source_item.id == source_id
+        {
+            return Err(StorageError::InvalidAggregate(
+                "an isolated card source must preserve its selected cloze".into(),
+            ));
+        }
+        let deleted_at_ms = transaction.query_row(
+            "SELECT deleted_at_ms FROM source_items WHERE id = ?1",
+            [&source_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )?;
+
+        insert_source(&transaction, &isolated.source_item)?;
+        transaction.execute(
+            "UPDATE source_items SET deleted_at_ms = ?1 WHERE id = ?2",
+            params![deleted_at_ms, isolated.source_item.id],
+        )?;
+        for tag in &isolated.source_item.tags {
+            upsert_tag(&transaction, tag)?;
+        }
+        insert_source_tag_links(&transaction, &isolated.source_item)?;
+        insert_owned_annotations(
+            &transaction,
+            "source_item_annotations",
+            "source_item_id",
+            &isolated.source_item.id,
+            &isolated.source_item.annotations,
+        )?;
+        for media in &isolated.source_item.media {
+            upsert_media(&transaction, media)?;
+        }
+        insert_source_media_links(&transaction, &isolated.source_item)?;
+        insert_segments(&transaction, &isolated.source_item)?;
+
+        let changed_segment = transaction.execute(
+            "UPDATE semantic_segments
+             SET kind = 'text', cloze_id = NULL
+             WHERE source_item_id = ?1 AND cloze_id = ?2",
+            params![source_id, cloze_id],
+        )?;
+        ensure_changed(changed_segment, "card segment", &cloze_id)?;
+        let changed_cloze = transaction.execute(
+            "UPDATE clozes SET source_item_id = ?1
+             WHERE id = ?2 AND source_item_id = ?3",
+            params![isolated.source_item.id, cloze_id, source_id],
+        )?;
+        ensure_changed(changed_cloze, "card cloze", &cloze_id)?;
+        transaction.execute(
+            "UPDATE source_items SET updated_at_ms = ?1 WHERE id = ?2",
+            params![isolated.source_item.updated_at_ms, source_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Suspends or unsuspends only the selected card identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the selection is invalid or a write fails.
+    pub fn set_deck_cards_suspended(
+        &mut self,
+        card_ids: &[String],
+        suspended: bool,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_cards_exist(&transaction, card_ids)?;
+        for card_id in card_ids {
+            transaction.execute(
+                "UPDATE cards
+                 SET suspended = ?1, updated_at_ms = ?2, queue_updated_at_ms = ?2
+                 WHERE id = ?3",
+                params![suspended, updated_at_ms, card_id],
+            )?;
+            transaction.execute(
+                "UPDATE source_items
+                 SET updated_at_ms = ?1
+                 WHERE id = (
+                    SELECT clozes.source_item_id
+                    FROM cards JOIN clozes ON clozes.id = cards.cloze_id
+                    WHERE cards.id = ?2
+                 )",
+                params![updated_at_ms, card_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Moves isolated card sources into or out of recoverable Trash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the selection is invalid or a write fails.
+    pub fn set_deck_cards_deleted(
+        &mut self,
+        card_ids: &[String],
+        deleted_at_ms: Option<i64>,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_cards_exist(&transaction, card_ids)?;
+        for card_id in card_ids {
+            transaction.execute(
+                "UPDATE source_items
+                 SET deleted_at_ms = ?1, updated_at_ms = ?2
+                 WHERE id = (
+                    SELECT clozes.source_item_id
+                    FROM cards JOIN clozes ON clozes.id = cards.cloze_id
+                    WHERE cards.id = ?3
+                 )",
+                params![deleted_at_ms, updated_at_ms, card_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Moves isolated card sources to an existing flat deck.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when a card or destination deck is missing.
+    pub fn move_deck_cards(
+        &mut self,
+        card_ids: &[String],
+        deck_id: &str,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        ensure_entity_exists(&transaction, "decks", "deck", deck_id)?;
+        ensure_cards_exist(&transaction, card_ids)?;
+        for card_id in card_ids {
+            transaction.execute(
+                "UPDATE source_items
+                 SET deck_id = ?1, updated_at_ms = ?2
+                 WHERE id = (
+                    SELECT clozes.source_item_id
+                    FROM cards JOIN clozes ON clozes.id = cards.cloze_id
+                    WHERE cards.id = ?3
+                 )",
+                params![deck_id, updated_at_ms, card_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Atomically moves source notes into or out of the recoverable trash.
@@ -3005,6 +3202,50 @@ fn ensure_changed(changed: usize, entity: &'static str, id: &str) -> Result<(), 
     } else {
         Err(entity_not_found(entity, id))
     }
+}
+
+fn load_library_notes(
+    storage: &Storage,
+    stored: Vec<(String, Option<i64>)>,
+) -> Result<Vec<StoredLibraryNote>, StorageError> {
+    stored
+        .into_iter()
+        .map(|(source_id, deleted_at_ms)| {
+            let note = load_source_note(&storage.connection, &source_id)?;
+            let cards = note
+                .clozes
+                .iter()
+                .map(|cloze| {
+                    let card = storage.get_card_for_cloze(&cloze.id)?;
+                    let schedule = storage.load_schedule(&card.id)?;
+                    Ok(StoredLibraryCard { card, schedule })
+                })
+                .collect::<Result<Vec<_>, StorageError>>()?;
+            Ok(StoredLibraryNote {
+                note,
+                cards,
+                deleted_at_ms,
+            })
+        })
+        .collect()
+}
+
+fn ensure_cards_exist(connection: &Connection, card_ids: &[String]) -> Result<(), StorageError> {
+    if card_ids.is_empty() {
+        return Err(StorageError::InvalidAggregate(
+            "a card action requires at least one card".to_owned(),
+        ));
+    }
+    let unique = card_ids.iter().collect::<HashSet<_>>();
+    if unique.len() != card_ids.len() {
+        return Err(StorageError::InvalidAggregate(
+            "a card action cannot contain duplicate cards".to_owned(),
+        ));
+    }
+    for card_id in card_ids {
+        ensure_entity_exists(connection, "cards", "card", card_id)?;
+    }
+    Ok(())
 }
 
 fn ensure_library_notes_exist(

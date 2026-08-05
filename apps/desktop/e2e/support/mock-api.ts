@@ -237,6 +237,29 @@ export async function installMockApi(page: Page): Promise<void> {
             dtos.bulkResults.suspend,
         );
       }
+      if (command === "get_deck_cards") {
+        const request = (
+          args as {
+            request: { deck_id: string; query: string; trash: string };
+          }
+        ).request;
+        const fixture =
+          request.trash === "trash"
+            ? dtos.deckCards.trash
+            : request.deck_id === "default-deck"
+              ? dtos.deckCards.default
+              : dtos.deckCards.travel;
+        const query = request.query.trim().toLocaleLowerCase();
+        if (!query) return clone(fixture);
+        const cards = fixture.cards.filter((card) =>
+          `${card.sentence} ${card.answer}`.toLocaleLowerCase().includes(query),
+        );
+        return { ...clone(fixture), cards, total_matches: cards.length };
+      }
+      if (command === "apply_deck_card_action") {
+        const request = (args as { request: { card_ids: string[] } }).request;
+        return { affected_cards: request.card_ids.length };
+      }
 
       if (command === "new_authoring_draft") return clone(dtos.emptyDraft);
       if (command === "get_authoring_draft_for_card")

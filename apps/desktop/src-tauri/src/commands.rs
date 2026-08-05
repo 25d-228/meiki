@@ -1,14 +1,15 @@
 use meiki_application::{
     ApplicationService, ArchiveAddDeckRequest, ArchiveAddDeckResultDto, ArchiveExportRequest,
     ArchiveImportRequest, ArchiveImportResultDto, AuthoringDraftDto, AuthoringPreviewDto,
-    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckRequest,
-    DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
-    ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto, LibraryOverviewDto,
-    LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto, PortableExportResultDto,
-    ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
-    RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto,
-    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
-    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    BackupDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
+    DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
+    DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
+    ImportMediaRequest, ImportSchedulerParametersRequest, LibraryBulkRequest, LibraryBulkResultDto,
+    LibraryOverviewDto, LibraryRequest, MakeClozeRequest, PortableArchivePreviewDto,
+    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
+    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
+    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
+    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
     UpdateSchedulerSettingsRequest,
 };
 
@@ -58,6 +59,20 @@ pub(crate) fn apply_library_bulk_action(
     request: &LibraryBulkRequest,
 ) -> CommandResult<LibraryBulkResultDto> {
     map_error(service.apply_library_bulk_action(request))
+}
+
+pub(crate) fn get_deck_cards(
+    service: &ApplicationService,
+    request: &DeckCardRequest,
+) -> CommandResult<DeckCardOverviewDto> {
+    map_error(service.get_deck_cards(request))
+}
+
+pub(crate) fn apply_deck_card_action(
+    service: &ApplicationService,
+    request: &DeckCardActionRequest,
+) -> CommandResult<DeckCardActionResultDto> {
+    map_error(service.apply_deck_card_action(request))
 }
 
 pub(crate) fn export_archive(

@@ -43,6 +43,10 @@ import type { StudyPlanDto } from "./generated/StudyPlanDto";
 import type { CreateDeckRequest } from "./generated/CreateDeckRequest";
 import type { DeckDto } from "./generated/DeckDto";
 import type { DeckSummaryDto } from "./generated/DeckSummaryDto";
+import type { DeckCardActionRequest } from "./generated/DeckCardActionRequest";
+import type { DeckCardActionResultDto } from "./generated/DeckCardActionResultDto";
+import type { DeckCardOverviewDto } from "./generated/DeckCardOverviewDto";
+import type { DeckCardRequest } from "./generated/DeckCardRequest";
 import type { DeleteDeckRequest } from "./generated/DeleteDeckRequest";
 import type { DeleteDeckResultDto } from "./generated/DeleteDeckResultDto";
 import type { RenameDeckRequest } from "./generated/RenameDeckRequest";
@@ -84,6 +88,16 @@ export const api = {
     request: LibraryBulkRequest,
   ): Promise<LibraryBulkResultDto> {
     return invoke("apply_library_bulk_action", { request });
+  },
+
+  getDeckCards(request: DeckCardRequest): Promise<DeckCardOverviewDto> {
+    return invoke("get_deck_cards", { request });
+  },
+
+  applyDeckCardAction(
+    request: DeckCardActionRequest,
+  ): Promise<DeckCardActionResultDto> {
+    return invoke("apply_deck_card_action", { request });
   },
 
   exportArchive(

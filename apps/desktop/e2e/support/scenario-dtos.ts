@@ -442,6 +442,74 @@ const library = {
   limit: 50,
 };
 
+const deckCards = {
+  default: {
+    cards: [
+      {
+        id: "due-card",
+        sentence: "日曜日は図書館に[…]",
+        answer: "行きます",
+        status: "due",
+        language_tag: "ja",
+        direction: "auto",
+      },
+    ],
+    decks: [
+      { id: "default-deck", name: "Unsorted" },
+      { id: "travel-deck", name: "Travel phrases" },
+    ],
+    total_matches: 1,
+    offset: 0,
+    limit: 25,
+  },
+  travel: {
+    cards: [
+      {
+        id: "card-ar",
+        sentence: "أنا أقرأ […] في المكتبة",
+        answer: "كتابًا",
+        status: "scheduled",
+        language_tag: "ar",
+        direction: "rtl",
+      },
+      {
+        id: "travel-new-card",
+        sentence: "Take the […] train",
+        answer: "express",
+        status: "new",
+        language_tag: "en",
+        direction: "ltr",
+      },
+    ],
+    decks: [
+      { id: "default-deck", name: "Unsorted" },
+      { id: "travel-deck", name: "Travel phrases" },
+    ],
+    total_matches: 2,
+    offset: 0,
+    limit: 25,
+  },
+  trash: {
+    cards: [
+      {
+        id: "trashed-card",
+        sentence: "Recover this […]",
+        answer: "card",
+        status: "suspended",
+        language_tag: "en",
+        direction: "ltr",
+      },
+    ],
+    decks: [
+      { id: "default-deck", name: "Unsorted" },
+      { id: "travel-deck", name: "Travel phrases" },
+    ],
+    total_matches: 1,
+    offset: 0,
+    limit: 25,
+  },
+};
+
 const schedulerSettings = {
   deck_id: "default-deck",
   scheduling_mode: "automatic",
@@ -672,6 +740,7 @@ export const scenarioDtos = {
       "60 min/day\nTarget retention: 87.5%\nNew cards today: 12\nReason: fixture response.",
   },
   library,
+  deckCards,
   emptyLibrary: {
     ...library,
     notes: [],

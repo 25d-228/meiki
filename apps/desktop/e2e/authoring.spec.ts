@@ -10,7 +10,7 @@ async function openEditor(page: Page, scenario = "cjk"): Promise<void> {
   await page.goto(`/?authoring=${scenario}`);
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Add / Edit", level: 1 }),
+    page.getByRole("heading", { name: "Add / Edit card", level: 1 }),
   ).toBeVisible();
 }
 
@@ -80,9 +80,7 @@ test("maps a UTF-16 cloze request, renders its preview, and saves the edited DTO
   await dialog.getByRole("button", { name: "Done" }).click();
 
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(
-    page.getByText("Source note saved on this device."),
-  ).toBeVisible();
+  await expect(page.getByText("Card saved on this device.")).toBeVisible();
   expect((await lastRequest(page, "save_authoring_draft"))?.args).toMatchObject(
     {
       draft: {
@@ -240,7 +238,7 @@ test("unsaved navigation never interrupts active IME composition", async ({
   await source.dispatchEvent("compositionstart", { data: "中" });
   await page.getByRole("button", { name: "Decks", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Add / Edit", level: 1 }),
+    page.getByRole("heading", { name: "Add / Edit card", level: 1 }),
   ).toBeVisible();
 
   await source.dispatchEvent("compositionend", { data: "中" });
@@ -251,6 +249,6 @@ test("unsaved navigation never interrupts active IME composition", async ({
   await expect(confirmation).toBeVisible();
   await confirmation.getByRole("button", { name: "Keep editing" }).click();
   await expect(
-    page.getByRole("heading", { name: "Add / Edit", level: 1 }),
+    page.getByRole("heading", { name: "Add / Edit card", level: 1 }),
   ).toBeVisible();
 });
