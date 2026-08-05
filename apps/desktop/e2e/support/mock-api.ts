@@ -7,6 +7,10 @@ export async function installMockApi(page: Page): Promise<void> {
     const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
     const calls: Record<string, number> = {};
     const removedDeckCardIds = new Set<string>();
+    const schedulerSettingsByDeck: Record<
+      string,
+      typeof dtos.schedulerSettings
+    > = {};
 
     window.__MEIKI_TEST_REQUESTS__ = [];
     window.__MEIKI_TEST_PICK_FILE__ = async (role) => `/fixture/${role}`;
@@ -155,10 +159,14 @@ export async function installMockApi(page: Page): Promise<void> {
       }
       if (command === "suspend_card") return clone(dtos.suspendedCard);
       if (command === "get_scheduler_settings") {
+        const deckId = (args as { deckId?: string })?.deckId ?? "default-deck";
         return clone(
-          params.get("boundary") === "midnight"
-            ? dtos.midnightSchedulerSettings
-            : dtos.schedulerSettings,
+          schedulerSettingsByDeck[deckId] ?? {
+            ...(params.get("boundary") === "midnight"
+              ? dtos.midnightSchedulerSettings
+              : dtos.schedulerSettings),
+            deck_id: deckId,
+          },
         );
       }
       if (command === "preview_scheduler_policy") {
@@ -173,15 +181,28 @@ export async function installMockApi(page: Page): Promise<void> {
         );
       }
       if (command === "update_scheduler_settings") {
-        return clone(
-          (
-            args as {
-              request: { scheduling_mode: "automatic" | "expert" };
-            }
-          ).request.scheduling_mode === "expert"
+        const request = (
+          args as {
+            request: typeof dtos.schedulerSettings & {
+              scheduling_mode: "automatic" | "expert";
+            };
+          }
+        ).request;
+        const saved = {
+          ...(request.scheduling_mode === "expert"
             ? dtos.savedExpertSettings
-            : dtos.savedAutomaticSettings,
-        );
+            : dtos.savedAutomaticSettings),
+          ...request,
+          effective_daily_time_budget_minutes:
+            request.deck_daily_time_budget_minutes ??
+            request.collection_daily_time_budget_minutes,
+          budget_source:
+            request.deck_daily_time_budget_minutes === null
+              ? "collection_budget"
+              : "deck_override",
+        } as typeof dtos.schedulerSettings;
+        schedulerSettingsByDeck[request.deck_id] = saved;
+        return clone(saved);
       }
       if (command === "import_scheduler_parameters")
         return clone(dtos.schedulerSettings);

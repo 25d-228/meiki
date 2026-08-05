@@ -215,7 +215,7 @@ const deckSummaries = [
   {
     id: "travel-deck",
     name: "Travel phrases",
-    total_cards: 1,
+    total_cards: 2,
     due_cards: 0,
     new_cards: 1,
   },
@@ -687,11 +687,11 @@ export const scenarioDtos = {
   },
   deletedDeck: {
     deleted_deck_id: "listening-deck",
-    moved_notes: 0,
+    affected_cards: 0,
   },
   movedDeck: {
     deleted_deck_id: "travel-deck",
-    moved_notes: 2,
+    affected_cards: 2,
   },
   deckLifecycle: [
     decks,

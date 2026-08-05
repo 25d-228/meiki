@@ -150,3 +150,51 @@ test("returns to the previous page after trash removes the final later-page card
   );
   expect(offsets.slice(-3)).toEqual([25, 25, 0]);
 });
+
+test("deletes directly with one confirmation and moves remaining cards to Trash", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete “Travel phrases”?",
+  });
+  await expect(confirmation).toContainText(
+    "Its 2 cards will be moved to Trash.",
+  );
+  await expect(confirmation.getByRole("textbox")).toHaveCount(0);
+  await confirmation.getByRole("button", { name: "Delete deck" }).click();
+
+  expect((await lastRequest(page, "delete_deck"))?.args).toMatchObject({
+    request: {
+      deck_id: "travel-deck",
+      move_cards_to_deck_id: null,
+      confirmation: "Travel phrases",
+    },
+  });
+  await expect(
+    page.getByRole("heading", { name: "Decks", level: 1 }),
+  ).toBeVisible();
+});
+
+test("moves active cards to another deck before deleting when requested", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Move cards instead" })
+    .click();
+  const moveDialog = page.getByRole("dialog", { name: "Move cards instead" });
+  await moveDialog.getByLabel("Destination deck").selectOption("default-deck");
+  await moveDialog
+    .getByRole("button", { name: "Move cards and delete" })
+    .click();
+
+  expect((await lastRequest(page, "delete_deck"))?.args).toMatchObject({
+    request: {
+      deck_id: "travel-deck",
+      move_cards_to_deck_id: "default-deck",
+      confirmation: "Travel phrases",
+    },
+  });
+});

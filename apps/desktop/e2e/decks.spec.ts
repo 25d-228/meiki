@@ -47,6 +47,26 @@ test("hides the empty internal default deck", async ({ page }) => {
   await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
 });
 
+test("keeps Unsorted visible when active cards exist but hides rename and delete", async ({
+  page,
+}) => {
+  await openDecks(page);
+  await page
+    .getByTestId("deck-default-deck")
+    .getByRole("button", { name: "Open" })
+    .click();
+
+  await expect(
+    page.getByRole("heading", { name: "Unsorted", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rename deck" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("button", { name: "Delete deck" })).toHaveCount(
+    0,
+  );
+});
+
 test("creates a deck from its name only", async ({ page }) => {
   await page.goto("/?decks=lifecycle");
   await openDecks(page);
@@ -91,7 +111,7 @@ test("starts and resumes a study queue restricted to one deck", async ({
   ).toBeVisible();
 });
 
-test("opens deck-scoped management and keeps rename and deletion in Settings", async ({
+test("manages deck identity and daily time without Settings deck controls", async ({
   page,
 }) => {
   await page.goto("/?decks=lifecycle");
@@ -108,29 +128,58 @@ test("opens deck-scoped management and keeps rename and deletion in Settings", a
   });
   await page.getByRole("button", { name: "Add card" }).click();
   await expect(page.getByLabel("Deck")).toHaveValue("travel-deck");
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  await page.getByRole("button", { name: "Rename deck" }).click();
+  const renameDialog = page.getByRole("dialog", { name: "Rename deck" });
+  await renameDialog.getByLabel("Name").fill("Audio");
+  await renameDialog.getByRole("button", { name: "Rename deck" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Audio", level: 1 }),
+  ).toBeVisible();
+  expect((await lastRequest(page, "rename_deck"))?.args).toMatchObject({
+    request: { deck_id: "travel-deck", name: "Audio" },
+  });
+
+  await page.getByRole("button", { name: "Daily time", exact: true }).click();
+  const timeDialog = page.getByRole("dialog", { name: "Daily time for Audio" });
+  await timeDialog.getByRole("switch").click();
+  await timeDialog.getByLabel("Minutes per day").fill("45");
+  await timeDialog.getByRole("button", { name: "Save daily time" }).click();
+  expect(
+    (await lastRequest(page, "update_scheduler_settings"))?.args,
+  ).toMatchObject({
+    request: {
+      deck_id: "travel-deck",
+      deck_daily_time_budget_minutes: 45,
+    },
+  });
+
+  await page.getByRole("button", { name: "Daily time", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Daily time for Audio" })
+    .getByRole("switch")
+    .click();
+  await page.getByRole("button", { name: "Save daily time" }).click();
+  expect(
+    (await lastRequest(page, "update_scheduler_settings"))?.args,
+  ).toMatchObject({
+    request: {
+      deck_id: "travel-deck",
+      deck_daily_time_budget_minutes: null,
+    },
+  });
 
   await page
     .getByRole("navigation", { name: "Primary navigation" })
     .getByRole("button", { name: "Settings", exact: true })
     .click();
-  await page.getByLabel("Deck to configure").selectOption("travel-deck");
-  await page.getByLabel("Deck name", { exact: true }).fill("Audio");
-  await page.getByRole("button", { name: "Rename deck" }).click();
-  await expect(page.getByText("Renamed deck to “Audio”.")).toBeVisible();
-
-  await page
-    .getByLabel("Move notes before deletion")
-    .selectOption("default-deck");
-  await page.getByRole("button", { name: "Delete deck" }).click();
-  const confirmation = page.getByRole("alertdialog", {
-    name: "Delete this deck?",
-  });
-  await confirmation.getByRole("button", { name: "Delete deck" }).click();
-  expect((await lastRequest(page, "delete_deck"))?.args).toMatchObject({
-    request: {
-      deck_id: "travel-deck",
-      move_notes_to_deck_id: "default-deck",
-      confirmation: "Audio",
-    },
-  });
+  await expect(page.getByLabel("Deck to configure")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Rename deck" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("button", { name: "Delete deck" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByText("Override for this deck")).toHaveCount(0);
 });

@@ -4,7 +4,6 @@
 
   import { api } from "../lib/api";
   import * as Alert from "$lib/components/ui/alert/index.js";
-  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import * as Collapsible from "$lib/components/ui/collapsible/index.js";
@@ -18,7 +17,6 @@
   import type { UpdateSchedulerSettingsRequest } from "../lib/generated/UpdateSchedulerSettingsRequest";
   import type { BackupDto } from "../lib/generated/BackupDto";
   import type { BudgetSourceDto } from "../lib/generated/BudgetSourceDto";
-  import type { DeckDto } from "../lib/generated/DeckDto";
   import type { PortableArchivePreviewDto } from "../lib/generated/PortableArchivePreviewDto";
   import type { ThemeMode } from "../lib/ui";
 
@@ -28,19 +26,13 @@
   };
 
   const autoplayKey = "meiki-autoplay-prompt-audio";
+  const settingsDeckId = "default-deck";
 
   let { theme, onThemeChange }: Props = $props();
-  let decks = $state<DeckDto[]>([]);
-  let deckId = $state("default-deck");
-  let deckName = $state("");
-  let deleteDestinationId = $state("");
   let settings = $state<SchedulerSettingsDto | null>(null);
   let schedulingMode = $state<SchedulingModeDto>("automatic");
   let collectionBudgetHours = $state(0);
   let collectionBudgetMinutes = $state(30);
-  let useDeckBudget = $state(false);
-  let deckBudgetHours = $state(0);
-  let deckBudgetMinutes = $state(30);
   let targetRetention = $state(9000);
   let newCardsPerDay = $state(20);
   let maximumIntervalDays = $state(36500);
@@ -57,8 +49,6 @@
   let importConfirmation = $state("");
   let restoreTarget = $state<BackupDto | null>(null);
   let restoreConfirmation = $state("");
-  let deleteDeckDialogOpen = $state(false);
-  let deleteDeckDescription = $state("");
 
   onMount(() => {
     autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
@@ -66,92 +56,7 @@
   });
 
   async function initialize(): Promise<void> {
-    await loadDecks();
     await Promise.all([loadSettings(), loadBackups()]);
-  }
-
-  function selectedDeck(): DeckDto | undefined {
-    return decks.find((deck) => deck.id === deckId);
-  }
-
-  async function loadDecks(preferredId = deckId): Promise<void> {
-    decks = await api.listDecks();
-    deckId =
-      decks.find((deck) => deck.id === preferredId)?.id ??
-      decks.find((deck) => deck.is_default)?.id ??
-      decks[0]?.id ??
-      "";
-    deckName = selectedDeck()?.name ?? "";
-    deleteDestinationId = decks.find((deck) => deck.id !== deckId)?.id ?? "";
-  }
-
-  async function chooseDeck(nextDeckId: string): Promise<void> {
-    deckId = nextDeckId;
-    deckName = selectedDeck()?.name ?? "";
-    deleteDestinationId = decks.find((deck) => deck.id !== deckId)?.id ?? "";
-    await loadSettings();
-  }
-
-  async function renameDeck(): Promise<void> {
-    if (!deckName.trim() || !selectedDeck()) return;
-    busy = true;
-    notice = "";
-    error = "";
-    try {
-      const renamed = await api.renameDeck({
-        deck_id: deckId,
-        name: deckName,
-        now_ms: Date.now(),
-      });
-      await loadDecks(renamed.id);
-      notice = `Renamed deck to “${renamed.name}”.`;
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function deleteDeck(): Promise<void> {
-    const deck = selectedDeck();
-    if (!deck || deck.is_default) return;
-    if (deck.note_count > 0 && !deleteDestinationId) {
-      error = "Choose another deck for these notes, or cancel deletion.";
-      return;
-    }
-    const moveMessage =
-      deck.note_count > 0
-        ? ` Move ${deck.note_count} note${deck.note_count === 1 ? "" : "s"} to the selected destination.`
-        : "";
-    deleteDeckDescription = `Delete deck “${deck.name}”?${moveMessage}`;
-    deleteDeckDialogOpen = true;
-  }
-
-  async function confirmDeleteDeck(): Promise<void> {
-    const deck = selectedDeck();
-    if (!deck || deck.is_default) return;
-    deleteDeckDialogOpen = false;
-    busy = true;
-    notice = "";
-    error = "";
-    try {
-      const result = await api.deleteDeck({
-        deck_id: deck.id,
-        move_notes_to_deck_id: deck.note_count > 0 ? deleteDestinationId : null,
-        confirmation: deck.name,
-        now_ms: Date.now(),
-      });
-      await loadDecks();
-      await loadSettings();
-      notice =
-        result.moved_notes > 0
-          ? `Deleted “${deck.name}” and moved ${result.moved_notes} notes.`
-          : `Deleted empty deck “${deck.name}”.`;
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
   }
 
   function applySettings(next: SchedulerSettingsDto): void {
@@ -159,11 +64,6 @@
     schedulingMode = next.scheduling_mode;
     [collectionBudgetHours, collectionBudgetMinutes] = splitDuration(
       next.collection_daily_time_budget_minutes,
-    );
-    useDeckBudget = next.deck_daily_time_budget_minutes !== null;
-    [deckBudgetHours, deckBudgetMinutes] = splitDuration(
-      next.deck_daily_time_budget_minutes ??
-        next.collection_daily_time_budget_minutes,
     );
     targetRetention = next.target_retention_basis_points;
     newCardsPerDay = next.new_cards_per_day;
@@ -185,7 +85,7 @@
     busy = true;
     error = "";
     try {
-      applySettings(await api.getSchedulerSettings(deckId));
+      applySettings(await api.getSchedulerSettings(settingsDeckId));
       const request = schedulingRequest();
       policyPreview = await api.previewSchedulerPolicy(request);
       previewedRequest = request;
@@ -214,10 +114,11 @@
       dayStart.setDate(dayStart.getDate() - 1);
     }
     return {
-      deck_id: deckId,
+      deck_id: settingsDeckId,
       scheduling_mode: schedulingMode,
       collection_daily_time_budget_minutes: collectionBudgetTotal(),
-      deck_daily_time_budget_minutes: useDeckBudget ? deckBudgetTotal() : null,
+      deck_daily_time_budget_minutes:
+        settings?.deck_daily_time_budget_minutes ?? null,
       target_retention_basis_points: targetRetention,
       new_cards_per_day: newCardsPerDay,
       maximum_interval_days: maximumIntervalDays,
@@ -269,7 +170,7 @@
     await runAction(
       () =>
         api.importSchedulerParameters({
-          deck_id: deckId,
+          deck_id: settingsDeckId,
           path,
         }),
       "Scheduler parameters imported for future reviews.",
@@ -281,7 +182,7 @@
     notice = "";
     error = "";
     try {
-      const result = await api.exportSchedulerParameters(deckId);
+      const result = await api.exportSchedulerParameters(settingsDeckId);
       notice = `Scheduler parameters exported: ${result.path}`;
     } catch (cause) {
       error = message(cause);
@@ -343,8 +244,7 @@
       importPreview = null;
       archivePath = "";
       importConfirmation = "";
-      await loadDecks(result.deck_id);
-      await Promise.all([loadSettings(), loadBackups()]);
+      await loadBackups();
     } catch (cause) {
       error = message(cause);
     } finally {
@@ -447,10 +347,6 @@
     return collectionBudgetHours * 60 + collectionBudgetMinutes;
   }
 
-  function deckBudgetTotal(): number {
-    return deckBudgetHours * 60 + deckBudgetMinutes;
-  }
-
   function budgetSourceLabel(source: BudgetSourceDto): string {
     return source === "deck_override" ? "Deck override" : "Collection budget";
   }
@@ -540,76 +436,6 @@
       </div>
 
       <div class="field">
-        <Label for="settings-deck">Deck</Label>
-        <div class="deck-management">
-          <select
-            id="settings-deck"
-            aria-label="Deck to configure"
-            value={deckId}
-            disabled={busy}
-            onchange={(event) => void chooseDeck(event.currentTarget.value)}
-          >
-            {#each decks as deck (deck.id)}
-              <option value={deck.id}
-                >{deck.name} · {deck.note_count} notes</option
-              >
-            {/each}
-          </select>
-          {#if selectedDeck()}
-            <div class="deck-action-row">
-              <label>
-                <span>Deck name</span>
-                <input
-                  aria-label="Deck name"
-                  bind:value={deckName}
-                  maxlength="80"
-                  disabled={busy}
-                />
-              </label>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy ||
-                  !deckName.trim() ||
-                  deckName.trim() === selectedDeck()?.name}
-                onclick={renameDeck}>Rename deck</Button
-              >
-            </div>
-            {#if !selectedDeck()?.is_default}
-              {#if selectedDeck()?.note_count}
-                <label>
-                  <span>Move notes before deletion</span>
-                  <select
-                    aria-label="Move notes before deletion"
-                    bind:value={deleteDestinationId}
-                    disabled={busy}
-                  >
-                    {#each decks.filter((deck) => deck.id !== deckId) as deck (deck.id)}
-                      <option value={deck.id}>{deck.name}</option>
-                    {/each}
-                  </select>
-                </label>
-              {/if}
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={busy ||
-                  Boolean(selectedDeck()?.note_count && !deleteDestinationId)}
-                onclick={deleteDeck}>Delete deck</Button
-              >
-            {:else}
-              <p class="advanced-note">
-                The default deck can be renamed but not deleted.
-              </p>
-            {/if}
-          {/if}
-        </div>
-        <p class="field-description">
-          Choose a flat deck to rename or configure. Create decks from Decks.
-        </p>
-      </div>
-
-      <div class="field">
         <Label id="collection-daily-budget-label">Daily study time</Label>
         <div class="budget-control">
           <div
@@ -678,61 +504,6 @@
           This collection-wide budget includes reviews and new cards.
         </p>
       </div>
-
-      <div class="setting-row">
-        <div>
-          <strong>Override for this deck</strong>
-          <p>
-            {useDeckBudget
-              ? "This deck uses its own daily budget."
-              : "This deck inherits the collection budget."}
-          </p>
-        </div>
-        <label class="toggle" for="use-deck-budget">
-          <Switch
-            id="use-deck-budget"
-            bind:checked={useDeckBudget}
-            onCheckedChange={markPolicyChanged}
-            disabled={busy}
-          />
-          <span>{useDeckBudget ? "Deck override" : "Collection budget"}</span>
-        </label>
-      </div>
-
-      {#if useDeckBudget}
-        <div class="field">
-          <Label id="deck-daily-budget-label">Deck daily time</Label>
-          <div class="duration-inputs" id="deck-daily-budget">
-            <label>
-              <span>Hours</span>
-              <input
-                type="number"
-                min="0"
-                max="24"
-                aria-label="Deck daily study hours"
-                bind:value={deckBudgetHours}
-                oninput={markPolicyChanged}
-                disabled={busy}
-              />
-            </label>
-            <label>
-              <span>Minutes</span>
-              <input
-                type="number"
-                min="0"
-                max="59"
-                aria-label="Deck daily study minutes"
-                bind:value={deckBudgetMinutes}
-                oninput={markPolicyChanged}
-                disabled={busy}
-              />
-            </label>
-          </div>
-          <p class="field-description">
-            Minutes for this deck; other decks keep the collection budget.
-          </p>
-        </div>
-      {/if}
 
       <div class="field">
         <Label for="day-boundary">Day boundary (minutes after midnight)</Label>
@@ -1081,24 +852,6 @@
   </Dialog.Content>
 </Dialog.Root>
 
-<AlertDialog.Root bind:open={deleteDeckDialogOpen}>
-  <AlertDialog.Content>
-    <AlertDialog.Header>
-      <AlertDialog.Title>Delete this deck?</AlertDialog.Title>
-      <AlertDialog.Description>
-        {deleteDeckDescription}
-      </AlertDialog.Description>
-    </AlertDialog.Header>
-    <AlertDialog.Footer>
-      <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
-      <AlertDialog.Action
-        class="bg-destructive/10 text-destructive hover:bg-destructive/20"
-        onclick={() => void confirmDeleteDeck()}>Delete deck</AlertDialog.Action
-      >
-    </AlertDialog.Footer>
-  </AlertDialog.Content>
-</AlertDialog.Root>
-
 <style>
   .settings-screen {
     width: min(100%, 54rem);
@@ -1125,27 +878,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
-  }
-
-  .deck-management {
-    display: grid;
-    gap: 0.75rem;
-  }
-
-  .deck-action-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.75rem;
-    align-items: end;
-  }
-
-  .deck-action-row label,
-  .deck-management > label {
-    display: grid;
-    gap: 0.25rem;
-    color: var(--muted-foreground);
-    font-size: var(--text-xs);
-    font-weight: 700;
   }
 
   .control-grid {
@@ -1198,18 +930,6 @@
   input:not([type="checkbox"]) {
     width: 100%;
     min-height: 2.75rem;
-    padding-inline: 0.75rem;
-    border: 1px solid var(--input);
-    border-radius: var(--radius-lg);
-    color: var(--foreground);
-    background: var(--card);
-    font: inherit;
-  }
-
-  select {
-    width: 100%;
-    min-height: 2.75rem;
-    margin-top: 0.5rem;
     padding-inline: 0.75rem;
     border: 1px solid var(--input);
     border-radius: var(--radius-lg);

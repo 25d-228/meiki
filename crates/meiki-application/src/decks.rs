@@ -46,7 +46,7 @@ pub struct RenameDeckRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct DeleteDeckRequest {
     pub deck_id: String,
-    pub move_notes_to_deck_id: Option<String>,
+    pub move_cards_to_deck_id: Option<String>,
     pub confirmation: String,
     #[ts(type = "number")]
     pub now_ms: i64,
@@ -55,7 +55,7 @@ pub struct DeleteDeckRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct DeleteDeckResultDto {
     pub deleted_deck_id: String,
-    pub moved_notes: u32,
+    pub affected_cards: u32,
 }
 
 impl ApplicationService {
@@ -143,6 +143,11 @@ impl ApplicationService {
     /// Returns an error when the deck is missing, the name is unsafe or
     /// already used, or persistence fails.
     pub fn rename_deck(&self, request: &RenameDeckRequest) -> Result<DeckDto, ApplicationError> {
+        if request.deck_id == DEFAULT_DECK_ID {
+            return Err(ApplicationError::InvalidDeck(
+                "the default deck cannot be renamed".into(),
+            ));
+        }
         let name = validated_name(&request.name)?;
         let mut storage = self.open_storage()?;
         ensure_unique_name(&storage, name, Some(&request.deck_id))?;
@@ -153,13 +158,13 @@ impl ApplicationService {
         deck_dto(&storage, deck)
     }
 
-    /// Deletes an explicit non-default deck, moving all notes atomically when
-    /// it is not empty.
+    /// Deletes an explicit non-default deck, moving active cards to Trash or
+    /// into the selected destination atomically.
     ///
     /// # Errors
     ///
-    /// Returns an error unless the exact deck name confirms the action and a
-    /// non-empty deck has a distinct destination.
+    /// Returns an error unless the exact deck name confirms the action and an
+    /// optional destination differs from the deleted deck.
     pub fn delete_deck(
         &self,
         request: &DeleteDeckRequest,
@@ -182,14 +187,14 @@ impl ApplicationService {
                 deck.name
             )));
         }
-        let moved = storage.delete_deck_and_move_notes(
+        let affected_cards = storage.delete_deck_and_rehome_notes(
             &request.deck_id,
-            request.move_notes_to_deck_id.as_deref(),
+            request.move_cards_to_deck_id.as_deref(),
             request.now_ms,
         )?;
         Ok(DeleteDeckResultDto {
             deleted_deck_id: request.deck_id.clone(),
-            moved_notes: desktop_u32(moved, "moved deck note count")?,
+            affected_cards: desktop_u32(affected_cards, "affected deck card count")?,
         })
     }
 }
@@ -248,7 +253,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{CreateDeckRequest, DeleteDeckRequest, RenameDeckRequest};
-    use crate::ApplicationService;
+    use crate::{ApplicationService, GradeDto, GradeReviewRequest};
 
     fn add_card(
         storage: &mut Storage,
@@ -329,8 +334,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
-    fn flat_decks_create_rename_and_delete_with_an_explicit_note_move() {
+    fn rename_preserves_the_deck_cards_review_history_and_schedule() {
         let directory = tempdir().unwrap();
         let service = ApplicationService::new(directory.path().join("collection.db"));
         let created = service
@@ -340,117 +344,193 @@ mod tests {
             })
             .unwrap();
         assert_eq!(created.name, "Listening");
+
+        let mut storage = service.open_storage().unwrap();
+        add_card(
+            &mut storage,
+            &created.id,
+            "listening-card",
+            CardLifecycle::Unseen,
+            1_000,
+            false,
+        );
+        drop(storage);
+        let card = service.get_study_card("listening-card").unwrap();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "listening-review".into(),
+                    card_id: card.card_id,
+                    card_content_version: card.card_content_version,
+                    schedule_version: card.schedule_version,
+                    raw_response: "listening-card".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 900,
+                },
+                2_000,
+            )
+            .unwrap();
+        let storage = service.open_storage().unwrap();
+        let schedule_before = storage.load_schedule("listening-card").unwrap();
+        let history_before = storage.review_events("listening-card").unwrap();
+        drop(storage);
+
         let renamed = service
             .rename_deck(&RenameDeckRequest {
                 deck_id: created.id.clone(),
                 name: "Audio".into(),
-                now_ms: 2_000,
-            })
-            .unwrap();
-        assert_eq!(renamed.name, "Audio");
-
-        let mut storage = service.open_storage().unwrap();
-        let note = StoredSourceNote {
-            source_item: SourceItem {
-                id: "deck-note".into(),
-                deck_id: created.id.clone(),
-                segments: vec![SemanticSegment {
-                    id: "deck-segment".into(),
-                    ordinal: 0,
-                    content: SegmentContent::Cloze {
-                        cloze_id: "deck-cloze".into(),
-                        text: "listen".into(),
-                    },
-                }],
-                language_tag: None,
-                direction: Direction::Auto,
-                tags: Vec::new(),
-                annotations: Vec::new(),
-                explanation: None,
-                media: Vec::new(),
-                created_at_ms: 1_000,
-                updated_at_ms: 1_000,
-            },
-            clozes: vec![Cloze {
-                id: "deck-cloze".into(),
-                source_item_id: "deck-note".into(),
-                answer: "listen".into(),
-                accepted_answers: Vec::new(),
-                hint: None,
-                language_tag: None,
-                direction: Direction::Auto,
-                matching_policy: Some(MatchingPolicy::Strict),
-                annotations: Vec::new(),
-                explanation: None,
-                media: Vec::new(),
-                created_at_ms: 1_000,
-                updated_at_ms: 1_000,
-            }],
-        };
-        storage.create_source_note(&note).unwrap();
-        storage
-            .create_card(
-                &Card {
-                    id: "deck-card".into(),
-                    cloze_id: "deck-cloze".into(),
-                    content_version: 0,
-                    suspended: false,
-                    created_at_ms: 1_000,
-                    updated_at_ms: 1_000,
-                },
-                &ScheduleState {
-                    card_id: "deck-card".into(),
-                    version: 0,
-                    lifecycle: CardLifecycle::Unseen,
-                    due_at_ms: 1_000,
-                    ideal_due_at_ms: 1_000,
-                    interval_milliseconds: 0,
-                    interval_seconds: 0,
-                    repetitions: 0,
-                    stability_milliseconds: 0,
-                    difficulty_millipoints: 0,
-                    last_reviewed_at_ms: None,
-                    last_review_event_id: None,
-                },
-            )
-            .unwrap();
-        drop(storage);
-
-        assert!(
-            service
-                .delete_deck(&DeleteDeckRequest {
-                    deck_id: created.id.clone(),
-                    move_notes_to_deck_id: None,
-                    confirmation: "Audio".into(),
-                    now_ms: 3_000,
-                })
-                .is_err()
-        );
-        let default = service
-            .list_decks()
-            .unwrap()
-            .into_iter()
-            .find(|deck| deck.is_default)
-            .unwrap();
-        let deleted = service
-            .delete_deck(&DeleteDeckRequest {
-                deck_id: created.id,
-                move_notes_to_deck_id: Some(default.id.clone()),
-                confirmation: "Audio".into(),
                 now_ms: 3_000,
             })
             .unwrap();
-        assert_eq!(deleted.moved_notes, 1);
+        assert_eq!(renamed.name, "Audio");
+        let storage = service.open_storage().unwrap();
         assert_eq!(
-            service
-                .open_storage()
-                .unwrap()
-                .get_source_note("deck-note")
+            storage
+                .get_source_note("listening-card-source")
                 .unwrap()
                 .source_item
                 .deck_id,
-            default.id
+            created.id
         );
+        assert_eq!(
+            storage.load_schedule("listening-card").unwrap(),
+            schedule_before
+        );
+        assert_eq!(
+            storage.review_events("listening-card").unwrap(),
+            history_before
+        );
+    }
+
+    #[test]
+    fn direct_deletion_moves_all_remaining_cards_to_trash() {
+        let directory = tempdir().unwrap();
+        let service = ApplicationService::new(directory.path().join("collection.db"));
+        let created = service
+            .create_deck(&CreateDeckRequest {
+                name: "Temporary".into(),
+                now_ms: 1_000,
+            })
+            .unwrap();
+        let mut storage = service.open_storage().unwrap();
+        add_card(
+            &mut storage,
+            &created.id,
+            "active-card",
+            CardLifecycle::Unseen,
+            1_000,
+            false,
+        );
+        add_card(
+            &mut storage,
+            &created.id,
+            "already-trashed-card",
+            CardLifecycle::Introduced,
+            1_000,
+            false,
+        );
+        storage
+            .set_library_notes_deleted(&["already-trashed-card-source".into()], Some(1_500), 1_500)
+            .unwrap();
+        drop(storage);
+        let card = service.get_study_card("active-card").unwrap();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "active-card-review".into(),
+                    card_id: card.card_id,
+                    card_content_version: card.card_content_version,
+                    schedule_version: card.schedule_version,
+                    raw_response: "active-card".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 900,
+                },
+                1_750,
+            )
+            .unwrap();
+        let storage = service.open_storage().unwrap();
+        let schedule_before = storage.load_schedule("active-card").unwrap();
+        let history_before = storage.review_events("active-card").unwrap();
+        drop(storage);
+
+        let deleted = service
+            .delete_deck(&DeleteDeckRequest {
+                deck_id: created.id.clone(),
+                move_cards_to_deck_id: None,
+                confirmation: "Temporary".into(),
+                now_ms: 2_000,
+            })
+            .unwrap();
+        assert_eq!(deleted.affected_cards, 1);
+        let storage = service.open_storage().unwrap();
+        let notes = storage.library_notes().unwrap();
+        for source_id in ["active-card-source", "already-trashed-card-source"] {
+            let note = notes
+                .iter()
+                .find(|note| note.note.source_item.id == source_id)
+                .unwrap();
+            assert_eq!(
+                note.note.source_item.deck_id,
+                meiki_storage::DEFAULT_DECK_ID
+            );
+            assert!(note.deleted_at_ms.is_some());
+        }
+        assert_eq!(
+            storage.load_schedule("active-card").unwrap(),
+            schedule_before
+        );
+        assert_eq!(
+            storage.review_events("active-card").unwrap(),
+            history_before
+        );
+    }
+
+    #[test]
+    fn secondary_move_deletes_the_deck_and_preserves_active_cards() {
+        let directory = tempdir().unwrap();
+        let service = ApplicationService::new(directory.path().join("collection.db"));
+        let source = service
+            .create_deck(&CreateDeckRequest {
+                name: "Source".into(),
+                now_ms: 1_000,
+            })
+            .unwrap();
+        let destination = service
+            .create_deck(&CreateDeckRequest {
+                name: "Destination".into(),
+                now_ms: 1_000,
+            })
+            .unwrap();
+        let mut storage = service.open_storage().unwrap();
+        add_card(
+            &mut storage,
+            &source.id,
+            "moved-card",
+            CardLifecycle::Unseen,
+            1_000,
+            false,
+        );
+        drop(storage);
+
+        let deleted = service
+            .delete_deck(&DeleteDeckRequest {
+                deck_id: source.id,
+                move_cards_to_deck_id: Some(destination.id.clone()),
+                confirmation: "Source".into(),
+                now_ms: 2_000,
+            })
+            .unwrap();
+        assert_eq!(deleted.affected_cards, 1);
+        let note = service
+            .open_storage()
+            .unwrap()
+            .library_notes()
+            .unwrap()
+            .into_iter()
+            .find(|note| note.note.source_item.id == "moved-card-source")
+            .unwrap();
+        assert_eq!(note.note.source_item.deck_id, destination.id);
+        assert_eq!(note.deleted_at_ms, None);
     }
 
     #[test]
@@ -468,7 +548,7 @@ mod tests {
             service
                 .delete_deck(&DeleteDeckRequest {
                     deck_id: empty.id.clone(),
-                    move_notes_to_deck_id: None,
+                    move_cards_to_deck_id: None,
                     confirmation: "Wrong name".into(),
                     now_ms: 2_000,
                 })
@@ -477,20 +557,29 @@ mod tests {
         let deleted = service
             .delete_deck(&DeleteDeckRequest {
                 deck_id: empty.id,
-                move_notes_to_deck_id: None,
+                move_cards_to_deck_id: None,
                 confirmation: "Temporary".into(),
                 now_ms: 2_000,
             })
             .unwrap();
-        assert_eq!(deleted.moved_notes, 0);
+        assert_eq!(deleted.affected_cards, 0);
         assert_eq!(service.list_decks().unwrap().len(), 1);
         assert!(service.list_decks().unwrap()[0].is_default);
         assert!(
             service
                 .delete_deck(&DeleteDeckRequest {
                     deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
-                    move_notes_to_deck_id: None,
+                    move_cards_to_deck_id: None,
                     confirmation: "Default".into(),
+                    now_ms: 3_000,
+                })
+                .is_err()
+        );
+        assert!(
+            service
+                .rename_deck(&RenameDeckRequest {
+                    deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+                    name: "Renamed".into(),
                     now_ms: 3_000,
                 })
                 .is_err()

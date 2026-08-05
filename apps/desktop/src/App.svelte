@@ -193,6 +193,18 @@
     await performNavigation("deck");
   }
 
+  function renameSelectedDeck(deckName: string): void {
+    selectedDeckName = deckName;
+    deckContext = deckName;
+  }
+
+  async function finishDeckDeletion(): Promise<void> {
+    announcement = `Deleted ${selectedDeckName}. Returning to Decks.`;
+    selectedDeckId = "";
+    selectedDeckName = "";
+    await navigate("decks");
+  }
+
   async function addDeckNote(): Promise<void> {
     editingReturnScreen = "deck";
     editingStudyCardId = null;
@@ -356,7 +368,9 @@
             deckName={selectedDeckName}
             onBack={() => void navigate("decks")}
             onCreate={() => void addDeckNote()}
+            onDeleted={() => void finishDeckDeletion()}
             onEdit={editDeckCard}
+            onRename={renameSelectedDeck}
           />
         {:else if activeScreen === "editor"}
           <EditorScreen

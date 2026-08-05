@@ -1173,6 +1173,54 @@ fn injected_failure_before_review_commit_rolls_back_every_write() {
 }
 
 #[test]
+fn failed_deck_deletion_rolls_back_trash_and_rehome_writes() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    storage
+        .create_deck(&Deck {
+            id: "doomed-deck".into(),
+            name: "Doomed".into(),
+            description: None,
+            language_tag: None,
+            direction: Direction::Auto,
+            matching_policy: MatchingPolicy::Strict,
+            settings: StudySettingsOverride::default(),
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+        })
+        .unwrap();
+    storage
+        .move_library_notes(&[SAMPLE_SOURCE_ID.into()], "doomed-deck", 2_000)
+        .unwrap();
+    storage
+        .connection
+        .execute_batch(
+            "CREATE TRIGGER fail_doomed_deck_delete
+             BEFORE DELETE ON decks
+             WHEN OLD.id = 'doomed-deck'
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected deck deletion failure');
+             END;",
+        )
+        .unwrap();
+
+    assert!(
+        storage
+            .delete_deck_and_rehome_notes("doomed-deck", None, 3_000)
+            .is_err()
+    );
+    assert_eq!(storage.get_deck("doomed-deck").unwrap().name, "Doomed");
+    let note = storage
+        .library_notes()
+        .unwrap()
+        .into_iter()
+        .find(|note| note.note.source_item.id == SAMPLE_SOURCE_ID)
+        .unwrap();
+    assert_eq!(note.note.source_item.deck_id, "doomed-deck");
+    assert_eq!(note.deleted_at_ms, None);
+}
+
+#[test]
 fn scheduling_workload_uses_aggregates_and_a_bounded_response_median() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();

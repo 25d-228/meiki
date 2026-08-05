@@ -10,7 +10,7 @@ use rusqlite::{
 };
 
 use crate::{
-    DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, PristineDeckImport,
+    DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, PristineDeckImport,
     PristineDeckImportStatus, SchedulingWorkload, Storage, StorageError, StoredDeckCard,
     StoredDeckCardPage, StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote,
     StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
@@ -567,48 +567,51 @@ impl Storage {
             .map_err(StorageError::from)
     }
 
-    /// Deletes a deck atomically, moving all of its notes when a destination is
-    /// required.
+    /// Deletes a deck atomically, rehoming its notes and moving active cards to
+    /// Trash unless a destination deck is selected.
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError`] when a non-empty deck has no valid destination,
-    /// either deck is missing, or the transaction cannot be committed.
-    pub fn delete_deck_and_move_notes(
+    /// Returns [`StorageError`] when either deck is missing, the destination is
+    /// invalid, or the transaction cannot be committed.
+    pub fn delete_deck_and_rehome_notes(
         &mut self,
         deck_id: &str,
         destination_deck_id: Option<&str>,
         updated_at_ms: i64,
     ) -> Result<u64, StorageError> {
         let transaction = self.connection.transaction()?;
-        let note_count = transaction.query_row(
-            "SELECT COUNT(*) FROM source_items WHERE deck_id = ?1",
+        ensure_entity_exists(&transaction, "decks", "deck", deck_id)?;
+        let active_card_count = transaction.query_row(
+            "SELECT COUNT(cards.id)
+             FROM cards
+             JOIN clozes ON clozes.id = cards.cloze_id
+             JOIN source_items ON source_items.id = clozes.source_item_id
+             WHERE source_items.deck_id = ?1
+               AND source_items.deleted_at_ms IS NULL",
             [deck_id],
             |row| row.get::<_, u64>(0),
         )?;
-        if note_count > 0 {
-            let destination = destination_deck_id.ok_or_else(|| {
-                StorageError::InvalidAggregate(
-                    "a non-empty deck requires a destination for its notes".into(),
-                )
-            })?;
-            if destination == deck_id {
-                return Err(StorageError::InvalidAggregate(
-                    "a deck cannot move notes into itself before deletion".into(),
-                ));
-            }
-            let destination_exists = transaction
-                .query_row("SELECT 1 FROM decks WHERE id = ?1", [destination], |_| {
-                    Ok(())
-                })
-                .optional()?
-                .is_some();
-            if !destination_exists {
-                return Err(entity_not_found("destination deck", destination));
-            }
+        let destination = destination_deck_id.unwrap_or(DEFAULT_DECK_ID);
+        if destination_deck_id.is_some() && destination == deck_id {
+            return Err(StorageError::InvalidAggregate(
+                "a deck cannot move cards into itself before deletion".into(),
+            ));
+        }
+        ensure_entity_exists(&transaction, "decks", "destination deck", destination)?;
+        if destination_deck_id.is_some() {
             transaction.execute(
                 "UPDATE source_items
                  SET deck_id = ?1, updated_at_ms = ?2
+                 WHERE deck_id = ?3",
+                params![destination, updated_at_ms, deck_id],
+            )?;
+        } else {
+            transaction.execute(
+                "UPDATE source_items
+                 SET deck_id = ?1,
+                     deleted_at_ms = COALESCE(deleted_at_ms, ?2),
+                     updated_at_ms = ?2
                  WHERE deck_id = ?3",
                 params![destination, updated_at_ms, deck_id],
             )?;
@@ -616,7 +619,7 @@ impl Storage {
         let changed = transaction.execute("DELETE FROM decks WHERE id = ?1", [deck_id])?;
         ensure_changed(changed, "deck", deck_id)?;
         transaction.commit()?;
-        Ok(note_count)
+        Ok(active_card_count)
     }
 
     /// Loads the collection-wide default daily study budget.
