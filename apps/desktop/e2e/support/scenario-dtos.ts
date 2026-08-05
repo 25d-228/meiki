@@ -208,7 +208,7 @@ const deckSummaries = [
   {
     id: "default-deck",
     name: "Unsorted",
-    total_cards: 2,
+    total_cards: 3,
     due_cards: 1,
     new_cards: 1,
   },

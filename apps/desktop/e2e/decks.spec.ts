@@ -27,7 +27,7 @@ async function lastRequest(
   }, command);
 }
 
-test("shows active card counts and presents the populated default deck as Unsorted", async ({
+test("includes suspended cards in Total and presents the populated default deck as Unsorted", async ({
   page,
 }) => {
   await openDecks(page);
@@ -35,7 +35,7 @@ test("shows active card counts and presents the populated default deck as Unsort
   const unsorted = page.getByTestId("deck-default-deck");
   await expect(unsorted.getByText("Unsorted", { exact: true })).toBeVisible();
   await expect(unsorted.locator("dl")).toContainText(
-    /Total\s*2\s*Due\s*1\s*New\s*1/,
+    /Total\s*3\s*Due\s*1\s*New\s*1/,
   );
 });
 

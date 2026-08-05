@@ -73,7 +73,7 @@ impl ApplicationService {
             .collect()
     }
 
-    /// Lists user-visible flat decks with current active card counts.
+    /// Lists user-visible flat decks with current card counts.
     ///
     /// # Errors
     ///
@@ -498,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn deck_summaries_count_only_active_cards_and_present_the_populated_default_as_unsorted() {
+    fn deck_summaries_count_suspended_cards_only_in_total_and_present_default_as_unsorted() {
         let directory = tempdir().unwrap();
         let service = ApplicationService::new(directory.path().join("collection.db"));
         let created = service
@@ -556,7 +556,7 @@ mod tests {
         let summaries = service.list_deck_summaries(10_000).unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].name, "Japanese");
-        assert_eq!(summaries[0].total_cards, 3);
+        assert_eq!(summaries[0].total_cards, 4);
         assert_eq!(summaries[0].due_cards, 1);
         assert_eq!(summaries[0].new_cards, 1);
 
@@ -567,7 +567,7 @@ mod tests {
             "unsorted-card",
             CardLifecycle::Unseen,
             10_000,
-            false,
+            true,
         );
         drop(storage);
         let summaries = service.list_deck_summaries(10_000).unwrap();
@@ -577,6 +577,7 @@ mod tests {
             .unwrap();
         assert_eq!(unsorted.name, "Unsorted");
         assert_eq!(unsorted.total_cards, 1);
-        assert_eq!(unsorted.new_cards, 1);
+        assert_eq!(unsorted.due_cards, 0);
+        assert_eq!(unsorted.new_cards, 0);
     }
 }

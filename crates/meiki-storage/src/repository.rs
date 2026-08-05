@@ -517,7 +517,7 @@ impl Storage {
         )?)
     }
 
-    /// Aggregates active card counts for every flat deck in one bounded query.
+    /// Aggregates card counts for every flat deck in one bounded query.
     ///
     /// # Errors
     ///
@@ -528,7 +528,7 @@ impl Storage {
                 decks.id,
                 COALESCE(SUM(CASE
                     WHEN source_items.deleted_at_ms IS NULL
-                     AND cards.suspended = 0
+                     AND cards.id IS NOT NULL
                     THEN 1 ELSE 0
                 END), 0),
                 COALESCE(SUM(CASE
