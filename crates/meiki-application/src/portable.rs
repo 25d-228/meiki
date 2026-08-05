@@ -2417,6 +2417,96 @@ mod tests {
     }
 
     #[test]
+    fn canonical_bundle_import_restores_a_missing_middle_stage_after_partial_export() {
+        let directory = tempdir().unwrap();
+        let source_path = directory.path().join("source.db");
+        let source = ApplicationService::new(&source_path);
+        let canonical_path =
+            write_bundle_fixture(directory.path(), "canonical-after-partial", 6, |_| {});
+        source
+            .import_bundle(
+                &BundleImportRequest {
+                    path: canonical_path.to_string_lossy().into_owned(),
+                    now_ms: 400_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+        Storage::open(&source_path)
+            .unwrap()
+            .delete_deck_and_rehome_notes(&bundle_deck_id(2), None, 410_000)
+            .unwrap();
+        let partial = source
+            .export_bundle(&BundleExportRequest {
+                language_tag: "ja-JP".into(),
+                now_ms: 420_000,
+            })
+            .unwrap();
+
+        let target_path = directory.path().join("target.db");
+        let target = ApplicationService::new(&target_path);
+        let partial_import = target
+            .import_bundle(
+                &BundleImportRequest {
+                    path: partial.path,
+                    now_ms: 500_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            (partial_import.added_decks, partial_import.added_cards),
+            (5, 5)
+        );
+        let reviewed = target.get_study_card(&bundle_card_id(3)).unwrap();
+        target
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "review-before-canonical-completion".into(),
+                    card_id: reviewed.card_id,
+                    card_content_version: reviewed.card_content_version,
+                    schedule_version: reviewed.schedule_version,
+                    raw_response: "晴れです".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 700,
+                },
+                510_000,
+            )
+            .unwrap();
+        let (schedule_before, history_before) = {
+            let storage = Storage::open(&target_path).unwrap();
+            (
+                storage.load_schedule(&bundle_card_id(3)).unwrap(),
+                storage.review_events(&bundle_card_id(3)).unwrap(),
+            )
+        };
+
+        let completed = target
+            .import_bundle(
+                &BundleImportRequest {
+                    path: canonical_path.to_string_lossy().into_owned(),
+                    now_ms: 600_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!((completed.added_decks, completed.added_cards), (1, 1));
+        let storage = Storage::open(&target_path).unwrap();
+        assert_eq!(
+            storage.bundle_deck_ids("ja-JP").unwrap(),
+            (0..6).map(bundle_deck_id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            storage.load_schedule(&bundle_card_id(3)).unwrap(),
+            schedule_before
+        );
+        assert_eq!(
+            storage.review_events(&bundle_card_id(3)).unwrap(),
+            history_before
+        );
+    }
+
+    #[test]
     fn bundle_export_failure_leaves_the_collection_and_final_files_unchanged() {
         let directory = tempdir().unwrap();
         let collection_path = directory.path().join("collection.db");
