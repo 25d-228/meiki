@@ -48,8 +48,9 @@ pub use deck_cards::{
     DeckCardDto, DeckCardOverviewDto, DeckCardRequest, DeckCardStatusDto, DeckCardTrashDto,
 };
 pub use decks::{
-    CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckRequest, DeleteDeckResultDto,
-    RenameDeckRequest,
+    BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
+    BundleRemovalResultDto, CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckRequest,
+    DeleteDeckResultDto, RenameDeckRequest,
 };
 pub use library::{
     LibraryBulkActionDto, LibraryBulkRequest, LibraryBulkResultDto, LibraryCardDto, LibraryDeckDto,
@@ -1747,6 +1748,10 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     RenameDeckRequest::export_all_to(output)?;
     DeleteDeckRequest::export_all_to(output)?;
     DeleteDeckResultDto::export_all_to(output)?;
+    BundleRemovalPreviewDto::export_all_to(output)?;
+    BundleRemovalRequest::export_all_to(output)?;
+    BundleRemovalProgressDto::export_all_to(output)?;
+    BundleRemovalResultDto::export_all_to(output)?;
     AnnotationDraftDto::export_all_to(output)?;
     AuthoringSegmentKindDto::export_all_to(output)?;
     MatchingPolicyDto::export_all_to(output)?;

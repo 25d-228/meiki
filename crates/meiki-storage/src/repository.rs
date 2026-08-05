@@ -10,8 +10,8 @@ use rusqlite::{
 };
 
 use crate::{
-    DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, PristineBundleImport,
-    PristineBundleImportError, PristineBundleImportPlan, PristineDeckImport,
+    DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, InstalledBundle,
+    PristineBundleImport, PristineBundleImportError, PristineBundleImportPlan, PristineDeckImport,
     PristineDeckImportStatus, SchedulingWorkload, Storage, StorageError, StoredDeckCard,
     StoredDeckCardPage, StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote,
     StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
@@ -1065,6 +1065,128 @@ impl PristineDeckRepository for Storage {
 }
 
 impl Storage {
+    /// Lists installed language bundles that still have associated decks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when bundle associations or card counts cannot
+    /// be read.
+    pub fn installed_bundles(&self) -> Result<Vec<InstalledBundle>, StorageError> {
+        let mut statement = self.connection.prepare(
+            "SELECT bundle_installations.language_tag,
+                    COUNT(DISTINCT bundle_decks.deck_id),
+                    COUNT(cards.id)
+             FROM bundle_installations
+             JOIN bundle_decks
+               ON bundle_decks.language_tag = bundle_installations.language_tag
+             LEFT JOIN source_items
+               ON source_items.deck_id = bundle_decks.deck_id
+              AND source_items.deleted_at_ms IS NULL
+             LEFT JOIN clozes ON clozes.source_item_id = source_items.id
+             LEFT JOIN cards ON cards.cloze_id = clozes.id
+             GROUP BY bundle_installations.language_tag
+             ORDER BY bundle_installations.language_tag",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(InstalledBundle {
+                    language_tag: row.get(0)?,
+                    deck_count: row.get(1)?,
+                    active_card_count: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::from)
+    }
+
+    /// Removes every remaining deck associated with one language bundle in a
+    /// single transaction, moving its active cards to Trash.
+    ///
+    /// The callback receives cumulative deck and card counts after each deck
+    /// is staged. Expected counts prevent confirming a stale preview.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the bundle is missing, its contents
+    /// changed after preview, or any durable write fails.
+    pub fn remove_bundle(
+        &mut self,
+        language_tag: &str,
+        expected_deck_count: u64,
+        expected_active_card_count: u64,
+        updated_at_ms: i64,
+        mut on_progress: impl FnMut(u64, u64),
+    ) -> Result<InstalledBundle, StorageError> {
+        let transaction = self.connection.transaction()?;
+        let associated_decks = {
+            let mut statement = transaction.prepare(
+                "SELECT bundle_decks.deck_id, COUNT(cards.id)
+                 FROM bundle_decks
+                 LEFT JOIN source_items
+                   ON source_items.deck_id = bundle_decks.deck_id
+                  AND source_items.deleted_at_ms IS NULL
+                 LEFT JOIN clozes ON clozes.source_item_id = source_items.id
+                 LEFT JOIN cards ON cards.cloze_id = clozes.id
+                 WHERE bundle_decks.language_tag = ?1
+                 GROUP BY bundle_decks.deck_id, bundle_decks.ordinal
+                 ORDER BY bundle_decks.ordinal",
+            )?;
+            statement
+                .query_map([language_tag], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        if associated_decks.is_empty() {
+            return Err(StorageError::EntityNotFound {
+                entity: "installed bundle",
+                id: language_tag.into(),
+            });
+        }
+        let deck_count = u64::try_from(associated_decks.len())
+            .map_err(|_| StorageError::NumericRange("bundle deck count"))?;
+        let active_card_count = associated_decks
+            .iter()
+            .try_fold(0_u64, |total, (_, cards)| total.checked_add(*cards))
+            .ok_or(StorageError::NumericRange("bundle active card count"))?;
+        if deck_count != expected_deck_count || active_card_count != expected_active_card_count {
+            return Err(StorageError::InvalidAggregate(
+                "the installed bundle changed after confirmation details were loaded".into(),
+            ));
+        }
+
+        let mut removed_decks = 0_u64;
+        let mut moved_cards = 0_u64;
+        for (deck_id, deck_card_count) in associated_decks {
+            transaction.execute(
+                "UPDATE source_items
+                 SET deck_id = ?1,
+                     deleted_at_ms = COALESCE(deleted_at_ms, ?2),
+                     updated_at_ms = ?2
+                 WHERE deck_id = ?3",
+                params![DEFAULT_DECK_ID, updated_at_ms, deck_id],
+            )?;
+            let changed = transaction.execute("DELETE FROM decks WHERE id = ?1", [&deck_id])?;
+            ensure_changed(changed, "deck", &deck_id)?;
+            removed_decks += 1;
+            moved_cards = moved_cards
+                .checked_add(deck_card_count)
+                .ok_or(StorageError::NumericRange("removed bundle card count"))?;
+            on_progress(removed_decks, moved_cards);
+        }
+        let changed = transaction.execute(
+            "DELETE FROM bundle_installations WHERE language_tag = ?1",
+            [language_tag],
+        )?;
+        ensure_changed(changed, "installed bundle", language_tag)?;
+        transaction.commit()?;
+        Ok(InstalledBundle {
+            language_tag: language_tag.into(),
+            deck_count,
+            active_card_count,
+        })
+    }
+
     /// Validates a pristine language bundle without changing the collection.
     ///
     /// # Errors

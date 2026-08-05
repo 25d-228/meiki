@@ -54,6 +54,10 @@ import type { BundlePreviewDto } from "./generated/BundlePreviewDto";
 import type { BundleImportRequest } from "./generated/BundleImportRequest";
 import type { BundleImportProgressDto } from "./generated/BundleImportProgressDto";
 import type { BundleImportResultDto } from "./generated/BundleImportResultDto";
+import type { BundleRemovalPreviewDto } from "./generated/BundleRemovalPreviewDto";
+import type { BundleRemovalProgressDto } from "./generated/BundleRemovalProgressDto";
+import type { BundleRemovalRequest } from "./generated/BundleRemovalRequest";
+import type { BundleRemovalResultDto } from "./generated/BundleRemovalResultDto";
 
 function invoke<T>(
   command: string,
@@ -143,6 +147,26 @@ export const api = {
     }
     const progress = new Channel<BundleImportProgressDto>(onProgress);
     return invoke("import_bundle", { request, onProgress: progress });
+  },
+
+  listInstalledBundles(): Promise<BundleRemovalPreviewDto[]> {
+    return invoke("list_installed_bundles");
+  },
+
+  removeBundle(
+    request: BundleRemovalRequest,
+    onProgress: (progress: BundleRemovalProgressDto) => void,
+  ): Promise<BundleRemovalResultDto> {
+    if (window.__MEIKI_TEST_INVOKE__) {
+      window.__MEIKI_TEST_BUNDLE_REMOVAL_PROGRESS__ = onProgress;
+      return invoke<BundleRemovalResultDto>("remove_bundle", {
+        request,
+      }).finally(() => {
+        delete window.__MEIKI_TEST_BUNDLE_REMOVAL_PROGRESS__;
+      });
+    }
+    const progress = new Channel<BundleRemovalProgressDto>(onProgress);
+    return invoke("remove_bundle", { request, onProgress: progress });
   },
 
   addArchiveDeck(

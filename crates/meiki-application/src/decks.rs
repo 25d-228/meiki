@@ -58,7 +58,110 @@ pub struct DeleteDeckResultDto {
     pub affected_cards: u32,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct BundleRemovalPreviewDto {
+    pub language_tag: String,
+    #[ts(type = "number")]
+    pub decks: u64,
+    #[ts(type = "number")]
+    pub cards: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct BundleRemovalRequest {
+    pub language_tag: String,
+    #[ts(type = "number")]
+    pub expected_decks: u64,
+    #[ts(type = "number")]
+    pub expected_cards: u64,
+    #[ts(type = "number")]
+    pub now_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct BundleRemovalProgressDto {
+    #[ts(type = "number")]
+    pub removed_decks: u64,
+    #[ts(type = "number")]
+    pub total_decks: u64,
+    #[ts(type = "number")]
+    pub moved_cards: u64,
+    #[ts(type = "number")]
+    pub total_cards: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct BundleRemovalResultDto {
+    pub language_tag: String,
+    #[ts(type = "number")]
+    pub removed_decks: u64,
+    #[ts(type = "number")]
+    pub moved_cards: u64,
+}
+
 impl ApplicationService {
+    /// Lists installed bundles with the remaining decks and active cards that
+    /// a bundle removal would affect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when persisted associations or card counts cannot be
+    /// loaded.
+    pub fn list_installed_bundles(&self) -> Result<Vec<BundleRemovalPreviewDto>, ApplicationError> {
+        Ok(self
+            .open_storage()?
+            .installed_bundles()?
+            .into_iter()
+            .map(|bundle| BundleRemovalPreviewDto {
+                language_tag: bundle.language_tag,
+                decks: bundle.deck_count,
+                cards: bundle.active_card_count,
+            })
+            .collect())
+    }
+
+    /// Removes all remaining decks in one installed bundle atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid input, stale confirmation counts, missing
+    /// bundle associations, or a failed durable write.
+    pub fn remove_bundle(
+        &self,
+        request: &BundleRemovalRequest,
+        mut on_progress: impl FnMut(BundleRemovalProgressDto),
+    ) -> Result<BundleRemovalResultDto, ApplicationError> {
+        if request.language_tag.trim().is_empty()
+            || request.expected_decks == 0
+            || request.now_ms < 0
+        {
+            return Err(ApplicationError::InvalidDeck(
+                "bundle removal requires a language, at least one deck, and a valid timestamp"
+                    .into(),
+            ));
+        }
+        let mut storage = self.open_storage()?;
+        let removed = storage.remove_bundle(
+            &request.language_tag,
+            request.expected_decks,
+            request.expected_cards,
+            request.now_ms,
+            |removed_decks, moved_cards| {
+                on_progress(BundleRemovalProgressDto {
+                    removed_decks,
+                    total_decks: request.expected_decks,
+                    moved_cards,
+                    total_cards: request.expected_cards,
+                });
+            },
+        )?;
+        Ok(BundleRemovalResultDto {
+            language_tag: removed.language_tag,
+            removed_decks: removed.deck_count,
+            moved_cards: removed.active_card_count,
+        })
+    }
+
     /// Lists the collection's flat decks with their local note counts.
     ///
     /// # Errors

@@ -720,6 +720,164 @@ fn pristine_bundle_failure_rolls_back_all_decks_and_associations() {
 }
 
 #[test]
+fn bundle_removal_uses_one_confirmation_for_six_stages_and_preserves_unrelated_content() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    for ordinal in 2..6 {
+        let deck_id = format!("empty-bundle-stage-{ordinal}");
+        let mut stage = deck(&deck_id);
+        stage.name = format!("Japanese {ordinal:02}");
+        stage.language_tag = Some(bundle.language_tag.clone());
+        storage.create_deck(&stage).unwrap();
+        storage
+            .connection
+            .execute(
+                "INSERT INTO bundle_decks(language_tag, deck_id, ordinal)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![bundle.language_tag, deck_id, ordinal],
+            )
+            .unwrap();
+    }
+
+    storage
+        .move_library_notes(&["source-mixed".into()], DEFAULT_DECK_ID, 3_000)
+        .unwrap();
+    storage
+        .move_library_notes(&[SAMPLE_SOURCE_ID.into()], "deck-mixed-2", 3_000)
+        .unwrap();
+    let review = sample_event(&storage, "bundle-removal-review", 4_000);
+    storage.commit_review(&review).unwrap();
+    let preview = storage.installed_bundles().unwrap();
+    assert_eq!(preview.len(), 1);
+    assert_eq!(preview[0].language_tag, "ja-JP");
+    assert_eq!(preview[0].deck_count, 6);
+    assert_eq!(preview[0].active_card_count, 3);
+
+    let mut progress = Vec::new();
+    let removed = storage
+        .remove_bundle("ja-JP", 6, 3, 5_000, |decks, cards| {
+            progress.push((decks, cards));
+        })
+        .unwrap();
+    assert_eq!(removed, preview[0]);
+    assert_eq!(progress.len(), 6);
+    assert_eq!(progress.last(), Some(&(6, 3)));
+    assert!(
+        progress
+            .windows(2)
+            .all(|pair| pair[0].0 <= pair[1].0 && pair[0].1 <= pair[1].1)
+    );
+    assert!(storage.installed_bundles().unwrap().is_empty());
+    for stage in &bundle.decks {
+        assert!(matches!(
+            storage.get_deck(&stage.deck.id),
+            Err(StorageError::EntityNotFound { .. })
+        ));
+    }
+
+    let notes = storage.library_notes().unwrap();
+    let moved_out = notes
+        .iter()
+        .find(|note| note.note.source_item.id == "source-mixed")
+        .unwrap();
+    assert_eq!(moved_out.note.source_item.deck_id, DEFAULT_DECK_ID);
+    assert_eq!(moved_out.deleted_at_ms, None);
+    let manually_added = notes
+        .iter()
+        .find(|note| note.note.source_item.id == SAMPLE_SOURCE_ID)
+        .unwrap();
+    assert_eq!(manually_added.note.source_item.deck_id, DEFAULT_DECK_ID);
+    assert_eq!(manually_added.deleted_at_ms, Some(5_000));
+    let remaining_bundle_note = notes
+        .iter()
+        .find(|note| note.note.source_item.id == "source-mixed-2")
+        .unwrap();
+    assert_eq!(
+        remaining_bundle_note.note.source_item.deck_id,
+        DEFAULT_DECK_ID
+    );
+    assert_eq!(remaining_bundle_note.deleted_at_ms, Some(5_000));
+    assert_eq!(storage.review_events(SAMPLE_CARD_ID).unwrap(), vec![review]);
+    assert_eq!(storage.media_reference_usage("media-source-2").unwrap(), 1);
+    assert!(matches!(
+        storage.delete_media_reference("media-source-2"),
+        Err(StorageError::MediaInUse { references: 1, .. })
+    ));
+}
+
+#[test]
+fn bundle_removal_removes_only_stages_that_remain_associated() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    storage
+        .delete_deck_and_rehome_notes(&bundle.decks[0].deck.id, None, 3_000)
+        .unwrap();
+
+    let preview = storage.installed_bundles().unwrap().remove(0);
+    assert_eq!(preview.deck_count, 1);
+    assert_eq!(preview.active_card_count, 2);
+    storage
+        .remove_bundle(
+            &preview.language_tag,
+            preview.deck_count,
+            preview.active_card_count,
+            4_000,
+            |_, _| {},
+        )
+        .unwrap();
+
+    assert!(storage.installed_bundles().unwrap().is_empty());
+    assert_eq!(
+        storage
+            .library_notes()
+            .unwrap()
+            .iter()
+            .filter(|note| note.deleted_at_ms.is_some())
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn bundle_removal_rolls_back_every_stage_when_one_deck_fails() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let notes_before = storage.library_notes().unwrap();
+    storage
+        .connection
+        .execute_batch(
+            "CREATE TRIGGER fail_second_bundle_deck_delete
+             BEFORE DELETE ON decks
+             WHEN OLD.id = 'deck-mixed-2'
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected bundle removal failure');
+             END;",
+        )
+        .unwrap();
+
+    assert!(
+        storage
+            .remove_bundle("ja-JP", 2, 4, 3_000, |_, _| {})
+            .is_err()
+    );
+    assert_eq!(storage.installed_bundles().unwrap()[0].deck_count, 2);
+    assert_eq!(storage.library_notes().unwrap(), notes_before);
+    for stage in bundle.decks {
+        assert_eq!(storage.get_deck(&stage.deck.id).unwrap(), stage.deck);
+    }
+}
+
+#[test]
 fn pristine_deck_collision_and_injected_failure_leave_no_partial_deck() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();

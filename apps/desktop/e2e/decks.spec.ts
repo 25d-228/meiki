@@ -124,6 +124,55 @@ test("reports installation when existing decks only need bundle associations", a
   await expect(page.getByText(/Added Japanese with 0 decks/)).toHaveCount(0);
 });
 
+test("removes an installed bundle after one confirmation and leaves unrelated decks", async ({
+  page,
+}) => {
+  await page.goto("/?bundleRemoval=installed");
+  await openDecks(page);
+  await page.getByRole("button", { name: "Bundle actions" }).click();
+  let actions = page.getByRole("dialog", { name: "Bundle actions" });
+  const removeJapanese = actions.getByRole("button", {
+    name: /Remove Japanese/,
+  });
+  await expect(removeJapanese).toContainText(/6\s*decks, 9,700\s*cards/);
+  await removeJapanese.click();
+
+  let confirmation = page.getByRole("alertdialog", {
+    name: "Remove Japanese?",
+  });
+  await expect(confirmation).toContainText(
+    /This removes 6 decks and moves their 9,700 cards to Trash\./,
+  );
+  await confirmation.getByRole("button", { name: "Cancel" }).click();
+  await expect(lastRequest(page, "remove_bundle")).resolves.toBeUndefined();
+
+  await page.getByRole("button", { name: "Bundle actions" }).click();
+  actions = page.getByRole("dialog", { name: "Bundle actions" });
+  await actions.getByRole("button", { name: /Remove Japanese/ }).click();
+  confirmation = page.getByRole("alertdialog", {
+    name: "Remove Japanese?",
+  });
+  await confirmation.getByRole("button", { name: "Remove bundle" }).click();
+
+  const progress = page.getByRole("dialog", { name: "Removing bundle" });
+  await expect(progress.getByRole("status")).toContainText(/Decks\s*1 \/ 6/);
+  await expect(
+    page.getByText("Removed Japanese. 6 decks and 9,700 cards moved to Trash."),
+  ).toBeVisible();
+  await expect(page.getByTestId("deck-deck:ja-JP:05")).toHaveCount(0);
+  await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Bundle actions" }),
+  ).toHaveCount(0);
+  expect((await lastRequest(page, "remove_bundle"))?.args).toMatchObject({
+    request: {
+      language_tag: "ja-JP",
+      expected_decks: 6,
+      expected_cards: 9_700,
+    },
+  });
+});
+
 test("keeps Unsorted visible when active cards exist but hides rename and delete", async ({
   page,
 }) => {

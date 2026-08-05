@@ -173,6 +173,13 @@ pub struct PristineBundleImportPlan {
     pub unassociated_deck_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstalledBundle {
+    pub language_tag: String,
+    pub deck_count: u64,
+    pub active_card_count: u64,
+}
+
 impl PristineBundleImportPlan {
     #[must_use]
     pub fn requires_changes(&self) -> bool {
