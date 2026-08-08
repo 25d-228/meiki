@@ -101,6 +101,8 @@ pub enum ApplicationError {
     Portable(#[from] meiki_portable::PortableError),
     #[error("invalid portability request: {0}")]
     InvalidPortable(String),
+    #[error("This bundle conflicts with existing cards in your collection.")]
+    BundleConflict,
     #[error("portable data filesystem operation failed: {0}")]
     PortableIo(#[source] std::io::Error),
 }
