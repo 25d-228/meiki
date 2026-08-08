@@ -407,6 +407,7 @@ export async function installMockApi(page: Page): Promise<void> {
       }
 
       if (command === "preview_bundle") {
+        const restorable = params.get("bundle") === "restorable";
         const installedDecks =
           params.get("bundle") === "installed" ||
           params.get("bundle") === "unassociated"
@@ -418,9 +419,14 @@ export async function installMockApi(page: Page): Promise<void> {
           ...dtos.bundlePreview,
           decks: dtos.bundlePreview.decks.map((deck, index) => ({
             ...deck,
-            status: index < installedDecks ? "installed" : "missing",
+            status: restorable
+              ? "restorable"
+              : index < installedDecks
+                ? "installed"
+                : "missing",
           })),
           can_import:
+            restorable ||
             params.get("bundle") === "unassociated" ||
             installedDecks < dtos.bundlePreview.decks.length,
         });
@@ -445,14 +451,26 @@ export async function installMockApi(page: Page): Promise<void> {
           return {
             language_tag: "ja-JP",
             added_decks: 0,
+            restored_decks: 0,
             added_cards: 0,
             imported_media_objects: 0,
             deduplicated_media_objects: 0,
           };
         }
+        if (params.get("bundle") === "restorable") {
+          return {
+            language_tag: "ja-JP",
+            added_decks: 6,
+            restored_decks: 6,
+            added_cards: 0,
+            imported_media_objects: 0,
+            deduplicated_media_objects: 9_700,
+          };
+        }
         return {
           language_tag: "ja-JP",
           added_decks: 6,
+          restored_decks: 0,
           added_cards: 9_700,
           imported_media_objects: 9_700,
           deduplicated_media_objects: 0,

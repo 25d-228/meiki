@@ -682,6 +682,81 @@ fn pristine_bundle_failure_rolls_back_all_decks_and_associations() {
 }
 
 #[test]
+fn pristine_bundle_restoration_failure_leaves_removed_content_in_trash() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    storage
+        .remove_bundle("ja-JP", 2, 4, 3_000, |_, _| {})
+        .unwrap();
+    let removed_notes = storage.library_notes().unwrap();
+
+    assert!(matches!(
+        storage.import_pristine_bundle_failing_before_commit(&bundle),
+        Err(StorageError::InjectedTestFailure(
+            "pristine bundle transaction before commit"
+        ))
+    ));
+    assert_eq!(storage.library_notes().unwrap(), removed_notes);
+    assert!(storage.installed_bundles().unwrap().is_empty());
+    for stage in &bundle.decks {
+        assert!(matches!(
+            storage.get_deck(&stage.deck.id),
+            Err(StorageError::EntityNotFound { .. })
+        ));
+    }
+}
+
+#[test]
+fn pristine_bundle_restoration_rejects_an_identity_owned_by_another_bundle() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+
+    let mut other_stage = bundle.decks[0].clone();
+    other_stage.deck.id = "deck-other-bundle".into();
+    other_stage.deck.name = "Korean 00".into();
+    other_stage.deck.language_tag = Some("ko-KR".into());
+    other_stage.notes.clear();
+    storage
+        .import_pristine_bundle(
+            &PristineBundleImport {
+                language_tag: "ko-KR".into(),
+                decks: vec![other_stage.clone()],
+            },
+            || {},
+            || Ok::<(), ()>(()),
+        )
+        .unwrap();
+    storage
+        .move_deck_cards(
+            &["pristine-card-0".into(), "pristine-card-1".into()],
+            &other_stage.deck.id,
+            3_000,
+        )
+        .unwrap();
+    storage
+        .remove_bundle("ja-JP", 2, 2, 4_000, |_, _| {})
+        .unwrap();
+
+    assert!(matches!(
+        storage.validate_pristine_bundle_import(&bundle),
+        Err(StorageError::InvalidAggregate(message))
+            if message.contains("belongs to another installed bundle")
+    ));
+    for stage in &bundle.decks {
+        assert!(matches!(
+            storage.get_deck(&stage.deck.id),
+            Err(StorageError::EntityNotFound { .. })
+        ));
+    }
+}
+
+#[test]
 fn bundle_removal_uses_one_confirmation_for_six_stages_and_preserves_unrelated_content() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();

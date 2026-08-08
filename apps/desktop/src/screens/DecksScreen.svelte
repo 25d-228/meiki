@@ -150,9 +150,11 @@
       await loadDecks();
       bundleDialogOpen = false;
       notice =
-        result.added_decks === 0
-          ? `${languageName(result.language_tag)} is now installed.`
-          : `Added ${languageName(result.language_tag)} with ${result.added_decks.toLocaleString()} ${result.added_decks === 1 ? "deck" : "decks"} and ${result.added_cards.toLocaleString()} ${result.added_cards === 1 ? "card" : "cards"}.`;
+        result.restored_decks > 0
+          ? `Restored ${languageName(result.language_tag)} with ${result.restored_decks.toLocaleString()} ${result.restored_decks === 1 ? "deck" : "decks"}.`
+          : result.added_decks === 0
+            ? `${languageName(result.language_tag)} is now installed.`
+            : `Added ${languageName(result.language_tag)} with ${result.added_decks.toLocaleString()} ${result.added_decks === 1 ? "deck" : "decks"} and ${result.added_cards.toLocaleString()} ${result.added_cards === 1 ? "card" : "cards"}.`;
     } catch (cause) {
       bundleError = message(cause);
     } finally {
@@ -609,7 +611,11 @@
               >
             </div>
             <span class:installed={deck.status === "installed"}
-              >{deck.status === "installed" ? "Installed" : "Missing"}</span
+              >{deck.status === "installed"
+                ? "Installed"
+                : deck.status === "restorable"
+                  ? "Restorable"
+                  : "Missing"}</span
             >
           </li>
         {/each}
@@ -618,6 +624,11 @@
       {#if !bundlePreview.can_import}
         <p role="status">
           {languageName(bundlePreview.language_tag)} is already installed
+        </p>
+      {:else if bundlePreview.decks.some((deck) => deck.status === "restorable")}
+        <p role="status">
+          {languageName(bundlePreview.language_tag)} was previously removed and can
+          be restored.
         </p>
       {/if}
     {/if}
