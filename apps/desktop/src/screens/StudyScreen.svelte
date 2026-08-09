@@ -20,6 +20,7 @@
   import {
     mediaAssetSource,
     readPromptAudioAutoplay,
+    restartAudio,
     writePromptAudioAutoplay,
   } from "../lib/media";
   import { messages } from "../lib/messages";
@@ -510,13 +511,10 @@
       audioNotice = "No playable audio is attached to this side of the card.";
       return;
     }
-    audio.currentTime = 0;
-    void audio.play().then(
-      () => (audioNotice = ""),
-      () =>
-        (audioNotice =
-          "Audio playback was blocked. Use the visible audio control to play it."),
-    );
+    audioNotice = "";
+    void restartAudio(audio).catch(() => {
+      audioNotice = "Audio could not play. Try again.";
+    });
   }
 
   async function retry(): Promise<void> {

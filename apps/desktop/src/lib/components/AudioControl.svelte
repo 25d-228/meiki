@@ -5,12 +5,15 @@
 
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Slider from "$lib/components/ui/slider/index.js";
+  import { restartAudio } from "$lib/media";
 
   type Props = {
     source: string;
     label: string;
     durationMs?: number | null;
   };
+
+  const audioEndToleranceSeconds = 0.05;
 
   let { source, label, durationMs }: Props = $props();
   let audioElement = $state<HTMLAudioElement | null>(null);
@@ -33,11 +36,22 @@
     elapsedSeconds = Math.max(0, audioElement.currentTime);
   }
 
-  async function play(): Promise<void> {
-    if (!audioElement) return;
+  async function play(restart = false): Promise<void> {
+    const element = audioElement;
+    if (!element) return;
     playbackError = "";
     try {
-      await audioElement.play();
+      if (
+        restart ||
+        element.ended ||
+        (Number.isFinite(element.duration) &&
+          element.duration - element.currentTime <= audioEndToleranceSeconds)
+      ) {
+        elapsedSeconds = 0;
+        await restartAudio(element);
+      } else {
+        await element.play();
+      }
     } catch {
       playing = false;
       playbackError = "Audio could not play. Try again.";
@@ -54,10 +68,12 @@
   }
 
   function replay(): void {
-    if (!audioElement) return;
-    audioElement.currentTime = 0;
-    elapsedSeconds = 0;
-    void play();
+    void play(true);
+  }
+
+  function reportLoadFailure(): void {
+    playing = false;
+    playbackError = "Audio could not load.";
   }
 
   function seek(value: number): void {
@@ -128,11 +144,12 @@
     onplay={() => (playing = true)}
     onpause={() => (playing = false)}
     onended={() => (playing = false)}
+    onerror={reportLoadFailure}
   >
     Your browser cannot play this audio.
   </audio>
   {#if playbackError}
-    <p class="audio-error" role="status">{playbackError}</p>
+    <p class="audio-error" role="alert">{playbackError}</p>
   {/if}
 </div>
 

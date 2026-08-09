@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 const SCHEME = /^([a-z][a-z\d+.-]*):/i;
 const WINDOWS_ABSOLUTE_PATH = /^[a-z]:[\\/]/i;
 const promptAudioAutoplayKey = "meiki-autoplay-prompt-audio";
+const audioSeekTimeoutMs = 250;
 
 function sourceScheme(path: string): string | undefined {
   if (WINDOWS_ABSOLUTE_PATH.test(path)) return undefined;
@@ -26,6 +27,32 @@ export function mediaAssetSource(path: string | null): string | undefined {
   if (scheme) return undefined;
 
   return isTauriRuntime() ? convertFileSrc(path) : path;
+}
+
+export async function restartAudio(audio: HTMLAudioElement): Promise<void> {
+  if (audio.currentTime !== 0) {
+    await new Promise<void>((resolve) => {
+      let finished = false;
+      function finishSeek(): void {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        audio.removeEventListener("seeked", finishSeek);
+        resolve();
+      }
+      // Some media engines omit seeked at a boundary; Replay must not hang.
+      const timeout = setTimeout(finishSeek, audioSeekTimeoutMs);
+      audio.addEventListener("seeked", finishSeek, { once: true });
+      audio.currentTime = 0;
+      if (
+        !audio.seeking ||
+        audio.readyState === HTMLMediaElement.HAVE_NOTHING
+      ) {
+        finishSeek();
+      }
+    });
+  }
+  await audio.play();
 }
 
 export function readPromptAudioAutoplay(): boolean {
