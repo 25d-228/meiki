@@ -11,8 +11,6 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import type { DeckSummaryDto } from "../lib/generated/DeckSummaryDto";
-  import type { BundleImportProgressDto } from "../lib/generated/BundleImportProgressDto";
-  import type { BundlePreviewDto } from "../lib/generated/BundlePreviewDto";
   import type { BundleRemovalPreviewDto } from "../lib/generated/BundleRemovalPreviewDto";
   import type { BundleRemovalProgressDto } from "../lib/generated/BundleRemovalProgressDto";
   import { localDayBounds } from "../lib/local-day";
@@ -29,12 +27,22 @@
     onStudy: (deckName: string) => void;
     onOpen: (deckId: string, deckName: string, isBundleStage: boolean) => void;
     onDeckContextChange: (value: string) => void;
+    onChooseBundle: () => void;
+    bundleImportRefresh: number;
+    bundleImportRunning: boolean;
   };
 
   const selectedTodayDeckKey = "meiki-today-deck";
   const allDecksId = "__all_decks__";
 
-  let { onStudy, onOpen, onDeckContextChange }: Props = $props();
+  let {
+    onStudy,
+    onOpen,
+    onDeckContextChange,
+    onChooseBundle,
+    bundleImportRefresh,
+    bundleImportRunning,
+  }: Props = $props();
   let decks = $state<DeckSummaryDto[]>([]);
   let activeQueue = $state<StudyQueueSession | null>(null);
   let newDeckName = $state("");
@@ -42,13 +50,6 @@
   let loading = $state(true);
   let busyDeckId = $state("");
   let creating = $state(false);
-  let bundleDialogOpen = $state(false);
-  let bundlePath = $state("");
-  let bundlePreview = $state<BundlePreviewDto | null>(null);
-  let previewingBundle = $state(false);
-  let importingBundle = $state(false);
-  let bundleProgress = $state<BundleImportProgressDto | null>(null);
-  let bundleError = $state("");
   let installedBundles = $state<BundleRemovalPreviewDto[]>([]);
   let bundleActionsDialogOpen = $state(false);
   let exportingBundleLanguage = $state("");
@@ -61,6 +62,7 @@
   let bundleRemovalError = $state("");
   let error = $state("");
   let notice = $state("");
+  let loadedBundleImportRefresh = $state<number | null>(null);
 
   onMount(() => {
     onDeckContextChange("All decks");
@@ -70,6 +72,16 @@
     } else if (storedQueue) {
       clearStudyQueue();
     }
+    void loadDecks();
+  });
+
+  $effect(() => {
+    if (loadedBundleImportRefresh === null) {
+      loadedBundleImportRefresh = bundleImportRefresh;
+      return;
+    }
+    if (bundleImportRefresh === loadedBundleImportRefresh) return;
+    loadedBundleImportRefresh = bundleImportRefresh;
     void loadDecks();
   });
 
@@ -117,48 +129,6 @@
       error = message(cause);
     } finally {
       creating = false;
-    }
-  }
-
-  async function chooseBundle(): Promise<void> {
-    const path = await api.pickArchiveFile();
-    if (!path) return;
-    bundlePath = path;
-    bundlePreview = null;
-    bundleProgress = null;
-    bundleError = "";
-    bundleDialogOpen = true;
-    previewingBundle = true;
-    try {
-      bundlePreview = await api.previewBundle(path);
-    } catch (cause) {
-      bundleError = message(cause);
-    } finally {
-      previewingBundle = false;
-    }
-  }
-
-  async function addBundle(): Promise<void> {
-    if (!bundlePreview?.can_import || importingBundle) return;
-    importingBundle = true;
-    bundleProgress = null;
-    bundleError = "";
-    notice = "";
-    try {
-      const result = await api.importBundle(
-        { path: bundlePath, now_ms: Date.now() },
-        (progress) => (bundleProgress = progress),
-      );
-      await loadDecks();
-      bundleDialogOpen = false;
-      notice =
-        result.added_decks === 0
-          ? `${languageName(result.language_tag)} is now installed.`
-          : `Added ${languageName(result.language_tag)} with ${result.added_decks.toLocaleString()} ${result.added_decks === 1 ? "deck" : "decks"} and ${result.added_cards.toLocaleString()} ${result.added_cards === 1 ? "card" : "cards"}.`;
-    } catch (cause) {
-      bundleError = message(cause);
-    } finally {
-      importingBundle = false;
     }
   }
 
@@ -277,12 +247,6 @@
       return languageTag;
     }
   }
-
-  function progressLabel(progress: BundleImportProgressDto): string {
-    if (progress.stage === "preparing_decks") return "Preparing decks";
-    if (progress.stage === "adding_cards") return "Adding cards";
-    return "Adding audio";
-  }
 </script>
 
 <section class="screen decks-screen" aria-labelledby="decks-title">
@@ -304,8 +268,10 @@
           }}>Bundle actions</Button
         >
       {/if}
-      <Button variant="outline" onclick={() => void chooseBundle()}
-        >Import bundle</Button
+      <Button
+        variant="outline"
+        disabled={bundleImportRunning}
+        onclick={onChooseBundle}>Import bundle</Button
       >
       <Button data-primary-action onclick={() => (newDeckDialogOpen = true)}
         >New deck</Button
@@ -570,95 +536,6 @@
   </Dialog.Content>
 </Dialog.Root>
 
-<Dialog.Root bind:open={bundleDialogOpen}>
-  <Dialog.Content class="sm:max-w-xl">
-    <Dialog.Header>
-      <Dialog.Title>Import bundle</Dialog.Title>
-      <Dialog.Description>
-        Add missing language decks without replacing your collection.
-      </Dialog.Description>
-    </Dialog.Header>
-
-    {#if previewingBundle}
-      <p role="status">Reading bundle details…</p>
-    {:else if bundleError}
-      <Alert.Root variant="destructive" role="alert">
-        <Alert.Title>The bundle was not added</Alert.Title>
-        <Alert.Description>{bundleError}</Alert.Description>
-      </Alert.Root>
-    {:else if bundlePreview}
-      <div class="bundle-summary">
-        <div>
-          <span>Language</span>
-          <strong>{languageName(bundlePreview.language_tag)}</strong>
-        </div>
-        <div>
-          <span>Total cards</span>
-          <strong>{bundlePreview.total_cards.toLocaleString()}</strong>
-        </div>
-        <div>
-          <span>Audio</span>
-          <strong>{bundlePreview.audio_objects.toLocaleString()}</strong>
-        </div>
-      </div>
-
-      <ul class="bundle-decks" aria-label="Bundle decks">
-        {#each bundlePreview.decks as deck (deck.id)}
-          <li>
-            <div>
-              <strong>{deck.name}</strong>
-              <span
-                >{deck.cards.toLocaleString()}
-                {deck.cards === 1 ? "card" : "cards"}</span
-              >
-            </div>
-            <span class:installed={deck.status === "installed"}
-              >{deck.status === "installed" ? "Installed" : "Will add"}</span
-            >
-          </li>
-        {/each}
-      </ul>
-
-      {#if !bundlePreview.can_import}
-        <p role="status">
-          {languageName(bundlePreview.language_tag)} is already installed
-        </p>
-      {/if}
-    {/if}
-
-    {#if importingBundle && bundleProgress}
-      <div class="bundle-progress" role="status" aria-live="polite">
-        <strong>{progressLabel(bundleProgress)}</strong>
-        {#if bundleProgress.stage !== "preparing_decks"}
-          <progress
-            max={Math.max(1, bundleProgress.total)}
-            value={bundleProgress.current}
-          ></progress>
-          <span
-            >{bundleProgress.current.toLocaleString()} / {bundleProgress.total.toLocaleString()}</span
-          >
-        {/if}
-      </div>
-    {/if}
-
-    <Dialog.Footer>
-      <Button
-        type="button"
-        variant="outline"
-        disabled={importingBundle}
-        onclick={() => (bundleDialogOpen = false)}>Close</Button
-      >
-      <Button
-        type="button"
-        disabled={!bundlePreview?.can_import || importingBundle}
-        onclick={() => void addBundle()}
-      >
-        {importingBundle ? "Adding bundle…" : "Add bundle"}
-      </Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
-
 <style>
   .screen-actions {
     display: flex;
@@ -700,61 +577,6 @@
     margin: 0;
   }
 
-  .bundle-summary {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 0.75rem;
-  }
-
-  .bundle-summary div,
-  .bundle-decks li {
-    border: 1px solid var(--border);
-    padding: 0.75rem;
-  }
-
-  .bundle-summary div,
-  .bundle-decks li > div,
-  .bundle-progress {
-    display: grid;
-    gap: 0.25rem;
-  }
-
-  .bundle-summary span,
-  .bundle-decks span,
-  .bundle-progress span {
-    color: var(--muted-foreground);
-    font-size: 0.8rem;
-  }
-
-  .bundle-decks {
-    display: grid;
-    max-height: min(20rem, 45vh);
-    margin: 0;
-    padding: 0;
-    overflow-y: auto;
-    list-style: none;
-  }
-
-  .bundle-decks li {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-  }
-
-  .bundle-decks li + li {
-    border-top: 0;
-  }
-
-  .bundle-decks li > span:not(.installed) {
-    color: var(--foreground);
-    font-weight: 700;
-  }
-
-  .bundle-progress progress {
-    width: 100%;
-  }
-
   .bundle-action-list,
   .bundle-action-list > div,
   .bundle-removal-progress,
@@ -777,11 +599,5 @@
 
   .bundle-removal-progress progress {
     width: 100%;
-  }
-
-  @media (max-width: 36rem) {
-    .bundle-summary {
-      grid-template-columns: 1fr;
-    }
   }
 </style>

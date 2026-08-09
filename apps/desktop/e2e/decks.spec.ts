@@ -87,7 +87,9 @@ test("previews and adds the complete Japanese bundle in ordered progress stages"
   await expect(dialog.getByText("Adding audio", { exact: true })).toBeVisible();
 
   await expect(
-    page.getByText("Added Japanese with 6 decks and 9,700 cards."),
+    page
+      .getByTestId("bundle-import-activity")
+      .getByText("Added Japanese with 6 decks."),
   ).toBeVisible();
   const stage = page.getByTestId("deck-deck:ja-JP:05");
   await expect(stage).toContainText(/3000\s*cards/);
@@ -134,7 +136,11 @@ test("reports installation when existing decks only need bundle associations", a
   ).toBeEnabled();
   await dialog.getByRole("button", { name: "Add bundle" }).click();
 
-  await expect(page.getByText("Japanese is now installed.")).toBeVisible();
+  await expect(
+    page
+      .getByTestId("bundle-import-activity")
+      .getByText("Japanese is now installed."),
+  ).toBeVisible();
   await expect(page.getByText(/Added Japanese with 0 decks/)).toHaveCount(0);
 });
 

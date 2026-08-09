@@ -11,6 +11,12 @@
   import * as Select from "$lib/components/ui/select/index.js";
   import * as Sheet from "$lib/components/ui/sheet/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
+  import BundleImportActivity from "./components/BundleImportActivity.svelte";
+  import { api } from "./lib/api";
+  import type { BundleImportProgressDto } from "./lib/generated/BundleImportProgressDto";
+  import type { BundleImportResultDto } from "./lib/generated/BundleImportResultDto";
+  import type { BundleImportStageDto } from "./lib/generated/BundleImportStageDto";
+  import type { BundlePreviewDto } from "./lib/generated/BundlePreviewDto";
   import { messages } from "./lib/messages";
   import {
     clearStudyQueue,
@@ -32,6 +38,18 @@
     { id: "settings", label: "Settings", icon: RiSettings3Line },
   ];
 
+  type BundleImportStatus =
+    "choosing" | "previewing" | "ready" | "running" | "success" | "failure";
+
+  type BundleImportActivity = {
+    status: BundleImportStatus;
+    path: string;
+    preview: BundlePreviewDto | null;
+    progress: BundleImportProgressDto | null;
+    result: BundleImportResultDto | null;
+    error: string;
+  };
+
   let activeScreen: Screen = "today";
   let theme: ThemeMode = "system";
   let authoringDirty = false;
@@ -50,6 +68,13 @@
   let discardDescription = "";
   let announcement = "";
   let deckContext = "All decks";
+  let bundleImportActivity: BundleImportActivity | null = null;
+  let bundleImportDialogOpen = false;
+  let bundleImportRefresh = 0;
+  $: bundleImportRunning =
+    bundleImportActivity?.status === "choosing" ||
+    bundleImportActivity?.status === "previewing" ||
+    bundleImportActivity?.status === "running";
 
   onMount(() => {
     const savedTheme = localStorage.getItem("meiki-theme");
@@ -106,6 +131,128 @@
   function setDarkClass(enabled: boolean): void {
     document.documentElement.classList.toggle("dark", enabled);
     document.documentElement.style.colorScheme = enabled ? "dark" : "light";
+  }
+
+  async function chooseBundle(): Promise<void> {
+    if (bundleImportRunning) return;
+    if (bundleImportActivity?.status === "ready") {
+      bundleImportDialogOpen = true;
+      return;
+    }
+    bundleImportActivity = {
+      status: "choosing",
+      path: "",
+      preview: null,
+      progress: null,
+      result: null,
+      error: "",
+    };
+    try {
+      const path = await api.pickArchiveFile();
+      if (!path) {
+        bundleImportActivity = null;
+        return;
+      }
+      bundleImportActivity = {
+        status: "previewing",
+        path,
+        preview: null,
+        progress: null,
+        result: null,
+        error: "",
+      };
+      bundleImportDialogOpen = true;
+      try {
+        const preview = await api.previewBundle(path);
+        if (bundleImportActivity?.path !== path) return;
+        bundleImportActivity.preview = preview;
+        bundleImportActivity.status = "ready";
+      } catch (cause) {
+        if (bundleImportActivity?.path !== path) return;
+        bundleImportActivity.error = message(cause);
+        bundleImportActivity.status = "failure";
+      }
+    } catch (cause) {
+      bundleImportActivity = {
+        status: "failure",
+        path: "",
+        preview: null,
+        progress: null,
+        result: null,
+        error: message(cause),
+      };
+      bundleImportDialogOpen = true;
+    }
+  }
+
+  async function addBundle(): Promise<void> {
+    if (
+      bundleImportActivity?.status !== "ready" ||
+      !bundleImportActivity.preview?.can_import
+    )
+      return;
+    const path = bundleImportActivity.path;
+    bundleImportActivity.status = "running";
+    bundleImportActivity.error = "";
+    bundleImportActivity.progress = {
+      stage: "preparing_decks",
+      current: 0,
+      total: bundleImportActivity.preview.decks.length,
+    };
+    try {
+      const result = await api.importBundle(
+        { path, now_ms: Date.now() },
+        updateBundleImportProgress,
+      );
+      if (bundleImportActivity?.path !== path) return;
+      bundleImportActivity.result = result;
+      bundleImportActivity.status = "success";
+      bundleImportDialogOpen = false;
+      bundleImportRefresh += 1;
+    } catch (cause) {
+      if (bundleImportActivity?.path !== path) return;
+      bundleImportActivity.error = message(cause);
+      bundleImportActivity.status = "failure";
+    }
+  }
+
+  function updateBundleImportProgress(progress: BundleImportProgressDto): void {
+    if (bundleImportActivity?.status !== "running") return;
+    const previous = bundleImportActivity.progress;
+    if (
+      previous &&
+      (bundleImportStageIndex(progress.stage) <
+        bundleImportStageIndex(previous.stage) ||
+        (progress.stage === previous.stage &&
+          progress.current < previous.current))
+    ) {
+      return;
+    }
+    bundleImportActivity.progress = progress;
+  }
+
+  function bundleImportStageIndex(stage: BundleImportStageDto): number {
+    if (stage === "preparing_decks") return 0;
+    if (stage === "adding_cards") return 1;
+    return 2;
+  }
+
+  function dismissBundleImport(): void {
+    if (
+      bundleImportActivity?.status !== "success" &&
+      bundleImportActivity?.status !== "failure"
+    )
+      return;
+    bundleImportActivity = null;
+    bundleImportDialogOpen = false;
+  }
+
+  function abandonBundlePreview(): void {
+    if (bundleImportActivity?.status === "ready") bundleImportActivity = null;
+  }
+
+  function message(cause: unknown): string {
+    return cause instanceof Error ? cause.message : String(cause);
   }
 
   async function performNavigation(value: Screen): Promise<void> {
@@ -373,6 +520,9 @@
             onOpen={(deckId, deckName, isBundleStage) =>
               void openDeck(deckId, deckName, isBundleStage)}
             onDeckContextChange={(value) => (deckContext = value)}
+            onChooseBundle={() => void chooseBundle()}
+            {bundleImportRefresh}
+            {bundleImportRunning}
           />
         {:else if activeScreen === "study"}
           <StudyScreen
@@ -409,6 +559,14 @@
       </main>
     </div>
   </div>
+
+  <BundleImportActivity
+    activity={bundleImportActivity}
+    bind:dialogOpen={bundleImportDialogOpen}
+    onAdd={() => void addBundle()}
+    onAbandon={abandonBundlePreview}
+    onDismiss={dismissBundleImport}
+  />
 </Tooltip.Provider>
 
 <AlertDialog.Root bind:open={discardDialogOpen}>
