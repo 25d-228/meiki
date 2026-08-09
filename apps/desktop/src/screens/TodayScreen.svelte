@@ -12,8 +12,8 @@
     clearStudyQueue,
     clearStudySession,
     readStudyQueue,
+    replaceStudyQueue,
     remainingStudyCards,
-    startStudyQueue,
     type StudyQueueSession,
   } from "../lib/study-queue";
 
@@ -32,34 +32,40 @@
   let activeQueue = $state<StudyQueueSession | null>(null);
   let selectedDeckId = $state(allDecksId);
   let loading = $state(true);
+  let startingStudy = $state(false);
   let error = $state("");
+  let retryStudyStart = $state(false);
 
   onMount(() => {
     const storedQueue = readStudyQueue();
     if (storedQueue && remainingStudyCards(storedQueue) > 0) {
       activeQueue = storedQueue;
-      selectedDeckId = storedQueue.deckId;
     } else {
       if (storedQueue) clearStudyQueue();
-      selectedDeckId = localStorage.getItem(selectedDeckKey) ?? allDecksId;
     }
+    selectedDeckId = localStorage.getItem(selectedDeckKey) ?? allDecksId;
     void loadOverview();
   });
 
   async function loadOverview(): Promise<void> {
     loading = true;
     error = "";
+    retryStudyStart = false;
     try {
       const decks = await api.listDeckSummaries(Date.now());
+      if (
+        activeQueue &&
+        activeQueue.deckId !== allDecksId &&
+        !decks.some((deck) => deck.id === activeQueue?.deckId)
+      ) {
+        clearStudyQueue();
+        clearStudySession();
+        activeQueue = null;
+      }
       if (
         selectedDeckId !== allDecksId &&
         !decks.some((deck) => deck.id === selectedDeckId)
       ) {
-        if (activeQueue?.deckId === selectedDeckId) {
-          clearStudyQueue();
-          clearStudySession();
-          activeQueue = null;
-        }
         selectedDeckId = allDecksId;
         localStorage.setItem(selectedDeckKey, allDecksId);
       }
@@ -88,14 +94,32 @@
     await loadOverview();
   }
 
-  function beginStudy(): void {
-    if (activeQueue && remainingStudyCards(activeQueue) > 0) {
+  async function beginStudy(): Promise<void> {
+    if (
+      activeQueue &&
+      activeQueue.deckId === selectedDeckId &&
+      remainingStudyCards(activeQueue) > 0
+    ) {
       onStart();
       return;
     }
-    if (!overview) return;
-    if (overview.queue.length) activeQueue = startStudyQueue(overview);
-    onStart();
+    if (!overview || startingStudy) return;
+    startingStudy = true;
+    error = "";
+    retryStudyStart = false;
+    try {
+      activeQueue = await replaceStudyQueue(
+        activeQueue,
+        overview,
+        api.gradeReview,
+      );
+      onStart();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      retryStudyStart = true;
+    } finally {
+      startingStudy = false;
+    }
   }
 
   function estimate(seconds: number): string {
@@ -128,7 +152,7 @@
           <select
             aria-label="Deck"
             value={selectedDeckId}
-            disabled={loading || Boolean(activeQueue)}
+            disabled={loading || startingStudy}
             onchange={(event) => changeDeck(event.currentTarget.value)}
           >
             <option value={allDecksId}>All decks</option>
@@ -144,10 +168,18 @@
 
   {#if error}
     <Alert.Root variant="destructive" role="alert">
-      <Alert.Title>Today’s queue could not be planned</Alert.Title>
+      <Alert.Title>
+        {retryStudyStart
+          ? "The saved review could not be completed"
+          : "Today’s queue could not be planned"}
+      </Alert.Title>
       <Alert.Description>
         <p>{error}</p>
-        <Button class="mt-3" variant="outline" onclick={loadOverview}
+        <Button
+          class="mt-3"
+          variant="outline"
+          onclick={() =>
+            retryStudyStart ? void beginStudy() : void loadOverview()}
           >Try again</Button
         >
       </Alert.Description>
@@ -161,7 +193,7 @@
         {#if loading && !overview}
           <strong>Planning today…</strong>
           <p>Reading due timestamps and local review history.</p>
-        {:else if activeQueue && remainingStudyCards(activeQueue) > 0}
+        {:else if activeQueue && activeQueue.deckId === selectedDeckId && remainingStudyCards(activeQueue) > 0}
           <strong>Resume where you stopped</strong>
           <p>
             {remainingStudyCards(activeQueue)}
@@ -203,12 +235,16 @@
         <Button
           variant="default"
           data-primary-action
-          disabled={loading || !overview}
-          onclick={beginStudy}
+          disabled={loading || startingStudy || !overview}
+          onclick={() => void beginStudy()}
         >
-          {activeQueue && remainingStudyCards(activeQueue) > 0
+          {activeQueue &&
+          activeQueue.deckId === selectedDeckId &&
+          remainingStudyCards(activeQueue) > 0
             ? "Resume study"
-            : "Start study"}
+            : startingStudy
+              ? "Starting…"
+              : "Start study"}
         </Button>
       </div>
     </Card.Root>

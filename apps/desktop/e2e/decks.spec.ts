@@ -332,6 +332,99 @@ test("starts and resumes a study queue restricted to one deck", async ({
   ).toBeVisible();
 });
 
+test("replaces a bundle-stage queue while preserving its completed review", async ({
+  page,
+}) => {
+  await page.goto("/?bundleRemoval=installed");
+  await openDecks(page);
+  const stage00 = page.getByTestId("deck-deck:ja-JP:00");
+  const stage01 = page.getByTestId("deck-deck:ja-JP:01");
+  const stage02 = page.getByTestId("deck-deck:ja-JP:02");
+  await stage00.getByRole("button", { name: "Study" }).click();
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.getByRole("button", { name: /Good/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Review saved" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByLabel("Your answer").fill("unfinished response");
+
+  await openDecks(page);
+  await page.evaluate(() => {
+    sessionStorage.setItem(
+      "meiki-active-study-session",
+      "abandoned bundle-stage session",
+    );
+  });
+  await expect(stage00.getByRole("button", { name: "Resume" })).toBeEnabled();
+  await expect(stage01.getByRole("button", { name: "Study" })).toBeEnabled();
+  await expect(stage02.getByRole("button", { name: "Study" })).toBeEnabled();
+  await stage02.getByRole("button", { name: "Study" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "Study", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Your answer")).toHaveValue("");
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("meiki-active-study-session"),
+    ),
+  ).toBeNull();
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("meiki-active-study-queue") ?? "null"),
+    ),
+  ).toMatchObject({ deckId: "deck:ja-JP:02", position: 0 });
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("meiki-e2e-committed-reviews") ?? "[]"),
+    ),
+  ).toEqual([
+    expect.objectContaining({
+      card_id: "due-card",
+      chosen_grade: "good",
+      schedule_version: 1,
+    }),
+  ]);
+  expect(
+    await page.evaluate(
+      () =>
+        (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+          (request) => request.command === "grade_review",
+        ).length,
+    ),
+  ).toBe(1);
+});
+
+test("keeps only an empty deck disabled while another queue is saved", async ({
+  page,
+}) => {
+  await page.goto("/?bundleRemoval=installed&emptyDeck=default-deck");
+  await openDecks(page);
+  await page
+    .getByTestId("deck-travel-deck")
+    .getByRole("button", { name: "Study" })
+    .click();
+  await openDecks(page);
+
+  await expect(
+    page
+      .getByTestId("deck-travel-deck")
+      .getByRole("button", { name: "Resume" }),
+  ).toBeEnabled();
+  await expect(
+    page
+      .getByTestId("deck-default-deck")
+      .getByRole("button", { name: "Study" }),
+  ).toBeDisabled();
+  await expect(
+    page
+      .getByTestId("deck-deck:ja-JP:01")
+      .getByRole("button", { name: "Study" }),
+  ).toBeEnabled();
+});
+
 test("manages deck identity and daily time without Settings deck controls", async ({
   page,
 }) => {

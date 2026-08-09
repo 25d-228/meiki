@@ -1,5 +1,6 @@
 import type { GradeDto } from "./generated/GradeDto";
 import type { GradeReviewRequest } from "./generated/GradeReviewRequest";
+import type { GradeReviewResultDto } from "./generated/GradeReviewResultDto";
 import type { StudyQueueEntryDto } from "./generated/StudyQueueEntryDto";
 import type { TodayOverviewDto } from "./generated/TodayOverviewDto";
 
@@ -31,6 +32,62 @@ export function startStudyQueue(overview: TodayOverviewDto): StudyQueueSession {
   };
   writeStudyQueue(queue);
   return queue;
+}
+
+export async function replaceStudyQueue(
+  currentQueue: StudyQueueSession | null,
+  overview: TodayOverviewDto,
+  gradeReview: (request: GradeReviewRequest) => Promise<GradeReviewResultDto>,
+): Promise<StudyQueueSession | null> {
+  if (currentQueue?.pendingReview) {
+    const recoveredQueue = await recoverPendingReview(
+      currentQueue,
+      gradeReview,
+    );
+    writeStudyQueue(recoveredQueue);
+  }
+  clearStudySession();
+  if (!overview.queue.length) {
+    clearStudyQueue();
+    return null;
+  }
+  return startStudyQueue(overview);
+}
+
+export async function recoverPendingReview(
+  queue: StudyQueueSession,
+  gradeReview: (request: GradeReviewRequest) => Promise<GradeReviewResultDto>,
+): Promise<StudyQueueSession> {
+  if (!queue.pendingReview) return queue;
+  const result = await gradeReview(queue.pendingReview);
+  if (result.review_event_id !== queue.pendingReview.review_event_id) {
+    throw new Error("The recovered review command did not match.");
+  }
+  return completePendingReview(queue, result.review_event_id);
+}
+
+export function completePendingReview(
+  queue: StudyQueueSession,
+  reviewEventId: string,
+): StudyQueueSession {
+  if (!queue.pendingReview) {
+    throw new Error("The pending review command is missing.");
+  }
+  const pending = queue.pendingReview;
+  const current = queue.entries[queue.position];
+  if (
+    pending.review_event_id !== reviewEventId ||
+    current?.card_id !== pending.card_id ||
+    current.card_content_version !== pending.card_content_version ||
+    current.schedule_version !== pending.schedule_version
+  ) {
+    throw new Error("The pending review command does not match the queue.");
+  }
+  return {
+    ...queue,
+    position: Math.min(queue.entries.length, queue.position + 1),
+    pendingReview: null,
+  };
 }
 
 export function readStudyQueue(): StudyQueueSession | null {
