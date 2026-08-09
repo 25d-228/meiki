@@ -111,6 +111,20 @@ const visualCases = [
     viewport: "desktop",
   },
   {
+    name: "study-audio-desktop-light",
+    route: "/?media=ready",
+    screen: "Study",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "study-audio-narrow-dark",
+    route: "/?media=ready",
+    screen: "Study",
+    theme: "dark",
+    viewport: "narrow",
+  },
+  {
     name: "editor-narrow-light-cjk-combining",
     route: "/?fixture=cjk",
     screen: "Add",
@@ -168,6 +182,14 @@ for (const visualCase of visualCases) {
     }
     if (visualCase.screen === "Study") {
       await expect(page.locator("#study-prompt")).toBeVisible();
+    }
+    if (visualCase.name.startsWith("study-audio")) {
+      await expect(page.getByRole("slider", { name: /Seek/ })).toBeVisible();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
     }
     await expect(page).toHaveScreenshot(`${visualCase.name}.png`, {
       animations: "disabled",

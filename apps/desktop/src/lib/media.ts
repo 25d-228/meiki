@@ -2,6 +2,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 const SCHEME = /^([a-z][a-z\d+.-]*):/i;
 const WINDOWS_ABSOLUTE_PATH = /^[a-z]:[\\/]/i;
+const promptAudioAutoplayKey = "meiki-autoplay-prompt-audio";
 
 function sourceScheme(path: string): string | undefined {
   if (WINDOWS_ABSOLUTE_PATH.test(path)) return undefined;
@@ -25,4 +26,12 @@ export function mediaAssetSource(path: string | null): string | undefined {
   if (scheme) return undefined;
 
   return isTauriRuntime() ? convertFileSrc(path) : path;
+}
+
+export function readPromptAudioAutoplay(): boolean {
+  return localStorage.getItem(promptAudioAutoplayKey) !== "false";
+}
+
+export function writePromptAudioAutoplay(enabled: boolean): void {
+  localStorage.setItem(promptAudioAutoplayKey, String(enabled));
 }
