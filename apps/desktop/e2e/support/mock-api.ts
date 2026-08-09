@@ -13,6 +13,7 @@ export async function installMockApi(page: Page): Promise<void> {
     let bundleImported = false;
     let bundleRemoved =
       localStorage.getItem("meiki-e2e-bundle-removed") === "true";
+    let mediaPlayAttempts = 0;
     const schedulerSettingsByDeck: Record<
       string,
       typeof dtos.schedulerSettings
@@ -25,12 +26,44 @@ export async function installMockApi(page: Page): Promise<void> {
     window.__MEIKI_TEST_PICK_SCHEDULER_PARAMETERS__ = async () =>
       "/tmp/meiki-scheduler-parameters.json";
     HTMLMediaElement.prototype.play = async function () {
+      mediaPlayAttempts += 1;
+      localStorage.setItem(
+        "meiki-e2e-media-play-attempt-count",
+        String(mediaPlayAttempts),
+      );
+      if (
+        new URLSearchParams(location.search).get("media") === "blocked" &&
+        mediaPlayAttempts === 1
+      ) {
+        throw new DOMException("Autoplay is blocked", "NotAllowedError");
+      }
       localStorage.setItem(
         "meiki-e2e-media-play-count",
         String(
           Number(localStorage.getItem("meiki-e2e-media-play-count") ?? "0") + 1,
         ),
       );
+      const role =
+        this.closest<HTMLElement>("[data-media-role]")?.dataset.mediaRole;
+      const playedRoles = JSON.parse(
+        localStorage.getItem("meiki-e2e-media-played-roles") ?? "[]",
+      ) as string[];
+      if (role) playedRoles.push(role);
+      localStorage.setItem(
+        "meiki-e2e-media-played-roles",
+        JSON.stringify(playedRoles),
+      );
+      this.dispatchEvent(new Event("play"));
+    };
+    HTMLMediaElement.prototype.pause = function () {
+      localStorage.setItem(
+        "meiki-e2e-media-pause-count",
+        String(
+          Number(localStorage.getItem("meiki-e2e-media-pause-count") ?? "0") +
+            1,
+        ),
+      );
+      this.dispatchEvent(new Event("pause"));
     };
 
     window.__MEIKI_TEST_INVOKE__ = async (command, args) => {
@@ -139,6 +172,15 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(dtos.readyPlan);
       }
       if (command === "reconcile_study_queue") {
+        if (params.get("reconcile") === "request") {
+          return clone(
+            (
+              args as {
+                request: { entries: typeof dtos.reconciledQueue };
+              }
+            ).request.entries,
+          );
+        }
         return clone(
           params.get("reconcile") === "second"
             ? dtos.reconciledSecondCard
@@ -170,9 +212,43 @@ export async function installMockApi(page: Page): Promise<void> {
             ],
           };
         }
-        if (params.get("media") === "ready") return clone(dtos.readyMediaCard);
-        if (params.get("media") === "missing")
-          return clone(dtos.missingMediaCard);
+        const mediaScenario = params.get("media");
+        if (
+          mediaScenario === "ready" ||
+          mediaScenario === "blocked" ||
+          mediaScenario === "multiple"
+        ) {
+          const cardId = (args as { cardId?: string })?.cardId ?? "due-card";
+          const ready = clone(dtos.readyMediaCard);
+          return {
+            ...ready,
+            card_id: cardId,
+            prompt:
+              cardId === "new-card"
+                ? `Second card · ${ready.prompt}`
+                : ready.prompt,
+            prompt_media:
+              mediaScenario === "multiple"
+                ? [
+                    ...ready.prompt_media,
+                    {
+                      ...ready.prompt_media[0],
+                      id: "second-prompt-audio-fixture",
+                    },
+                  ]
+                : ready.prompt_media,
+          };
+        }
+        if (mediaScenario === "missing" || mediaScenario === "corrupt") {
+          const missing = clone(dtos.missingMediaCard);
+          return {
+            ...missing,
+            prompt_media: missing.prompt_media.map((media) => ({
+              ...media,
+              availability: mediaScenario,
+            })),
+          };
+        }
         return clone(
           (args as { cardId?: string })?.cardId === "new-card"
             ? study.second
@@ -181,7 +257,11 @@ export async function installMockApi(page: Page): Promise<void> {
       }
       if (command === "check_answer") {
         if (params.get("answer") === "wrong") return clone(dtos.wrongReveal);
-        if (params.get("media") === "ready")
+        if (
+          params.get("media") === "ready" ||
+          params.get("media") === "blocked" ||
+          params.get("media") === "multiple"
+        )
           return clone(dtos.readyMediaReveal);
         return clone(study.reveal);
       }

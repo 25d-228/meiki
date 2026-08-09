@@ -1,4 +1,6 @@
 <script lang="ts">
+  import AudioControl from "./AudioControl.svelte";
+
   type Props = {
     kind: "audio" | "image";
     label: string;
@@ -9,8 +11,8 @@
     altText?: string | null;
     width?: number | null;
     height?: number | null;
+    durationMs?: number | null;
     state?: "empty" | "loading" | "ready" | "error";
-    autoplay?: boolean;
   };
 
   let {
@@ -23,8 +25,8 @@
     altText,
     width,
     height,
+    durationMs,
     state = "empty",
-    autoplay = false,
   }: Props = $props();
 
   const resolvedState = $derived(
@@ -47,22 +49,19 @@
   }
 </script>
 
-<div class="media-frame" data-state={resolvedState} data-media-role={role}>
+<div
+  class="media-frame"
+  data-state={resolvedState}
+  data-kind={kind}
+  data-media-role={role}
+>
   {#if resolvedState === "ready" && source}
     {#if kind === "audio"}
       <div class="media-heading">
         <strong>{label}</strong>
         <span>{mediaType}</span>
       </div>
-      <audio
-        src={source}
-        controls
-        preload="metadata"
-        {autoplay}
-        aria-label={altText ?? label}
-      >
-        Your browser cannot play this audio.
-      </audio>
+      <AudioControl {source} label={altText ?? label} {durationMs} />
     {:else}
       <figure>
         <img
@@ -139,8 +138,11 @@
     font-size: var(--text-xs);
   }
 
-  audio {
-    width: 100%;
+  .media-frame[data-kind="audio"][data-state="ready"] {
+    border-style: solid;
+    border-radius: 0;
+    color: var(--muted-foreground);
+    background: var(--card);
   }
 
   figure {

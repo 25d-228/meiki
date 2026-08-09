@@ -130,6 +130,21 @@ test("budget-first scheduler previews before save and keeps expert controls expl
   await expect(
     page.getByText("Prompt audio autoplay", { exact: true }),
   ).toBeVisible();
+  await expect(page.getByText(/On by default/)).toBeVisible();
+  const autoplaySwitch = page.getByRole("switch", { name: "Enable" });
+  await expect(autoplaySwitch).toBeChecked();
+  await autoplaySwitch.click();
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("meiki-autoplay-prompt-audio"),
+    ),
+  ).toBe("false");
+  await autoplaySwitch.click();
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("meiki-autoplay-prompt-audio"),
+    ),
+  ).toBe("true");
   await expect(page.getByText("Archives and recovery")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Export full collection" }),
@@ -153,7 +168,6 @@ test("budget-first scheduler previews before save and keeps expert controls expl
   await page.getByRole("button", { name: "Save preferences" }).click();
   await expect(page.getByText("Scheduling preferences saved.")).toBeVisible();
 
-  await page.getByRole("switch", { name: "Enable" }).click();
   await page
     .getByRole("group", { name: "Scheduling mode" })
     .getByRole("button", { name: "Expert", exact: true })

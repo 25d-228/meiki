@@ -15,6 +15,10 @@
   import type { SchedulingModeDto } from "../lib/generated/SchedulingModeDto";
   import type { UpdateSchedulerSettingsRequest } from "../lib/generated/UpdateSchedulerSettingsRequest";
   import type { BudgetSourceDto } from "../lib/generated/BudgetSourceDto";
+  import {
+    readPromptAudioAutoplay,
+    writePromptAudioAutoplay,
+  } from "../lib/media";
   import type { ThemeMode } from "../lib/ui";
 
   type Props = {
@@ -22,7 +26,6 @@
     onThemeChange: (theme: ThemeMode) => void;
   };
 
-  const autoplayKey = "meiki-autoplay-prompt-audio";
   const settingsDeckId = "default-deck";
 
   let { theme, onThemeChange }: Props = $props();
@@ -36,13 +39,13 @@
   let dayBoundaryMinutes = $state(240);
   let policyPreview = $state<SchedulerPolicyPreviewDto | null>(null);
   let previewedRequest = $state<UpdateSchedulerSettingsRequest | null>(null);
-  let autoplayPromptAudio = $state(false);
+  let autoplayPromptAudio = $state(true);
   let busy = $state(false);
   let notice = $state("");
   let error = $state("");
 
   onMount(() => {
-    autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
+    autoplayPromptAudio = readPromptAudioAutoplay();
     void loadSettings();
   });
 
@@ -141,13 +144,18 @@
           previewedRequest ?? schedulingRequest(),
         ),
       );
-      localStorage.setItem(autoplayKey, String(autoplayPromptAudio));
+      writePromptAudioAutoplay(autoplayPromptAudio);
       notice = "Scheduling preferences saved.";
     } catch (cause) {
       error = message(cause);
     } finally {
       busy = false;
     }
+  }
+
+  function updatePromptAudioAutoplay(enabled: boolean): void {
+    autoplayPromptAudio = enabled;
+    writePromptAudioAutoplay(enabled);
   }
 
   async function importParameters(): Promise<void> {
@@ -524,14 +532,15 @@
         <div>
           <strong>Prompt audio autoplay</strong>
           <p>
-            Off by default. When enabled, only the first prompt audio clip may
+            On by default. When enabled, only the first prompt audio clip may
             start automatically.
           </p>
         </div>
         <label class="toggle" for="autoplay-prompt-audio">
           <Switch
             id="autoplay-prompt-audio"
-            bind:checked={autoplayPromptAudio}
+            checked={autoplayPromptAudio}
+            onCheckedChange={updatePromptAudioAutoplay}
             disabled={busy}
           />
           <span>Enable</span>

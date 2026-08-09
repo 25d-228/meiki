@@ -17,7 +17,11 @@
   import type { RevealDto } from "../lib/generated/RevealDto";
   import type { StudyCardDto } from "../lib/generated/StudyCardDto";
   import type { StudyAvailabilityDto } from "../lib/generated/StudyAvailabilityDto";
-  import { mediaAssetSource } from "../lib/media";
+  import {
+    mediaAssetSource,
+    readPromptAudioAutoplay,
+    writePromptAudioAutoplay,
+  } from "../lib/media";
   import { messages } from "../lib/messages";
   import {
     clearStudyQueue,
@@ -60,7 +64,6 @@
     completionKind: CompletionKind;
   };
 
-  const autoplayKey = "meiki-autoplay-prompt-audio";
   const selectedDeckKey = "meiki-today-deck";
   const defaultDeckId = "default-deck";
   const allDecksId = "__all_decks__";
@@ -87,13 +90,13 @@
   let answerInput = $state<HTMLInputElement | null>(null);
   let studyElement = $state<HTMLElement | undefined>();
   let promptStartedAt = $state(0);
-  let autoplayPromptAudio = $state(false);
+  let autoplayPromptAudio = $state(true);
   let queueSession = $state<StudyQueueSession | null>(null);
   let studyAvailability = $state<StudyAvailabilityDto | null>(null);
   let nextDueAt = $state<string | null>(null);
 
   onMount(() => {
-    autoplayPromptAudio = localStorage.getItem(autoplayKey) === "true";
+    autoplayPromptAudio = readPromptAudioAutoplay();
     void prepareStudy();
   });
 
@@ -270,6 +273,7 @@
       view = "prompt";
       promptStartedAt = performance.now();
       await focusAnswer();
+      await autoplayFirstPromptAudio();
     } catch (error) {
       fail(error, "prompt", "load");
     }
@@ -278,6 +282,26 @@
   async function focusAnswer(): Promise<void> {
     await tick();
     answerInput?.focus();
+  }
+
+  async function autoplayFirstPromptAudio(): Promise<void> {
+    if (!autoplayPromptAudio) return;
+    await tick();
+    const audio = studyElement?.querySelector<HTMLAudioElement>(
+      '[data-media-role="prompt_audio"][data-state="ready"] audio',
+    );
+    if (!audio) return;
+    try {
+      await audio.play();
+    } catch {
+      audioNotice =
+        "Prompt audio could not start automatically. Use Play to hear it.";
+    }
+  }
+
+  function togglePromptAudioAutoplay(): void {
+    autoplayPromptAudio = !autoplayPromptAudio;
+    writePromptAudioAutoplay(autoplayPromptAudio);
   }
 
   async function checkAnswer(): Promise<void> {
@@ -637,17 +661,27 @@
         Type the missing text before revealing the answer.
       </p>
     </div>
-    {#if card}
-      <span class="review-count">
-        {#if queueSession}
-          {remainingStudyCards(queueSession)}
-          {remainingStudyCards(queueSession) === 1 ? "card" : "cards"} remaining
-        {:else}
-          {card.completed_reviews}
-          {card.completed_reviews === 1 ? "review" : "reviews"} saved
-        {/if}
-      </span>
-    {/if}
+    <div class="study-header-actions">
+      <Button
+        variant="outline"
+        size="sm"
+        aria-pressed={autoplayPromptAudio}
+        onclick={togglePromptAudioAutoplay}
+      >
+        Autoplay {autoplayPromptAudio ? "on" : "off"}
+      </Button>
+      {#if card}
+        <span class="review-count">
+          {#if queueSession}
+            {remainingStudyCards(queueSession)}
+            {remainingStudyCards(queueSession) === 1 ? "card" : "cards"} remaining
+          {:else}
+            {card.completed_reviews}
+            {card.completed_reviews === 1 ? "review" : "reviews"} saved
+          {/if}
+        </span>
+      {/if}
+    </div>
   </header>
 
   {#if sessionNotice}
@@ -754,9 +788,6 @@
                 >{hintVisible ? "Hide hint" : "Show hint"}</Button
               >
             {/if}
-            <Button variant="ghost" size="sm" onclick={replayAudio}
-              >Replay audio</Button
-            >
             <Button variant="ghost" size="sm" onclick={beginEdit}
               >Edit note</Button
             >
@@ -773,7 +804,7 @@
               {card.hint.value}
             </p>
           {/if}
-          {#each card.prompt_media as media, index (media.id)}
+          {#each card.prompt_media as media (media.id)}
             <MediaFrame
               kind={media.kind}
               label={media.original_file_name ??
@@ -786,7 +817,7 @@
               altText={media.alt_text}
               width={media.width}
               height={media.height}
-              autoplay={autoplayPromptAudio && index === 0}
+              durationMs={media.duration_ms}
             />
           {/each}
           <form
@@ -913,15 +944,13 @@
                     altText={media.alt_text}
                     width={media.width}
                     height={media.height}
+                    durationMs={media.duration_ms}
                   />
                 {/each}
               </div>
             {/if}
 
             <div class="reveal-tools">
-              <Button variant="ghost" size="sm" onclick={replayAudio}
-                >Replay audio</Button
-              >
               <Button variant="ghost" size="sm" onclick={beginEdit}
                 >Edit note</Button
               >
@@ -1010,6 +1039,15 @@
     color: var(--muted-foreground);
     font-size: var(--text-xs);
     font-weight: 700;
+  }
+
+  .study-header-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: flex-end;
   }
 
   .study-content {

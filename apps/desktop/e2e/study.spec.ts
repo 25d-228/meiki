@@ -18,6 +18,12 @@ async function lastRequest(page: Page, command: string) {
   }, command);
 }
 
+async function mediaPlayCount(page: Page): Promise<number> {
+  return page.evaluate(() =>
+    Number(localStorage.getItem("meiki-e2e-media-play-count") ?? "0"),
+  );
+}
+
 test("renders empty and nothing-due DTO states with their UI actions", async ({
   page,
 }) => {
@@ -68,34 +74,173 @@ test("maps answer and grade requests and renders returned DTOs", async ({
   ).toBeGreaterThanOrEqual(0);
 });
 
-test("renders ready and missing media DTOs without autoplay", async ({
+test("autoplays only the first prompt clip by default and never answer audio", async ({
   page,
 }) => {
-  await openStudy(page, "/?media=ready");
+  await openStudy(page, "/?media=multiple");
   await expect(
-    page.getByRole("button", { name: "Replay audio" }),
-  ).toBeVisible();
-  await expect(page.locator("audio")).toHaveCount(1);
-  await expect(page.locator("audio")).not.toHaveAttribute("autoplay");
-  await page.locator("#study-prompt").click();
-  await page.keyboard.press("r");
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        Number(localStorage.getItem("meiki-e2e-media-play-count") ?? "0"),
-      ),
-    )
-    .toBe(1);
+    page.getByRole("button", { name: "Autoplay on" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("audio")).toHaveCount(2);
+  await expect(page.locator("audio").first()).not.toHaveAttribute("controls");
+  await expect.poll(() => mediaPlayCount(page)).toBe(1);
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("meiki-e2e-media-played-roles") ?? "[]"),
+    ),
+  ).toEqual(["prompt_audio"]);
 
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
+  await expect(page.getByText("日曜日は図書館に行きます")).toBeVisible();
   await expect(
     page.getByRole("img", { name: "A quiet library reading room" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Play audio", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator("audio")).not.toHaveAttribute("controls");
+  await expect.poll(() => mediaPlayCount(page)).toBe(1);
+});
 
-  await openStudy(page, "/?media=missing");
-  await expect(page.getByText("Media file is missing")).toBeVisible();
+test("preserves an explicitly disabled autoplay preference", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("meiki-autoplay-prompt-audio", "false");
+  });
+  await openStudy(page, "/?media=ready");
+
+  await expect(
+    page.getByRole("button", { name: "Autoplay off" }),
+  ).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(() => mediaPlayCount(page)).toBe(0);
+});
+
+test("does not autoplay the same prompt again after returning from Edit", async ({
+  page,
+}) => {
+  await openStudy(page, "/?media=ready");
+  await expect.poll(() => mediaPlayCount(page)).toBe(1);
+
+  await page.getByRole("button", { name: "Edit note" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Add / Edit card" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Return to study" }).click();
+
+  await expect(page.getByLabel("Your answer")).toBeVisible();
+  await expect.poll(() => mediaPlayCount(page)).toBe(1);
+});
+
+test("persists the Study autoplay toggle and applies it to the next card", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("meiki-autoplay-prompt-audio", "false");
+  });
+  await openStudy(page, "/?media=ready&reconcile=request");
+  await page.getByRole("button", { name: "Autoplay off" }).click();
+
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("meiki-autoplay-prompt-audio"),
+    ),
+  ).toBe("true");
+  await expect.poll(() => mediaPlayCount(page)).toBe(0);
+
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Continue" }).click();
+
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect.poll(() => mediaPlayCount(page)).toBe(1);
+
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Settings" })
+    .click();
+  const settingsSwitch = page.getByRole("switch", { name: "Enable" });
+  await expect(settingsSwitch).toBeChecked();
+  await settingsSwitch.click();
+  expect(
+    await page.evaluate(() =>
+      localStorage.getItem("meiki-autoplay-prompt-audio"),
+    ),
+  ).toBe("false");
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Today", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Resume study" }).click();
+  await expect(
+    page.getByRole("button", { name: "Autoplay off" }),
+  ).toHaveAttribute("aria-pressed", "false");
+});
+
+test("plays pauses replays and seeks with the custom audio control", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("meiki-autoplay-prompt-audio", "false");
+  });
+  await openStudy(page, "/?media=ready");
+  const audio = page.locator("audio");
+  const seek = page.getByRole("slider", { name: "Seek prompt.wav" });
+
+  await expect(audio).not.toHaveAttribute("controls");
+  await expect(page.getByLabel("Elapsed and total time")).toHaveText(
+    "0:00 / 0:01",
+  );
+  await page.getByRole("button", { name: "Play audio", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Pause audio" })).toBeVisible();
+  await page.getByRole("button", { name: "Pause audio" }).click();
+  expect(
+    await page.evaluate(() =>
+      Number(localStorage.getItem("meiki-e2e-media-pause-count") ?? "0"),
+    ),
+  ).toBe(1);
+
+  await seek.focus();
+  await page.keyboard.press("End");
+  await expect(seek).toHaveAttribute("aria-valuenow", "1");
+  await page.getByRole("button", { name: "Replay audio" }).click();
+  await expect(seek).toHaveAttribute("aria-valuenow", "0");
+  await page.locator("#study-prompt").click();
+  await page.keyboard.press("r");
+  await expect.poll(() => mediaPlayCount(page)).toBe(3);
+});
+
+test("keeps manual audio controls usable when autoplay is blocked", async ({
+  page,
+}) => {
+  await openStudy(page, "/?media=blocked");
+
+  await expect(
+    page
+      .getByTestId("app-shell")
+      .getByRole("status")
+      .filter({ hasText: "Prompt audio could not start automatically" }),
+  ).toContainText("Use Play to hear it.");
   await expect(page.getByLabel("Your answer")).toBeEnabled();
+  await page.getByRole("button", { name: "Play audio", exact: true }).click();
+  await expect.poll(() => mediaPlayCount(page)).toBe(1);
+  await expect(page.getByRole("button", { name: "Pause audio" })).toBeVisible();
+});
+
+test("keeps answering enabled for missing corrupt and unsupported audio", async ({
+  page,
+}) => {
+  for (const [scenario, message] of [
+    ["missing", "Media file is missing"],
+    ["corrupt", "Media integrity check failed"],
+    ["unsupported", "Media format is unsupported"],
+  ] as const) {
+    await openStudy(page, `/?media=${scenario}`);
+    await expect(page.getByText(message)).toBeVisible();
+    await expect(page.getByLabel("Your answer")).toBeEnabled();
+  }
 });
 
 test("accepts asset media and rejects remote or unsupported sources", async ({

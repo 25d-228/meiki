@@ -1003,6 +1003,7 @@
                       altText={media.alt_text}
                       width={media.width}
                       height={media.height}
+                      durationMs={media.duration_ms}
                     />
                     <Input
                       aria-label={`${mediaRoleLabel(media.role)} alternative text`}
