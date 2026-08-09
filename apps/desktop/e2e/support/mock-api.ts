@@ -11,7 +11,8 @@ export async function installMockApi(page: Page): Promise<void> {
     let deletedDeckCardRestored = false;
     let focusedSessionDeckDeleted = false;
     let bundleImported = false;
-    let bundleRemoved = false;
+    let bundleRemoved =
+      localStorage.getItem("meiki-e2e-bundle-removed") === "true";
     const schedulerSettingsByDeck: Record<
       string,
       typeof dtos.schedulerSettings
@@ -77,7 +78,43 @@ export async function installMockApi(page: Page): Promise<void> {
         throw new Error("The review commit was interrupted.");
       }
 
-      if (command === "get_today_overview") return clone(overview);
+      if (command === "get_today_overview") {
+        if (params.get("failure") === "today") {
+          throw new Error("The local collection is temporarily unavailable.");
+        }
+        const requestedDeckId = (args as { request?: { deck_id?: string } })
+          ?.request?.deck_id;
+        let availableDecks = clone(overview.decks);
+        if (
+          (bundleImported || params.get("bundleRemoval") === "installed") &&
+          !bundleRemoved
+        ) {
+          availableDecks = [
+            ...availableDecks,
+            ...dtos.bundleDeckSummaries.map(({ id, name }) => ({ id, name })),
+          ];
+        }
+        if (focusedSessionDeckDeleted) {
+          availableDecks = availableDecks.filter(
+            (deck) => deck.id !== "travel-deck",
+          );
+        }
+        const selectedDeck = availableDecks.find(
+          (deck) => deck.id === requestedDeckId,
+        );
+        if (requestedDeckId && requestedDeckId !== "__all_decks__") {
+          if (!selectedDeck) {
+            throw new Error(`deck ${requestedDeckId} does not exist`);
+          }
+          return {
+            ...clone(overview),
+            deck_id: requestedDeckId,
+            deck_name: selectedDeck.name,
+            decks: availableDecks,
+          };
+        }
+        return { ...clone(overview), decks: availableDecks };
+      }
       if (command === "prepare_study") {
         if (params.get("collection") === "empty")
           return clone(dtos.emptyCollectionPlan);
@@ -507,6 +544,7 @@ export async function installMockApi(page: Page): Promise<void> {
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
         bundleRemoved = true;
+        localStorage.setItem("meiki-e2e-bundle-removed", "true");
         return {
           language_tag: "ja-JP",
           removed_decks: 6,

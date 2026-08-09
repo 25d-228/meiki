@@ -10,6 +10,7 @@
   import { localDayBounds } from "../lib/local-day";
   import {
     clearStudyQueue,
+    clearStudySession,
     readStudyQueue,
     remainingStudyCards,
     startStudyQueue,
@@ -49,6 +50,19 @@
     loading = true;
     error = "";
     try {
+      const decks = await api.listDeckSummaries(Date.now());
+      if (
+        selectedDeckId !== allDecksId &&
+        !decks.some((deck) => deck.id === selectedDeckId)
+      ) {
+        if (activeQueue?.deckId === selectedDeckId) {
+          clearStudyQueue();
+          clearStudySession();
+          activeQueue = null;
+        }
+        selectedDeckId = allDecksId;
+        localStorage.setItem(selectedDeckKey, allDecksId);
+      }
       const settings = await api.getSchedulerSettings(
         selectedDeckId === allDecksId ? defaultDeckId : selectedDeckId,
       );
