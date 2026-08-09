@@ -41,6 +41,7 @@
   let studyReturnScreen: "today" | "decks" = "today";
   let selectedDeckId = "";
   let selectedDeckName = "";
+  let selectedDeckIsBundleStage = false;
   let mainElement: HTMLElement;
   let mobileNavigationOpen = false;
   let discardDialogOpen = false;
@@ -191,9 +192,14 @@
     await performNavigation("study");
   }
 
-  async function openDeck(deckId: string, deckName: string): Promise<void> {
+  async function openDeck(
+    deckId: string,
+    deckName: string,
+    isBundleStage: boolean,
+  ): Promise<void> {
     selectedDeckId = deckId;
     selectedDeckName = deckName;
+    selectedDeckIsBundleStage = isBundleStage;
     deckContext = deckName;
     await performNavigation("deck");
   }
@@ -212,6 +218,7 @@
     announcement = `Deleted ${selectedDeckName}. Returning to Decks.`;
     selectedDeckId = "";
     selectedDeckName = "";
+    selectedDeckIsBundleStage = false;
     await navigate("decks");
   }
 
@@ -363,7 +370,8 @@
         {:else if activeScreen === "decks"}
           <DecksScreen
             onStudy={(deckName) => void startStudy("decks", deckName)}
-            onOpen={(deckId, deckName) => void openDeck(deckId, deckName)}
+            onOpen={(deckId, deckName, isBundleStage) =>
+              void openDeck(deckId, deckName, isBundleStage)}
             onDeckContextChange={(value) => (deckContext = value)}
           />
         {:else if activeScreen === "study"}
@@ -376,6 +384,7 @@
           <DeckManagementScreen
             {selectedDeckId}
             deckName={selectedDeckName}
+            isBundleStage={selectedDeckIsBundleStage}
             onBack={() => void navigate("decks")}
             onCreate={() => void addDeckNote()}
             onDeleted={() => void finishDeckDeletion()}

@@ -208,6 +208,7 @@ const deckSummaries = [
   {
     id: "default-deck",
     name: "Unsorted",
+    is_bundle_stage: false,
     total_cards: 3,
     due_cards: 1,
     new_cards: 1,
@@ -215,6 +216,7 @@ const deckSummaries = [
   {
     id: "travel-deck",
     name: "Travel phrases",
+    is_bundle_stage: false,
     total_cards: 2,
     due_cards: 0,
     new_cards: 1,
@@ -226,37 +228,37 @@ const bundleDecks = [
     id: "deck:ja-JP:00",
     name: "Japanese 00 — Kana, sound, and Japanese input",
     cards: 300,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:01",
     name: "Japanese 01 — N5 / A1 foundation",
     cards: 1_000,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:02",
     name: "Japanese 02 — N4 / A2 elementary",
     cards: 1_200,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:03",
     name: "Japanese 03 — N3 / B1 intermediate",
     cards: 1_800,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:04",
     name: "Japanese 04 — N2 / B2 upper-intermediate",
     cards: 2_400,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:05",
     name: "Japanese 05 — N1 / balanced C1 bridge",
     cards: 3_000,
-    status: "missing",
+    status: "will_add",
   },
 ] as const;
 
@@ -651,6 +653,7 @@ export const scenarioDtos = {
   bundleDeckSummaries: bundleDecks.map((deck) => ({
     id: deck.id,
     name: deck.name,
+    is_bundle_stage: true,
     total_cards: deck.cards,
     due_cards: 0,
     new_cards: deck.cards,

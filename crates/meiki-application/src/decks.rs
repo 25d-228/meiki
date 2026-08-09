@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use crate::{ApplicationError, ApplicationService, DirectionDto, MatchingPolicyDto, desktop_u32};
 use meiki_domain::{Deck, Direction, MatchingPolicy, StudySettingsOverride};
-use meiki_storage::{DEFAULT_DECK_ID, DeckRepository, SchedulerProfileRepository, Storage};
+use meiki_storage::{
+    DEFAULT_DECK_ID, DeckRepository, MediaRepository, SchedulerProfileRepository, Storage,
+};
 use meiki_text::normalize_for_search;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -23,6 +25,7 @@ pub struct DeckDto {
 pub struct DeckSummaryDto {
     pub id: String,
     pub name: String,
+    pub is_bundle_stage: bool,
     pub total_cards: u32,
     pub due_cards: u32,
     pub new_cards: u32,
@@ -85,7 +88,7 @@ pub struct BundleRemovalProgressDto {
     #[ts(type = "number")]
     pub total_decks: u64,
     #[ts(type = "number")]
-    pub moved_cards: u64,
+    pub processed_cards: u64,
     #[ts(type = "number")]
     pub total_cards: u64,
 }
@@ -96,7 +99,7 @@ pub struct BundleRemovalResultDto {
     #[ts(type = "number")]
     pub removed_decks: u64,
     #[ts(type = "number")]
-    pub moved_cards: u64,
+    pub affected_cards: u64,
 }
 
 impl ApplicationService {
@@ -141,24 +144,26 @@ impl ApplicationService {
             ));
         }
         let mut storage = self.open_storage()?;
+        self.create_recovery_backup(&storage, "pre-remove-bundle")?;
         let removed = storage.remove_bundle(
             &request.language_tag,
             request.expected_decks,
             request.expected_cards,
             request.now_ms,
-            |removed_decks, moved_cards| {
+            |removed_decks, processed_cards| {
                 on_progress(BundleRemovalProgressDto {
                     removed_decks,
                     total_decks: request.expected_decks,
-                    moved_cards,
+                    processed_cards,
                     total_cards: request.expected_cards,
                 });
             },
         )?;
+        self.remove_orphaned_media(&storage, &removed.orphaned_media_hashes)?;
         Ok(BundleRemovalResultDto {
             language_tag: removed.language_tag,
             removed_decks: removed.deck_count,
-            moved_cards: removed.active_card_count,
+            affected_cards: removed.active_card_count,
         })
     }
 
@@ -206,6 +211,7 @@ impl ApplicationService {
                 } else {
                     deck.name
                 },
+                is_bundle_stage: storage.bundle_language_for_deck(&deck.id)?.is_some(),
                 total_cards: desktop_u32(counts.total_cards, "deck card count")?,
                 due_cards: desktop_u32(counts.due_cards, "deck due card count")?,
                 new_cards: desktop_u32(counts.new_cards, "deck new card count")?,
@@ -290,15 +296,39 @@ impl ApplicationService {
                 deck.name
             )));
         }
-        let affected_cards = storage.delete_deck_and_rehome_notes(
+        if storage
+            .bundle_language_for_deck(&request.deck_id)?
+            .is_some()
+        {
+            self.create_recovery_backup(&storage, "pre-delete-bundle-stage")?;
+        }
+        let deletion = storage.delete_deck_and_rehome_notes(
             &request.deck_id,
             request.move_cards_to_deck_id.as_deref(),
             request.now_ms,
         )?;
+        self.remove_orphaned_media(&storage, &deletion.orphaned_media_hashes)?;
         Ok(DeleteDeckResultDto {
             deleted_deck_id: request.deck_id.clone(),
-            affected_cards: desktop_u32(affected_cards, "affected deck card count")?,
+            affected_cards: desktop_u32(deletion.active_card_count, "affected deck card count")?,
         })
+    }
+
+    fn remove_orphaned_media(
+        &self,
+        storage: &Storage,
+        content_hashes: &[String],
+    ) -> Result<(), ApplicationError> {
+        for content_hash in content_hashes {
+            if storage.media_reference_count_for_hash(content_hash)? != 0 {
+                continue;
+            }
+            match self.media_store().remove(content_hash) {
+                Ok(()) | Err(meiki_media::MediaError::MissingObject(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -854,20 +884,20 @@ mod tests {
             .unwrap();
         let elapsed = started.elapsed();
 
-        assert_eq!((removed.removed_decks, removed.moved_cards), (6, 9_700));
+        assert_eq!((removed.removed_decks, removed.affected_cards), (6, 9_700));
         assert_eq!(progress.len(), 6);
         assert_eq!(
             progress.last(),
             Some(&BundleRemovalProgressDto {
                 removed_decks: 6,
                 total_decks: 6,
-                moved_cards: 9_700,
+                processed_cards: 9_700,
                 total_cards: 9_700,
             })
         );
         assert!(progress.windows(2).all(|updates| {
             updates[0].removed_decks <= updates[1].removed_decks
-                && updates[0].moved_cards <= updates[1].moved_cards
+                && updates[0].processed_cards <= updates[1].processed_cards
         }));
         assert!(
             elapsed <= std::time::Duration::from_secs(60),

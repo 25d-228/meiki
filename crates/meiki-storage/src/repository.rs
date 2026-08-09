@@ -10,12 +10,12 @@ use rusqlite::{
 };
 
 use crate::{
-    DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts, InstalledBundle,
-    PristineBundleImport, PristineBundleImportError, PristineBundleImportPlan, PristineDeckImport,
-    SchedulingWorkload, Storage, StorageError, StoredDeckCard, StoredDeckCardPage,
-    StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote, StoredSourceNote, StoredStudyCard,
-    direction_from_database, direction_to_database, entity_not_found,
-    matching_policy_from_database, matching_policy_to_database,
+    BundleRemoval, DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts,
+    DeckDeletion, InstalledBundle, PristineBundleImport, PristineBundleImportError,
+    PristineBundleImportPlan, PristineDeckImport, SchedulingWorkload, Storage, StorageError,
+    StoredDeckCard, StoredDeckCardPage, StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote,
+    StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
+    entity_not_found, matching_policy_from_database, matching_policy_to_database,
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
@@ -564,9 +564,16 @@ impl Storage {
         deck_id: &str,
         destination_deck_id: Option<&str>,
         updated_at_ms: i64,
-    ) -> Result<u64, StorageError> {
+    ) -> Result<DeckDeletion, StorageError> {
         let transaction = self.connection.transaction()?;
         ensure_entity_exists(&transaction, "decks", "deck", deck_id)?;
+        let bundle_language = transaction
+            .query_row(
+                "SELECT language_tag FROM bundle_decks WHERE deck_id = ?1",
+                [deck_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
         let active_card_count = transaction.query_row(
             "SELECT COUNT(cards.id)
              FROM cards
@@ -584,6 +591,7 @@ impl Storage {
             ));
         }
         ensure_entity_exists(&transaction, "decks", "destination deck", destination)?;
+        let mut orphaned_media_hashes = Vec::new();
         if destination_deck_id.is_some() {
             transaction.execute(
                 "UPDATE source_items
@@ -592,6 +600,8 @@ impl Storage {
                 params![destination, updated_at_ms, deck_id],
             )?;
         } else {
+            let bundle_source_ids = bundle_source_note_ids_for_stage(&transaction, deck_id)?;
+            orphaned_media_hashes = purge_bundle_source_notes(&transaction, &bundle_source_ids)?;
             transaction.execute(
                 "UPDATE source_items
                  SET deck_id = ?1,
@@ -603,8 +613,21 @@ impl Storage {
         }
         let changed = transaction.execute("DELETE FROM decks WHERE id = ?1", [deck_id])?;
         ensure_changed(changed, "deck", deck_id)?;
+        if let Some(language_tag) = bundle_language {
+            transaction.execute(
+                "DELETE FROM bundle_installations
+                 WHERE language_tag = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM bundle_decks WHERE language_tag = ?1
+                   )",
+                [language_tag],
+            )?;
+        }
         transaction.commit()?;
-        Ok(active_card_count)
+        Ok(DeckDeletion {
+            active_card_count,
+            orphaned_media_hashes,
+        })
     }
 
     /// Loads the collection-wide default daily study budget.
@@ -809,7 +832,7 @@ impl SourceNoteRepository for Storage {
         validate_note(note)?;
         let transaction = self.connection.transaction()?;
         insert_source(&transaction, &note.source_item)?;
-        insert_note_children(&transaction, note)?;
+        insert_note_children(&transaction, note, true)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1024,6 +1047,22 @@ impl CardRepository for Storage {
 }
 
 impl Storage {
+    /// Returns the installed bundle associated with a deck, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when bundle associations cannot be read.
+    pub fn bundle_language_for_deck(&self, deck_id: &str) -> Result<Option<String>, StorageError> {
+        self.connection
+            .query_row(
+                "SELECT language_tag FROM bundle_decks WHERE deck_id = ?1",
+                [deck_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StorageError::from)
+    }
+
     /// Lists the remaining deck identities for one installed bundle in their
     /// original stage order.
     ///
@@ -1094,7 +1133,7 @@ impl Storage {
         expected_active_card_count: u64,
         updated_at_ms: i64,
         mut on_progress: impl FnMut(u64, u64),
-    ) -> Result<InstalledBundle, StorageError> {
+    ) -> Result<BundleRemoval, StorageError> {
         let transaction = self.connection.transaction()?;
         let associated_decks = {
             let mut statement = transaction.prepare(
@@ -1134,8 +1173,12 @@ impl Storage {
         }
 
         let mut removed_decks = 0_u64;
-        let mut moved_cards = 0_u64;
+        let mut processed_cards = 0_u64;
+        let mut orphaned_media_hashes = HashSet::new();
         for (deck_id, deck_card_count) in associated_decks {
+            let bundle_source_ids = bundle_source_note_ids_for_stage(&transaction, &deck_id)?;
+            orphaned_media_hashes
+                .extend(purge_bundle_source_notes(&transaction, &bundle_source_ids)?);
             transaction.execute(
                 "UPDATE source_items
                  SET deck_id = ?1,
@@ -1147,10 +1190,10 @@ impl Storage {
             let changed = transaction.execute("DELETE FROM decks WHERE id = ?1", [&deck_id])?;
             ensure_changed(changed, "deck", &deck_id)?;
             removed_decks += 1;
-            moved_cards = moved_cards
+            processed_cards = processed_cards
                 .checked_add(deck_card_count)
                 .ok_or(StorageError::NumericRange("removed bundle card count"))?;
-            on_progress(removed_decks, moved_cards);
+            on_progress(removed_decks, processed_cards);
         }
         let changed = transaction.execute(
             "DELETE FROM bundle_installations WHERE language_tag = ?1",
@@ -1158,10 +1201,13 @@ impl Storage {
         )?;
         ensure_changed(changed, "installed bundle", language_tag)?;
         transaction.commit()?;
-        Ok(InstalledBundle {
+        let mut orphaned_media_hashes = orphaned_media_hashes.into_iter().collect::<Vec<_>>();
+        orphaned_media_hashes.sort();
+        Ok(BundleRemoval {
             language_tag: language_tag.into(),
             deck_count,
             active_card_count,
+            orphaned_media_hashes,
         })
     }
 
@@ -1232,6 +1278,200 @@ impl Storage {
     }
 }
 
+fn bundle_source_note_ids_for_stage(
+    connection: &Connection,
+    deck_id: &str,
+) -> Result<Vec<String>, StorageError> {
+    let mut statement = connection.prepare(
+        "SELECT bundle_source_notes.source_item_id
+         FROM bundle_source_notes
+         JOIN source_items
+           ON source_items.id = bundle_source_notes.source_item_id
+         WHERE bundle_source_notes.deck_id = ?1
+           AND source_items.deck_id = ?1
+         ORDER BY bundle_source_notes.source_item_id",
+    )?;
+    statement
+        .query_map([deck_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(StorageError::from)
+}
+
+fn purge_bundle_source_notes(
+    transaction: &Transaction<'_>,
+    source_ids: &[String],
+) -> Result<Vec<String>, StorageError> {
+    if source_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", source_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source_parameters = source_ids.iter().map(String::as_str).collect::<Vec<_>>();
+
+    let tag_ids = query_ids(
+        transaction,
+        &format!(
+            "SELECT DISTINCT tag_id FROM source_item_tags
+             WHERE source_item_id IN ({placeholders})"
+        ),
+        &source_parameters,
+    )?;
+    let annotation_ids = query_ids(
+        transaction,
+        &format!(
+            "SELECT DISTINCT source_item_annotations.annotation_id
+             FROM source_item_annotations
+             WHERE source_item_annotations.source_item_id IN ({placeholders})
+             UNION
+             SELECT DISTINCT cloze_annotations.annotation_id
+             FROM cloze_annotations
+             JOIN clozes ON clozes.id = cloze_annotations.cloze_id
+             WHERE clozes.source_item_id IN ({placeholders})"
+        ),
+        &source_parameters
+            .iter()
+            .chain(&source_parameters)
+            .copied()
+            .collect::<Vec<_>>(),
+    )?;
+    let media = {
+        let mut statement = transaction.prepare(&format!(
+            "SELECT DISTINCT media_references.id, media_references.content_hash
+             FROM media_references
+             JOIN source_item_media
+               ON source_item_media.media_reference_id = media_references.id
+             WHERE source_item_media.source_item_id IN ({placeholders})
+             UNION
+             SELECT DISTINCT media_references.id, media_references.content_hash
+             FROM media_references
+             JOIN cloze_media ON cloze_media.media_reference_id = media_references.id
+             JOIN clozes ON clozes.id = cloze_media.cloze_id
+             WHERE clozes.source_item_id IN ({placeholders})"
+        ))?;
+        statement
+            .query_map(
+                params_from_iter(source_parameters.iter().chain(&source_parameters)),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    transaction.execute(
+        &format!(
+            "DELETE FROM review_events
+             WHERE card_id IN (
+                 SELECT cards.id
+                 FROM cards
+                 JOIN clozes ON clozes.id = cards.cloze_id
+                 WHERE clozes.source_item_id IN ({placeholders})
+             )"
+        ),
+        params_from_iter(&source_parameters),
+    )?;
+    transaction.execute(
+        &format!(
+            "DELETE FROM cards
+             WHERE cloze_id IN (
+                 SELECT id FROM clozes WHERE source_item_id IN ({placeholders})
+             )"
+        ),
+        params_from_iter(&source_parameters),
+    )?;
+    transaction.execute(
+        &format!("DELETE FROM source_items WHERE id IN ({placeholders})"),
+        params_from_iter(&source_parameters),
+    )?;
+
+    delete_unreferenced_tags(transaction, &tag_ids)?;
+    delete_unreferenced_annotations(transaction, &annotation_ids)?;
+    delete_unreferenced_media(transaction, &media)?;
+
+    let mut orphaned_hashes = HashSet::new();
+    for (_, content_hash) in media {
+        if transaction.query_row(
+            "SELECT COUNT(*) FROM media_references WHERE content_hash = ?1",
+            [&content_hash],
+            |row| row.get::<_, u64>(0),
+        )? == 0
+        {
+            orphaned_hashes.insert(content_hash);
+        }
+    }
+    let mut orphaned_hashes = orphaned_hashes.into_iter().collect::<Vec<_>>();
+    orphaned_hashes.sort();
+    Ok(orphaned_hashes)
+}
+
+fn query_ids(
+    connection: &Connection,
+    sql: &str,
+    parameters: &[&str],
+) -> Result<Vec<String>, StorageError> {
+    let mut statement = connection.prepare(sql)?;
+    statement
+        .query_map(params_from_iter(parameters), |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(StorageError::from)
+}
+
+fn delete_unreferenced_tags(
+    transaction: &Transaction<'_>,
+    tag_ids: &[String],
+) -> Result<(), StorageError> {
+    for tag_id in tag_ids {
+        transaction.execute(
+            "DELETE FROM tags
+             WHERE id = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM source_item_tags WHERE tag_id = ?1
+               )",
+            [tag_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn delete_unreferenced_annotations(
+    transaction: &Transaction<'_>,
+    annotation_ids: &[String],
+) -> Result<(), StorageError> {
+    for annotation_id in annotation_ids {
+        transaction.execute(
+            "DELETE FROM annotations
+             WHERE id = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM source_item_annotations WHERE annotation_id = ?1
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM cloze_annotations WHERE annotation_id = ?1
+               )",
+            [annotation_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn delete_unreferenced_media(
+    transaction: &Transaction<'_>,
+    media: &[(String, String)],
+) -> Result<(), StorageError> {
+    for (media_id, _) in media {
+        transaction.execute(
+            "DELETE FROM media_references
+             WHERE id = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM source_item_media WHERE media_reference_id = ?1
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM cloze_media WHERE media_reference_id = ?1
+               )",
+            [media_id],
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_pristine_bundle_import(
     connection: &Connection,
     import: &PristineBundleImport,
@@ -1247,9 +1487,8 @@ fn validate_pristine_bundle_import(
     let mut installed_deck_ids = Vec::new();
     let mut missing_deck_ids = Vec::new();
     let mut unassociated_deck_ids = Vec::new();
-    let mut restorable_deck_ids = Vec::new();
-    let mut restorable_source_ids = Vec::new();
-    let mut retained_source_ids = Vec::new();
+    let mut source_ids_to_associate = Vec::new();
+    let mut stale_source_ids = Vec::new();
     let mut imported_ordinals = HashMap::new();
     let mut previous_associated_ordinal = None;
     for (ordinal, imported_deck) in import.decks.iter().enumerate() {
@@ -1298,17 +1537,19 @@ fn validate_pristine_bundle_import(
             installed_deck_ids.push(deck.id.clone());
             if deck_association.is_none() {
                 unassociated_deck_ids.push(deck.id.clone());
+                source_ids_to_associate.extend(matching_unassociated_bundle_source_ids(
+                    connection,
+                    imported_deck,
+                )?);
             }
             continue;
         }
-        let missing_content =
-            classify_missing_bundle_deck_content(connection, imported_deck, &mut identities)?;
-        restorable_source_ids.extend(missing_content.restorable_source_ids);
-        retained_source_ids.extend(missing_content.retained_source_ids);
+        stale_source_ids.extend(classify_missing_bundle_deck_content(
+            connection,
+            imported_deck,
+            &mut identities,
+        )?);
         missing_deck_ids.push(deck.id.clone());
-        if missing_content.is_restorable {
-            restorable_deck_ids.push(deck.id.clone());
-        }
     }
     if !missing_deck_ids.is_empty() || !unassociated_deck_ids.is_empty() {
         validate_bundle_stage_associations(connection, &import.language_tag, &imported_ordinals)?;
@@ -1317,10 +1558,39 @@ fn validate_pristine_bundle_import(
         installed_deck_ids,
         missing_deck_ids,
         unassociated_deck_ids,
-        restorable_deck_ids,
-        restorable_source_ids,
-        retained_source_ids,
+        source_ids_to_associate,
+        stale_source_ids,
     })
+}
+
+fn matching_unassociated_bundle_source_ids(
+    connection: &Connection,
+    imported_deck: &PristineDeckImport,
+) -> Result<Vec<String>, StorageError> {
+    let mut matching_source_ids = Vec::new();
+    for imported_note in &imported_deck.notes {
+        let source_id = &imported_note.note.source_item.id;
+        let stored_deck_id = connection
+            .query_row(
+                "SELECT deck_id FROM source_items WHERE id = ?1",
+                [source_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if stored_deck_id.as_deref() != Some(imported_deck.deck.id.as_str())
+            || entity_id_exists(
+                connection,
+                "SELECT 1 FROM bundle_source_notes WHERE source_item_id = ?1",
+                source_id,
+            )?
+        {
+            continue;
+        }
+        if pristine_source_matches(connection, imported_note)? {
+            matching_source_ids.push(source_id.clone());
+        }
+    }
+    Ok(matching_source_ids)
 }
 
 fn validate_bundle_stage_associations(
@@ -1357,20 +1627,13 @@ fn validate_bundle_stage_associations(
     Ok(())
 }
 
-struct MissingBundleDeckContent {
-    restorable_source_ids: Vec<String>,
-    retained_source_ids: Vec<String>,
-    is_restorable: bool,
-}
-
 fn classify_missing_bundle_deck_content<'a>(
     connection: &Connection,
     imported_deck: &'a PristineDeckImport,
     bundle_identities: &mut PristineImportIdentities<'a>,
-) -> Result<MissingBundleDeckContent, StorageError> {
+) -> Result<Vec<String>, StorageError> {
     let mut new_identities = PristineImportIdentities::default();
-    let mut restorable_source_ids = Vec::new();
-    let mut retained_source_ids = Vec::new();
+    let mut stale_source_ids = Vec::new();
     for imported_note in &imported_deck.notes {
         validate_pristine_note(imported_note, &imported_deck.deck.id, bundle_identities)?;
         let source = &imported_note.note.source_item;
@@ -1389,50 +1652,53 @@ fn classify_missing_bundle_deck_content<'a>(
         validate_matching_pristine_source(connection, imported_note)?;
         if entity_id_exists(
             connection,
-            "SELECT 1 FROM bundle_decks WHERE deck_id = ?1",
-            &stored_deck_id,
+            "SELECT 1 FROM bundle_source_notes WHERE source_item_id = ?1",
+            &source.id,
         )? {
             return Err(StorageError::InvalidAggregate(format!(
                 "bundle source {} belongs to another installed bundle",
                 source.id
             )));
         }
-        if deleted_at_ms.is_some() {
-            if stored_deck_id != DEFAULT_DECK_ID {
-                return Err(StorageError::InvalidAggregate(format!(
-                    "bundle source {} is in another deck's Trash",
-                    source.id
-                )));
-            }
-            restorable_source_ids.push(source.id.clone());
-        } else {
-            retained_source_ids.push(source.id.clone());
+        if deleted_at_ms.is_none() || stored_deck_id != DEFAULT_DECK_ID {
+            return Err(StorageError::InvalidAggregate(format!(
+                "bundle source {} conflicts with active or differently owned content",
+                source.id
+            )));
         }
+        stale_source_ids.push(source.id.clone());
     }
     ensure_pristine_identities_available(connection, &new_identities)?;
-    Ok(MissingBundleDeckContent {
-        is_restorable: !restorable_source_ids.is_empty() || !retained_source_ids.is_empty(),
-        restorable_source_ids,
-        retained_source_ids,
-    })
+    Ok(stale_source_ids)
 }
 
 fn validate_matching_pristine_source(
     connection: &Connection,
     imported_note: &crate::PristineDeckNote,
 ) -> Result<(), StorageError> {
+    if pristine_source_matches(connection, imported_note)? {
+        Ok(())
+    } else {
+        Err(StorageError::InvalidAggregate(format!(
+            "imported source note identity {} already exists with different content",
+            imported_note.note.source_item.id
+        )))
+    }
+}
+
+fn pristine_source_matches(
+    connection: &Connection,
+    imported_note: &crate::PristineDeckNote,
+) -> Result<bool, StorageError> {
     match validate_matching_pristine_note(connection, imported_note) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(true),
         Err(
             StorageError::InvalidAggregate(_)
             | StorageError::InvalidStoredValue { .. }
             | StorageError::EntityNotFound { .. }
             | StorageError::CardNotFound(_)
             | StorageError::InvalidJson(_),
-        ) => Err(StorageError::InvalidAggregate(format!(
-            "imported source note identity {} already exists with different content",
-            imported_note.note.source_item.id
-        ))),
+        ) => Ok(false),
         Err(error) => Err(error),
     }
 }
@@ -1772,15 +2038,14 @@ fn ensure_pristine_tags_available<'a>(
     tags: impl Iterator<Item = &'a Tag>,
 ) -> Result<(), StorageError> {
     for tag in tags {
-        if connection
+        let existing = connection
             .query_row(
-                "SELECT 1 FROM tags WHERE id = ?1 OR name = ?2",
+                "SELECT id, name FROM tags WHERE id = ?1 OR name = ?2",
                 params![tag.id, tag.name],
-                |_| Ok(()),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
-            .optional()?
-            .is_some()
-        {
+            .optional()?;
+        if existing.is_some_and(|(id, name)| id != tag.id || name != tag.name) {
             return Err(StorageError::InvalidAggregate(format!(
                 "imported tag identity {} or name {:?} already exists",
                 tag.id, tag.name
@@ -1792,32 +2057,15 @@ fn ensure_pristine_tags_available<'a>(
 
 fn persist_pristine_deck_import(
     transaction: &Transaction<'_>,
+    language_tag: &str,
     import: &PristineDeckImport,
-    restorable_source_ids: &HashSet<&str>,
-    retained_source_ids: &HashSet<&str>,
     on_card_imported: &mut impl FnMut(),
 ) -> Result<(), StorageError> {
     insert_deck(transaction, &import.deck)?;
     insert_default_scheduler_profile(transaction, &import.deck.id, import.deck.created_at_ms)?;
     for imported_note in &import.notes {
-        let source_id = imported_note.note.source_item.id.as_str();
-        if restorable_source_ids.contains(source_id) {
-            let changed = transaction.execute(
-                "UPDATE source_items
-                 SET deck_id = ?1, deleted_at_ms = NULL
-                 WHERE id = ?2
-                   AND deck_id = ?3
-                   AND deleted_at_ms IS NOT NULL",
-                params![import.deck.id, source_id, DEFAULT_DECK_ID],
-            )?;
-            ensure_changed(changed, "restorable bundle source", source_id)?;
-            continue;
-        }
-        if retained_source_ids.contains(source_id) {
-            continue;
-        }
         insert_source(transaction, &imported_note.note.source_item)?;
-        insert_note_children(transaction, &imported_note.note)?;
+        insert_note_children(transaction, &imported_note.note, false)?;
         for imported_card in &imported_note.cards {
             insert_card_with_schedule(
                 transaction,
@@ -1826,6 +2074,15 @@ fn persist_pristine_deck_import(
             )?;
             on_card_imported();
         }
+        transaction.execute(
+            "INSERT INTO bundle_source_notes(source_item_id, language_tag, deck_id)
+             VALUES (?1, ?2, ?3)",
+            params![
+                imported_note.note.source_item.id,
+                language_tag,
+                import.deck.id
+            ],
+        )?;
     }
     Ok(())
 }
@@ -1850,18 +2107,30 @@ fn persist_pristine_bundle_import(
          ON CONFLICT(language_tag) DO NOTHING",
         params![import.language_tag, installed_at_ms],
     )?;
+    for source_id in &plan.stale_source_ids {
+        let deck_id = import
+            .decks
+            .iter()
+            .find(|deck| {
+                deck.notes
+                    .iter()
+                    .any(|note| note.note.source_item.id == *source_id)
+            })
+            .map(|deck| deck.deck.id.as_str())
+            .ok_or_else(|| {
+                StorageError::InvalidAggregate(format!(
+                    "stale bundle source {source_id} is not in the imported bundle"
+                ))
+            })?;
+        transaction.execute(
+            "INSERT INTO bundle_source_notes(source_item_id, language_tag, deck_id)
+             VALUES (?1, ?2, ?3)",
+            params![source_id, import.language_tag, deck_id],
+        )?;
+    }
+    purge_bundle_source_notes(transaction, &plan.stale_source_ids)?;
     let missing = plan
         .missing_deck_ids
-        .iter()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-    let restorable_source_ids = plan
-        .restorable_source_ids
-        .iter()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-    let retained_source_ids = plan
-        .retained_source_ids
         .iter()
         .map(String::as_str)
         .collect::<HashSet<_>>();
@@ -1871,9 +2140,8 @@ fn persist_pristine_bundle_import(
         if missing.contains(deck_id) {
             persist_pristine_deck_import(
                 transaction,
+                &import.language_tag,
                 imported_deck,
-                &restorable_source_ids,
-                &retained_source_ids,
                 on_card_imported,
             )?;
         }
@@ -1893,6 +2161,18 @@ fn persist_pristine_bundle_import(
                     .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?
             ],
         )?;
+    }
+    for source_id in &plan.source_ids_to_associate {
+        let changed = transaction.execute(
+            "INSERT INTO bundle_source_notes(source_item_id, language_tag, deck_id)
+             SELECT source_items.id, bundle_decks.language_tag, source_items.deck_id
+             FROM source_items
+             JOIN bundle_decks ON bundle_decks.deck_id = source_items.deck_id
+             WHERE source_items.id = ?1
+               AND bundle_decks.language_tag = ?2",
+            params![source_id, import.language_tag],
+        )?;
+        ensure_changed(changed, "matching bundle source", source_id)?;
     }
     Ok(())
 }
@@ -2361,9 +2641,19 @@ impl Storage {
 fn insert_note_children(
     transaction: &Transaction<'_>,
     note: &StoredSourceNote,
+    update_existing_tags: bool,
 ) -> Result<(), StorageError> {
     for tag in &note.source_item.tags {
-        upsert_tag(transaction, tag)?;
+        if update_existing_tags {
+            upsert_tag(transaction, tag)?;
+        } else {
+            transaction.execute(
+                "INSERT INTO tags(id, name, created_at_ms, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO NOTHING",
+                params![tag.id, tag.name, tag.created_at_ms, tag.updated_at_ms],
+            )?;
+        }
     }
     for media in &note.source_item.media {
         upsert_media(transaction, media)?;

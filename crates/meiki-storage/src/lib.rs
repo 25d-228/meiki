@@ -39,7 +39,9 @@ const TIME_BUDGET_POLICY_MIGRATION: &str =
     include_str!("../migrations/0010_time_budget_policy.sql");
 const BUNDLE_ASSOCIATIONS_MIGRATION: &str =
     include_str!("../migrations/0011_bundle_associations.sql");
-const LATEST_SCHEMA_VERSION: u32 = 11;
+const BUNDLE_SOURCE_NOTES_MIGRATION: &str =
+    include_str!("../migrations/0012_bundle_source_notes.sql");
+const LATEST_SCHEMA_VERSION: u32 = 12;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -171,9 +173,8 @@ pub struct PristineBundleImportPlan {
     pub installed_deck_ids: Vec<String>,
     pub missing_deck_ids: Vec<String>,
     pub unassociated_deck_ids: Vec<String>,
-    pub restorable_deck_ids: Vec<String>,
-    pub restorable_source_ids: Vec<String>,
-    pub retained_source_ids: Vec<String>,
+    pub source_ids_to_associate: Vec<String>,
+    pub stale_source_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,6 +182,20 @@ pub struct InstalledBundle {
     pub language_tag: String,
     pub deck_count: u64,
     pub active_card_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BundleRemoval {
+    pub language_tag: String,
+    pub deck_count: u64,
+    pub active_card_count: u64,
+    pub orphaned_media_hashes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeckDeletion {
+    pub active_card_count: u64,
+    pub orphaned_media_hashes: Vec<String>,
 }
 
 impl PristineBundleImportPlan {
@@ -341,6 +356,9 @@ impl Storage {
         }
         if current < 11 {
             transaction.execute_batch(BUNDLE_ASSOCIATIONS_MIGRATION)?;
+        }
+        if current < 12 {
+            transaction.execute_batch(BUNDLE_SOURCE_NOTES_MIGRATION)?;
         }
         transaction.commit()?;
         Ok(())
