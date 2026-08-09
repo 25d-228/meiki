@@ -23,6 +23,7 @@
   type Props = {
     selectedDeckId: string;
     deckName: string;
+    isBundleStage: boolean;
     onBack: () => void;
     onCreate: () => void;
     onDeleted: () => void;
@@ -36,6 +37,7 @@
   let {
     selectedDeckId,
     deckName,
+    isBundleStage,
     onBack,
     onCreate,
     onDeleted,
@@ -601,7 +603,12 @@
     <AlertDialog.Header>
       <AlertDialog.Title>Delete “{deckName}”?</AlertDialog.Title>
       <AlertDialog.Description>
-        Its {cardCountLabel(deleteCardCount)} will be moved to Trash.
+        {#if isBundleStage}
+          Bundled cards in this deck will be permanently removed. Personal cards
+          will be moved to Trash.
+        {:else}
+          Its {cardCountLabel(deleteCardCount)} will be moved to Trash.
+        {/if}
       </AlertDialog.Description>
     </AlertDialog.Header>
     <AlertDialog.Footer>

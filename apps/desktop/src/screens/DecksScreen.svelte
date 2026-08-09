@@ -27,7 +27,7 @@
 
   type Props = {
     onStudy: (deckName: string) => void;
-    onOpen: (deckId: string, deckName: string) => void;
+    onOpen: (deckId: string, deckName: string, isBundleStage: boolean) => void;
     onDeckContextChange: (value: string) => void;
   };
 
@@ -366,7 +366,9 @@
             </div>
           </dl>
           <Card.Footer class="justify-end p-0">
-            <Button variant="outline" onclick={() => onOpen(deck.id, deck.name)}
+            <Button
+              variant="outline"
+              onclick={() => onOpen(deck.id, deck.name, deck.is_bundle_stage)}
               >Open</Button
             >
             <Button

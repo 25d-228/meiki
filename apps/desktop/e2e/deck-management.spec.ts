@@ -172,6 +172,34 @@ test("deletes directly with one confirmation and moves remaining cards to Trash"
   ).toBeVisible();
 });
 
+test("warns that deleting a bundle stage permanently removes bundled cards", async ({
+  page,
+}) => {
+  await page.goto("/?bundleRemoval=installed");
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Decks", exact: true })
+    .click();
+  const stage = page.getByTestId("deck-deck:ja-JP:00");
+  await stage.getByRole("button", { name: "Open" }).click();
+  await page.getByRole("button", { name: "Delete deck" }).click();
+
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete “Japanese 00 — Kana, sound, and Japanese input”?",
+  });
+  await expect(confirmation).toContainText(
+    "Bundled cards in this deck will be permanently removed. Personal cards will be moved to Trash.",
+  );
+  await confirmation
+    .getByRole("button", { name: "Move cards instead" })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Move cards instead" }),
+  ).toContainText(
+    "Move active cards to another deck, then delete “Japanese 00 — Kana, sound, and Japanese input”.",
+  );
+});
+
 test("moves active cards to another deck before deleting when requested", async ({
   page,
 }) => {

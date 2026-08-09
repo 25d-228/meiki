@@ -208,6 +208,7 @@ const deckSummaries = [
   {
     id: "default-deck",
     name: "Unsorted",
+    is_bundle_stage: false,
     total_cards: 3,
     due_cards: 1,
     new_cards: 1,
@@ -215,6 +216,7 @@ const deckSummaries = [
   {
     id: "travel-deck",
     name: "Travel phrases",
+    is_bundle_stage: false,
     total_cards: 2,
     due_cards: 0,
     new_cards: 1,
@@ -651,6 +653,7 @@ export const scenarioDtos = {
   bundleDeckSummaries: bundleDecks.map((deck) => ({
     id: deck.id,
     name: deck.name,
+    is_bundle_stage: true,
     total_cards: deck.cards,
     due_cards: 0,
     new_cards: deck.cards,

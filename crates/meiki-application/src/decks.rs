@@ -25,6 +25,7 @@ pub struct DeckDto {
 pub struct DeckSummaryDto {
     pub id: String,
     pub name: String,
+    pub is_bundle_stage: bool,
     pub total_cards: u32,
     pub due_cards: u32,
     pub new_cards: u32,
@@ -210,6 +211,7 @@ impl ApplicationService {
                 } else {
                     deck.name
                 },
+                is_bundle_stage: storage.bundle_language_for_deck(&deck.id)?.is_some(),
                 total_cards: desktop_u32(counts.total_cards, "deck card count")?,
                 due_cards: desktop_u32(counts.due_cards, "deck due card count")?,
                 new_cards: desktop_u32(counts.new_cards, "deck new card count")?,
