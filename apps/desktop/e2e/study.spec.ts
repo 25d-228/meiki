@@ -229,6 +229,89 @@ test("keeps manual audio controls usable when autoplay is blocked", async ({
   await expect(page.getByRole("button", { name: "Pause audio" })).toBeVisible();
 });
 
+test("loads and plays a real MP3 through the browser media engine", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("meiki-autoplay-prompt-audio", "false");
+  });
+  await openStudy(page, "/?media=real-mp3");
+  const audio = page.locator("audio");
+  await audio.evaluate((element) => {
+    element.dataset.playEvents = "0";
+    element.addEventListener("play", () => {
+      element.dataset.playEvents = String(
+        Number(element.dataset.playEvents ?? "0") + 1,
+      );
+    });
+  });
+
+  await expect
+    .poll(() => audio.evaluate((element) => element.duration))
+    .toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Play audio", exact: true }).click();
+  await expect
+    .poll(() => audio.evaluate((element) => element.currentTime))
+    .toBeGreaterThan(0);
+  await expect.poll(() => audio.getAttribute("data-play-events")).toBe("1");
+  await expect
+    .poll(() => audio.evaluate((element) => element.ended))
+    .toBe(true);
+  await page.getByRole("button", { name: "Play audio", exact: true }).click();
+  await expect.poll(() => audio.getAttribute("data-play-events")).toBe("2");
+  await expect
+    .poll(() => audio.evaluate((element) => element.ended))
+    .toBe(true);
+  await page.getByRole("button", { name: "Replay audio" }).click();
+  await expect.poll(() => audio.getAttribute("data-play-events")).toBe("3");
+  expect(await mediaPlayCount(page)).toBe(0);
+});
+
+test("restarts audio at the decoder boundary and reports playback failures", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("meiki-autoplay-prompt-audio", "false");
+  });
+  await openStudy(page, "/?media=ready");
+  const audio = page.locator("audio");
+  await audio.evaluate((element) => {
+    element.currentTime = 0.98;
+    Object.defineProperty(element, "duration", {
+      configurable: true,
+      get: () => 1,
+    });
+    Object.defineProperty(element, "ended", {
+      configurable: true,
+      get: () => false,
+    });
+    Object.defineProperty(element, "seeking", {
+      configurable: true,
+      get: () => true,
+    });
+    Object.defineProperty(element, "readyState", {
+      configurable: true,
+      get: () => HTMLMediaElement.HAVE_METADATA,
+    });
+  });
+
+  await page.getByRole("button", { name: "Play audio", exact: true }).click();
+  await expect(audio).toHaveJSProperty("currentTime", 0);
+  await expect.poll(() => mediaPlayCount(page)).toBe(0);
+  await audio.dispatchEvent("seeked");
+  await expect.poll(() => mediaPlayCount(page)).toBe(1);
+
+  await audio.dispatchEvent("error");
+  await expect(page.getByRole("alert")).toHaveText("Audio could not load.");
+
+  await openStudy(page, "/?media=playback-error");
+  await page.getByRole("button", { name: "Play audio", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "Audio could not play. Try again.",
+  );
+  await expect(page.getByLabel("Your answer")).toBeEnabled();
+});
+
 test("keeps answering enabled for missing corrupt and unsupported audio", async ({
   page,
 }) => {
