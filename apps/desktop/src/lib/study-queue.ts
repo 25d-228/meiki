@@ -4,6 +4,7 @@ import type { StudyQueueEntryDto } from "./generated/StudyQueueEntryDto";
 import type { TodayOverviewDto } from "./generated/TodayOverviewDto";
 
 export const studyQueueKey = "meiki-active-study-queue";
+export const studySessionKey = "meiki-active-study-session";
 export const studyQueueVersion = 2;
 
 export type StudyQueueSession = {
@@ -73,6 +74,10 @@ export function writeStudyQueue(queue: StudyQueueSession): void {
 
 export function clearStudyQueue(): void {
   localStorage.removeItem(studyQueueKey);
+}
+
+export function clearStudySession(): void {
+  sessionStorage.removeItem(studySessionKey);
 }
 
 export function remainingStudyCards(queue: StudyQueueSession): number {

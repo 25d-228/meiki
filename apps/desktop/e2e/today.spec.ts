@@ -35,6 +35,34 @@ async function lastRequest(
   }, command);
 }
 
+async function installSavedQueue(
+  page: import("@playwright/test").Page,
+  deckId: string,
+  cardIds = ["due-card", "new-card"],
+  position = 0,
+): Promise<void> {
+  await page.addInitScript(
+    ({ savedDeckId, savedCardIds, savedPosition }) => {
+      localStorage.setItem(
+        "meiki-active-study-queue",
+        JSON.stringify({
+          version: 2,
+          deckId: savedDeckId,
+          entries: savedCardIds.map((cardId) => ({
+            card_id: cardId,
+            card_content_version: 0,
+            schedule_version: 0,
+          })),
+          position: savedPosition,
+          startedAtMs: 1_700_000_000_000,
+          pendingReview: null,
+        }),
+      );
+    },
+    { savedDeckId: deckId, savedCardIds: cardIds, savedPosition: position },
+  );
+}
+
 test("shows empty, overdue, and capped workload states", async ({ page }) => {
   await page.goto("/?today=empty");
   await openToday(page);
@@ -95,32 +123,217 @@ test("maps deck and time-budget controls to command requests", async ({
   });
 });
 
-test("renders and continues a persisted queue fixture", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+test("recovers the selected Today deck after its bundle is removed and the app reloads", async ({
+  page,
+}) => {
+  const removedDeckId = "deck:ja-JP:05";
+  await page.goto("/?bundleRemoval=installed");
+  await openToday(page);
+  await page.getByLabel("Deck").selectOption(removedDeckId);
+  await expect(page.getByLabel("Deck")).toHaveValue(removedDeckId);
+
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Decks", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Bundle actions" }).click();
+  await page
+    .getByRole("dialog", { name: "Bundle actions" })
+    .getByRole("button", { name: /Remove Japanese/ })
+    .click();
+  await page
+    .getByRole("alertdialog", { name: "Remove Japanese?" })
+    .getByRole("button", { name: "Remove bundle" })
+    .click();
+  await expect(page.getByText(/Removed Japanese/)).toBeVisible();
+
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Today", exact: true })
+    .click();
+  await expect(page.getByLabel("Deck")).toHaveValue("__all_decks__");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-today-deck")),
+  ).toBe("__all_decks__");
+  expect(
+    await page.evaluate((deckId) => {
+      const requests = window.__MEIKI_TEST_REQUESTS__ ?? [];
+      const removalIndex = requests
+        .map((request) => request.command)
+        .lastIndexOf("remove_bundle");
+      return requests
+        .slice(removalIndex + 1)
+        .some(
+          (request) =>
+            request.command === "get_scheduler_settings" &&
+            (request.args as { deckId?: string }).deckId === deckId,
+        );
+    }, removedDeckId),
+  ).toBe(false);
+
+  await page.reload();
+  await openToday(page);
+  await expect(page.getByLabel("Deck")).toHaveValue("__all_decks__");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      (deckId) =>
+        (window.__MEIKI_TEST_REQUESTS__ ?? []).some(
+          (request) =>
+            request.command === "get_scheduler_settings" &&
+            (request.args as { deckId?: string }).deckId === deckId,
+        ),
+      removedDeckId,
+    ),
+  ).toBe(false);
+});
+
+test("recovers the selected Today deck after an individual deck is deleted", async ({
+  page,
+}) => {
+  const removedDeckId = "travel-deck";
+  await page.goto("/?deckDeletion=focused-session");
+  await openToday(page);
+  await page.getByLabel("Deck").selectOption(removedDeckId);
+  await expect(page.getByLabel("Deck")).toHaveValue(removedDeckId);
+
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Decks", exact: true })
+    .click();
+  await page
+    .getByTestId("deck-travel-deck")
+    .getByRole("button", { name: "Open" })
+    .click();
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Today", exact: true })
+    .click();
+
+  await expect(page.getByLabel("Deck")).toHaveValue("__all_decks__");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-today-deck")),
+  ).toBe("__all_decks__");
+  expect(
+    await page.evaluate((deckId) => {
+      const requests = window.__MEIKI_TEST_REQUESTS__ ?? [];
+      const deletionIndex = requests
+        .map((request) => request.command)
+        .lastIndexOf("delete_deck");
+      return requests
+        .slice(deletionIndex + 1)
+        .some(
+          (request) =>
+            request.command === "get_scheduler_settings" &&
+            (request.args as { deckId?: string }).deckId === deckId,
+        );
+    }, removedDeckId),
+  ).toBe(false);
+});
+
+test("clears a focused saved queue and per-card session for a removed deck", async ({
+  page,
+}) => {
+  await installSavedQueue(page, "deck:ja-JP:05");
   await page.addInitScript(() => {
-    localStorage.setItem(
-      "meiki-active-study-queue",
+    sessionStorage.setItem("meiki-active-study-session", "stale session");
+  });
+  await page.goto("/?bundleRemoval=removed");
+  await openToday(page);
+
+  await expect(page.getByLabel("Deck")).toHaveValue("__all_decks__");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-active-study-queue")),
+  ).toBeNull();
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("meiki-active-study-session"),
+    ),
+  ).toBeNull();
+});
+
+test("preserves an all-decks queue and reconciles it after bundle removal", async ({
+  page,
+}) => {
+  await installSavedQueue(page, "__all_decks__");
+  await page.addInitScript(() => {
+    sessionStorage.setItem(
+      "meiki-active-study-session",
       JSON.stringify({
-        version: 2,
-        deckId: "__all_decks__",
-        entries: [
-          {
-            card_id: "due-card",
-            card_content_version: 0,
-            schedule_version: 0,
-          },
-          {
-            card_id: "new-card",
-            card_content_version: 0,
-            schedule_version: 0,
-          },
-        ],
-        position: 1,
-        startedAtMs: 1_700_000_000_000,
-        pendingReview: null,
+        card: {
+          card_id: "new-card",
+          card_content_version: 0,
+          schedule_version: 0,
+        },
+        reveal: null,
+        result: null,
+        response: "",
+        view: "prompt",
+        responseDurationMs: 0,
+        completionKind: null,
       }),
     );
   });
+  await page.goto("/?bundleRemoval=removed&reconcile=second");
+  await openToday(page);
+
+  await expect(page.getByText("Resume where you stopped")).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("meiki-active-study-queue") ?? "null"),
+    ),
+  ).toMatchObject({ deckId: "__all_decks__", position: 0 });
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("meiki-active-study-session"),
+    ),
+  ).not.toBeNull();
+
+  await page.getByRole("button", { name: "Resume study" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Study", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Your answer")).toBeVisible();
+  expect(
+    (await lastRequest(page, "reconcile_study_queue"))?.args,
+  ).toMatchObject({
+    request: { deck_id: "__all_decks__" },
+  });
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("meiki-active-study-queue") ?? "null"),
+    ),
+  ).toMatchObject({
+    deckId: "__all_decks__",
+    entries: [{ card_id: "new-card" }],
+  });
+});
+
+test("keeps the retry alert for a genuine Today loading failure", async ({
+  page,
+}) => {
+  await page.goto("/?failure=today");
+  await openToday(page);
+
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Today’s queue could not be planned");
+  await expect(alert).toContainText(
+    "The local collection is temporarily unavailable.",
+  );
+  await expect(alert.getByRole("button", { name: "Try again" })).toBeVisible();
+});
+
+test("renders and continues a persisted queue fixture", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installSavedQueue(page, "__all_decks__", ["due-card", "new-card"], 1);
   await page.goto("/?today=normal&fixture=longmixed&reconcile=second");
   await openToday(page);
   await expect(page.getByText("Resume where you stopped")).toBeVisible();

@@ -21,10 +21,12 @@
   import { messages } from "../lib/messages";
   import {
     clearStudyQueue,
+    clearStudySession,
     readStudyQueue,
     remainingStudyCards,
     remainingQueueEntries,
     startStudyQueue,
+    studySessionKey,
     writeStudyQueue,
     type StudyQueueSession,
   } from "../lib/study-queue";
@@ -58,7 +60,6 @@
     completionKind: CompletionKind;
   };
 
-  const sessionKey = "meiki-active-study-session";
   const autoplayKey = "meiki-autoplay-prompt-audio";
   const selectedDeckKey = "meiki-today-deck";
   const defaultDeckId = "default-deck";
@@ -179,8 +180,8 @@
   }
 
   async function restoreOrLoad(): Promise<void> {
-    const stored = sessionStorage.getItem(sessionKey);
-    sessionStorage.removeItem(sessionKey);
+    const stored = sessionStorage.getItem(studySessionKey);
+    sessionStorage.removeItem(studySessionKey);
     if (!stored) {
       await loadCard();
       return;
@@ -472,7 +473,7 @@
       responseDurationMs,
       completionKind,
     };
-    sessionStorage.setItem(sessionKey, JSON.stringify(session));
+    sessionStorage.setItem(studySessionKey, JSON.stringify(session));
     onEdit(card.card_id);
   }
 
@@ -514,7 +515,7 @@
 
   function finishQueue(): void {
     clearStudyQueue();
-    sessionStorage.removeItem(sessionKey);
+    clearStudySession();
     queueSession = null;
     onQueueComplete?.();
   }

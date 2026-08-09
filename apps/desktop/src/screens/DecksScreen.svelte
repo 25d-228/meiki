@@ -18,6 +18,7 @@
   import { localDayBounds } from "../lib/local-day";
   import {
     clearStudyQueue,
+    clearStudySession,
     readStudyQueue,
     remainingStudyCards,
     startStudyQueue,
@@ -88,6 +89,7 @@
         !loadedDecks.some((deck) => deck.id === activeQueue?.deckId)
       ) {
         clearStudyQueue();
+        clearStudySession();
         activeQueue = null;
       }
     } catch (cause) {
