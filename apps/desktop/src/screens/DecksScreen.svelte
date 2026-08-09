@@ -18,8 +18,8 @@
     clearStudyQueue,
     clearStudySession,
     readStudyQueue,
+    replaceStudyQueue,
     remainingStudyCards,
-    startStudyQueue,
     type StudyQueueSession,
   } from "../lib/study-queue";
 
@@ -62,6 +62,7 @@
   let bundleRemovalError = $state("");
   let error = $state("");
   let notice = $state("");
+  let retryStudyDeck = $state<DeckSummaryDto | null>(null);
   let loadedBundleImportRefresh = $state<number | null>(null);
 
   onMount(() => {
@@ -203,12 +204,15 @@
 
   async function beginStudy(deck: DeckSummaryDto): Promise<void> {
     if (activeQueue && remainingStudyCards(activeQueue) > 0) {
-      if (activeQueue.deckId === deck.id) onStudy(deck.name);
-      return;
+      if (activeQueue.deckId === deck.id) {
+        onStudy(deck.name);
+        return;
+      }
     }
     busyDeckId = deck.id;
     error = "";
     notice = "";
+    retryStudyDeck = null;
     try {
       const settings = await api.getSchedulerSettings(deck.id);
       const now = new SvelteDate();
@@ -223,10 +227,15 @@
         notice = `${deck.name} has no cards ready to study.`;
         return;
       }
-      activeQueue = startStudyQueue(plan.overview);
+      activeQueue = await replaceStudyQueue(
+        activeQueue,
+        plan.overview,
+        api.gradeReview,
+      );
       onStudy(deck.name);
     } catch (cause) {
       error = message(cause);
+      retryStudyDeck = deck;
     } finally {
       busyDeckId = "";
     }
@@ -284,7 +293,11 @@
       <Alert.Title>The deck action was not completed</Alert.Title>
       <Alert.Description>
         <p>{error}</p>
-        <Button class="mt-3" variant="outline" onclick={loadDecks}
+        <Button
+          class="mt-3"
+          variant="outline"
+          onclick={() =>
+            retryStudyDeck ? void beginStudy(retryStudyDeck) : void loadDecks()}
           >Try again</Button
         >
       </Alert.Description>
@@ -297,8 +310,7 @@
 
   {#if activeQueue && remainingStudyCards(activeQueue) > 0}
     <p class="saved-session-note">
-      A saved session is active. Resume its deck here, or return to Today for an
-      all-decks session.
+      A saved session is active. Resume it, or start another deck to replace it.
     </p>
   {/if}
 
@@ -338,9 +350,7 @@
               >Open</Button
             >
             <Button
-              disabled={busyDeckId !== "" ||
-                deck.total_cards === 0 ||
-                Boolean(activeQueue && activeQueue.deckId !== deck.id)}
+              disabled={busyDeckId !== "" || deck.total_cards === 0}
               onclick={() => void beginStudy(deck)}
             >
               {activeQueue && activeQueue.deckId === deck.id

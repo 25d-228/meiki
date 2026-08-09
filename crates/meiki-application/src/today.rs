@@ -720,6 +720,51 @@ mod tests {
     }
 
     #[test]
+    fn planning_a_replacement_scope_preserves_a_recovered_review() {
+        let (_directory, path, service, focused_request, entry) = seeded_session();
+        let pending_review = GradeReviewRequest {
+            review_event_id: "pending-before-scope-switch".into(),
+            card_id: entry.card_id,
+            card_content_version: entry.card_content_version,
+            schedule_version: entry.schedule_version,
+            raw_response: "行きます".into(),
+            chosen_grade: GradeDto::Good,
+            response_duration_ms: 1_000,
+        };
+        let recovered = service
+            .grade_review_at(&pending_review, focused_request.now_ms)
+            .unwrap();
+        let storage = Storage::open(&path).unwrap();
+        let schedule = storage.load_schedule(&pending_review.card_id).unwrap();
+        let reviews = storage.review_events(&pending_review.card_id).unwrap();
+        drop(storage);
+
+        let all_decks_request = TodayRequest {
+            deck_id: ALL_DECKS_ID.into(),
+            ..focused_request.clone()
+        };
+        service.prepare_study(&all_decks_request).unwrap();
+        service.prepare_study(&focused_request).unwrap();
+
+        assert_eq!(
+            service
+                .grade_review_at(&pending_review, focused_request.now_ms)
+                .unwrap(),
+            recovered
+        );
+        let storage = Storage::open(&path).unwrap();
+        assert_eq!(
+            storage.load_schedule(&pending_review.card_id).unwrap(),
+            schedule
+        );
+        assert_eq!(
+            storage.review_events(&pending_review.card_id).unwrap(),
+            reviews
+        );
+        assert_eq!(reviews.len(), 1);
+    }
+
+    #[test]
     fn queue_is_deterministic_and_never_defers_due_reviews_for_budget() {
         let plan = plan_today(
             &[

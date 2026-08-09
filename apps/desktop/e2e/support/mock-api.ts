@@ -8,6 +8,7 @@ export async function installMockApi(page: Page): Promise<void> {
     const realMp3Source =
       "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYyLjEyLjEwMQAAAAAAAAAAAAAA//OEwAAAAAAAAAAAAEluZm8AAAAPAAAAFwAACWAAHh4eHigoKCgzMzMzMz09PT1HR0dHUVFRUVFcXFxcZmZmZnBwcHBwenp6eoWFhYWPj4+Pj5mZmZmjo6Ojrq6urq64uLi4wsLCwszMzMzM19fX1+Hh4eHr6+vr6/X19fX/////AAAAAExhdmM2Mi4yOAAAAAAAAAAAAAAAACQCoAAAAAAAAAlgz4SDcgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//NExAASUG54H1gYAFZJbgF3rvWHVOmOoO09uhbA1tNrTWkzlAR0Aa63fjcYlkojEspKSxgD4Pg+D9QIOy5/gg6c6fOcv5zp5cEHSgDD+TBDl/d/hjpVMAhQwuHqsc1B//NExAkUSTJsAZyAAGY7ax7I/AxBnyxgYVQB8JAmcSAYbCiWNGmzOBZKDbULCfxSQlIQsQH/GZGVJoixAv/MSdIqZF4vf/mJdLqQNN/KhIGhKEv+DSoOhJWhwn6h8EAD//NExAoTYFosVd4AAJa0BAGmB6FkYVA+RgnBomEqIkeTr3BnvCHmFKFQYKoJxgtgTGAAAeWRL0q3ONIsfWh2pqvjf+j7v/Z6Ef2b/d9n3/6aLc1wlBnSQ21hL8AAgxCT//NExA8SaFIoVue0QM6H+wUrTBPFHPCL6ExtQqTkKjIiS0CY67Gdw/LD+Nayr7fdveruT/MIxYqq2n2/9L1FDG6709NmvGilsRdriYYKAAwZA8xaFo6qgIztFohCyDMn//NExBgTqFYYAO/0QN+AMG6Bejf+zDNAqXEQZCepg4kDzj7eVoi33EEJ2aBZ57RS6Kd3u8a9Va8J2p1IQLb+9dDbv1IkUU0mhbaJniwMBBBnFIVGZw1mA4BJpgYLMWYB//NExBwQAFYgSO/0QDAmpicgEViEgMAVHnTi8mvuorVZ5GzT0ei7/9H/s/06avR27htIY5W3xjlZtRVpwGATposzcaMDMLYziocDB3BUNTy6y5XalNwy6sLUW6v77/6P//NExC8OeEpAft+wQOO2/b9P/v////tTFiigTKfFalpoy7SPJgcSG1bAZUHZg5B3nC7S6YmAOZ6uGYGXGWK71nKyeem1jlaGX9er+n+no/9n/v3WfZR96flkqj5HSllU//NExEgQiFI0fueyQEXiWSKgYYBC+ZqUeYzi0YZIfR+dUNGR2DsfJCakMCjpfpfsDzcqxvcjT2/kv/Z6O/+/1O19un///+qVR18GFkAAEIPjhJGG/KGIwxmCAAN5qm4U//NExFgPwFYoSu+0QOmGPAE50oQCoEONh4RSzZI+klrafZ7b9H+m79Hv/+z99LqXUbf+v9UpRGRirMQG3BLcLAgYDjSZL06DAiMJ8IU/roUzJFBBAdwWljxRINejX4bl//NExGwQOFYgAO/2QAfq1X6v1Of/r++NT/X8l+rv//6t/6EfWvKxycfnUlcMMDBggbFnEwuYDAMRqkrQGFgBQBxpWOPDkvpAT736uz8dTcv0/iiOj/2/+/7v//5JKs5Y//NExH4QMFIoVO+0QO+uxAOYKBRj0on7/eagF5gEIQCZf8uemDVghpwKBiz4MEIC1MGHu/FL7vq/9Kf4o85+m/+71v/JaexNEjhhbScHL85F3UT7AwoOIDYy2IjAbEgM//NExJAOmEpEft+wQIJ02MCoJAllIRk7WjQXKLF92d2K5273yP9H0tf0/+1X7N/9f/s+4ioJdXme1u4p3p6BU1j1ujOBzASB1McNd8wLgMwaAAra4URrbNPmdNmUo9dH//NExKgPKFYgAOf0QPp6OlOj//Zq7//o5Xp3pkIJEilMah1ryYpgGAxhcKZutOZmORBgdIQMZzUrPGERghR9LJrUhkBoCBKCw9Sxaz3czV6vjbP3C30f37fkV+y3fstd//NExL4P2FI0fueyQFbf/9F/nBYEkaFwAwwAYA5MA7A4jCURXIwSIDzMHQCpzft2oMxMIFdOIn4zwPTH4cMPAcMCS4HocGXc616ZDXbOveht3oNI3umvSrRFqDF7wkLS//NExNEOsEpMng68BEbpbA4Baq4OWqYyXDA0VNFkk1BELrd0TiATxpiVHiq2pT/LSiKgq1qGDFOyqAg4JZiVCJheGhhIg0HjcgIY5YEx1gYQ2FhKkmoxebuHdjdXd9S5//NExOkRuFogSu/0QO+uK/T9tyKaNLFfs3/+3+2n0ok9a+EGxAAIAEA9MAaA6DAyhT4wBAB3MFkAlDe7SzIxJIBQBfmTZhMzjxYLB6GjDH3uf1+uxq9k3fftjo2n/1V4//NExPUb8ToQAP8EaPvswbGs3I5lWpblVKXBOonQMcgX6HbVQJpfaLNFKqGINLUoCoCmAwRGF5MmvvEmKgIGBiguZqkyTmYYmBinNGBnIWBigMC0NFB2tw5T6eZ/uydP//NExNgQ+FIwXu+0QO2c+5P+r63Npr30p3VbK/Sj3dURJEUMDaO2gLSyMAQBYwOAiDDOCaMTAbYw+huDLpJtOqfuYzfDejIyD+MHIEACgmmCKA2YA4AbzR1l7v342zLX//NExOcXkT4UAP7EaKf1o/6OrivT6vt/9//6rVb1AgIQYE4YCBHQAGErb5nIKIkDF0ZaiMZ+TKZYBqZhzkYOGkZ+MSoHKEJC7wx6DE0E/MzcHQgGHAGRA+aJuaAiHgMF//NExNsR+FYcAO/2QAAYWHT/TtgMBACgYgmFzAWj/ttiC4XMBaOIThqwMjqV9tthyxcgrch4ygy5H//b8mCLlkmCbLJQJso//7f8wTFgdFQkJf0bkfFQkJRUJCUVEnsY//NExOYUIFosdV4AAEQOE5ZdUuyvgzyPfAE1pCKyYTjULKVSrFl65VSstopVfhlyTQVBElyWkIpehJWcl1UOqoY+XiylBfxNBXfF6K/zQV349FJMQU1FMy4xMDCqqqqq//NExOgkgkpk/52gAKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NExKkSKNpECdhIAaqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
     const calls: Record<string, number> = {};
+    const committedReviewEventIds = new Set<string>();
     const removedDeckCardIds = new Set<string>();
     let deckDeletedToUnsorted = false;
     let deletedDeckCardRestored = false;
@@ -296,10 +297,44 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(study.reveal);
       }
       if (command === "grade_review") {
+        const request = (
+          args as {
+            request: {
+              review_event_id: string;
+              card_id: string;
+              chosen_grade: string;
+            };
+          }
+        ).request;
+        if (!committedReviewEventIds.has(request.review_event_id)) {
+          committedReviewEventIds.add(request.review_event_id);
+          const committedReviews = JSON.parse(
+            localStorage.getItem("meiki-e2e-committed-reviews") ?? "[]",
+          ) as unknown[];
+          committedReviews.push({
+            review_event_id: request.review_event_id,
+            card_id: request.card_id,
+            chosen_grade: request.chosen_grade,
+            schedule_version: 1,
+            due_at: dtos.gradeResult.due_at,
+          });
+          localStorage.setItem(
+            "meiki-e2e-committed-reviews",
+            JSON.stringify(committedReviews),
+          );
+        }
+        if (
+          params.get("failure") === "queue-switch-mismatch" &&
+          calls[command] === 1
+        ) {
+          return {
+            ...clone(dtos.gradeResult),
+            review_event_id: "unexpected-review-event",
+          };
+        }
         return {
           ...clone(dtos.gradeResult),
-          review_event_id: (args as { request: { review_event_id: string } })
-            .request.review_event_id,
+          review_event_id: request.review_event_id,
         };
       }
       if (command === "undo_review") {
@@ -386,7 +421,15 @@ export async function installMockApi(page: Page): Promise<void> {
           (bundleImported || params.get("bundleRemoval") === "installed") &&
           !bundleRemoved
         ) {
-          return clone([...dtos.deckSummaries, ...dtos.bundleDeckSummaries]);
+          const summaries = [
+            ...dtos.deckSummaries,
+            ...dtos.bundleDeckSummaries,
+          ].map((deck) =>
+            params.get("emptyDeck") === deck.id
+              ? { ...deck, total_cards: 0, due_cards: 0, new_cards: 0 }
+              : deck,
+          );
+          return clone(summaries);
         }
         if (params.get("deckDeletion") === "focused-session") {
           return clone(

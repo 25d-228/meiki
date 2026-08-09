@@ -27,7 +27,9 @@
   import {
     clearStudyQueue,
     clearStudySession,
+    completePendingReview,
     readStudyQueue,
+    recoverPendingReview,
     remainingStudyCards,
     remainingQueueEntries,
     startStudyQueue,
@@ -118,7 +120,13 @@
         }
         queueSession = startStudyQueue(plan.overview);
       }
-      await recoverPendingReview();
+      if (queueSession.pendingReview) {
+        queueSession = await recoverPendingReview(
+          queueSession,
+          api.gradeReview,
+        );
+        writeStudyQueue(queueSession);
+      }
       if (!queueSession) return;
       await reconcileQueue();
       if (!queueSession) return;
@@ -140,16 +148,6 @@
       day_start_ms: start.getTime(),
       day_end_ms: end.getTime(),
     });
-  }
-
-  async function recoverPendingReview(): Promise<void> {
-    if (!queueSession?.pendingReview) return;
-    const pending = queueSession.pendingReview;
-    const recovered = await api.gradeReview(pending);
-    if (recovered.review_event_id !== pending.review_event_id) {
-      throw new Error("The recovered review command did not match.");
-    }
-    completePendingReview(recovered.review_event_id);
   }
 
   async function reconcileQueue(): Promise<void> {
@@ -351,7 +349,11 @@
         completed_reviews: card.completed_reviews + 1,
       };
       completionKind = "graded";
-      completePendingReview(result.review_event_id);
+      queueSession = completePendingReview(
+        queueSession,
+        result.review_event_id,
+      );
+      writeStudyQueue(queueSession);
       view = "next";
     } catch (error) {
       fail(error, "revealed", "grade");
@@ -418,31 +420,6 @@
     if (!queueSession || !card) return;
     if (queueSession.entries[queueSession.position]?.card_id !== card.card_id)
       return;
-    queueSession = {
-      ...queueSession,
-      position: Math.min(
-        queueSession.entries.length,
-        queueSession.position + 1,
-      ),
-      pendingReview: null,
-    };
-    writeStudyQueue(queueSession);
-  }
-
-  function completePendingReview(reviewEventId: string): void {
-    if (!queueSession?.pendingReview) {
-      throw new Error("The pending review command is missing.");
-    }
-    const pending = queueSession.pendingReview;
-    const current = queueSession.entries[queueSession.position];
-    if (
-      pending.review_event_id !== reviewEventId ||
-      current?.card_id !== pending.card_id ||
-      current.card_content_version !== pending.card_content_version ||
-      current.schedule_version !== pending.schedule_version
-    ) {
-      throw new Error("The pending review command does not match the queue.");
-    }
     queueSession = {
       ...queueSession,
       position: Math.min(
