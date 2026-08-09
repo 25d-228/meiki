@@ -573,6 +573,7 @@ export async function installMockApi(page: Page): Promise<void> {
         });
       }
       if (command === "import_bundle") {
+        const bundleImportMode = params.get("bundleImport");
         const report = async (
           stage: "preparing_decks" | "adding_cards" | "adding_audio",
           current: number,
@@ -582,11 +583,27 @@ export async function installMockApi(page: Page): Promise<void> {
           await new Promise((resolve) => setTimeout(resolve, 100));
         };
         await report("preparing_decks", 0, 6);
-        await report("preparing_decks", 6, 6);
-        await report("adding_cards", 0, 9_700);
-        await report("adding_cards", 9_700, 9_700);
-        await report("adding_audio", 0, 9_700);
-        await report("adding_audio", 9_700, 9_700);
+        if (bundleImportMode === "activity") {
+          await report("adding_cards", 1_240, 9_700);
+          await report("adding_cards", 620, 9_700);
+          localStorage.setItem("meiki-e2e-bundle-regression-sent", "true");
+          let outcome = localStorage.getItem("meiki-e2e-finish-bundle-import");
+          while (!outcome) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            outcome = localStorage.getItem("meiki-e2e-finish-bundle-import");
+          }
+          if (outcome === "failure") {
+            throw new Error("The bundle archive could not be verified.");
+          }
+          await report("adding_cards", 9_700, 9_700);
+          await report("adding_audio", 9_700, 9_700);
+        } else {
+          await report("preparing_decks", 6, 6);
+          await report("adding_cards", 0, 9_700);
+          await report("adding_cards", 9_700, 9_700);
+          await report("adding_audio", 0, 9_700);
+          await report("adding_audio", 9_700, 9_700);
+        }
         bundleImported = true;
         if (params.get("bundle") === "unassociated") {
           return {

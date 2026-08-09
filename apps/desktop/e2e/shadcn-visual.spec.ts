@@ -199,6 +199,60 @@ for (const visualCase of visualCases) {
   });
 }
 
+for (const activityCase of [
+  {
+    name: "bundle-import-activity-desktop-light",
+    screen: "Settings",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "bundle-import-activity-narrow-dark",
+    screen: "Add",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${activityCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/?bundleImport=activity",
+      screen: "Decks",
+      theme: activityCase.theme,
+      viewport: activityCase.viewport,
+    });
+    await page.getByRole("button", { name: "Import bundle" }).click();
+    const dialog = page.getByRole("dialog", { name: "Import bundle" });
+    await dialog.getByRole("button", { name: "Add bundle" }).click();
+    const activity = page.getByTestId("bundle-import-activity");
+    await expect(activity).toContainText("1,240 / 9,700");
+    await dialog.getByRole("button", { name: "Close" }).last().click();
+    await navigatePrimary(page, activityCase.screen);
+    const activityBounds = await activity.boundingBox();
+    const primaryActionBounds = await page
+      .locator("[data-primary-action]")
+      .boundingBox();
+    expect(activityBounds?.width).toBeLessThanOrEqual(256);
+    expect(
+      activityBounds &&
+        primaryActionBounds &&
+        activityBounds.x < primaryActionBounds.x + primaryActionBounds.width &&
+        activityBounds.x + activityBounds.width > primaryActionBounds.x &&
+        activityBounds.y < primaryActionBounds.y + primaryActionBounds.height &&
+        activityBounds.y + activityBounds.height > primaryActionBounds.y,
+    ).toBeFalsy();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${activityCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 for (const revealCase of [
   {
     name: "study-reveal-desktop-light-cjk",
