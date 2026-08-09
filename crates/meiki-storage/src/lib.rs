@@ -171,6 +171,9 @@ pub struct PristineBundleImportPlan {
     pub installed_deck_ids: Vec<String>,
     pub missing_deck_ids: Vec<String>,
     pub unassociated_deck_ids: Vec<String>,
+    pub restorable_deck_ids: Vec<String>,
+    pub restorable_source_ids: Vec<String>,
+    pub retained_source_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

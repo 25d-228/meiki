@@ -138,6 +138,25 @@ test("reports installation when existing decks only need bundle associations", a
   await expect(page.getByText(/Added Japanese with 0 decks/)).toHaveCount(0);
 });
 
+test("previews and restores a previously removed bundle", async ({ page }) => {
+  await page.goto("/?bundle=restorable");
+  await openDecks(page);
+  await page.getByRole("button", { name: "Import bundle" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Import bundle" });
+  await expect(dialog.getByText("Restorable", { exact: true })).toHaveCount(6);
+  await expect(
+    dialog.getByText("Japanese was previously removed and can be restored.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Add bundle" }).click();
+
+  await expect(
+    page.getByText("Restored Japanese with 6 decks.", { exact: true }),
+  ).toBeVisible();
+});
+
 test("removes an installed bundle after one confirmation and leaves unrelated decks", async ({
   page,
 }) => {
