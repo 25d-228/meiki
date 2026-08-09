@@ -18,7 +18,11 @@ use super::{
 };
 
 fn sample_event(storage: &Storage, id: &str, reviewed_at_ms: i64) -> ReviewEvent {
-    let stored = storage.load_study_card(SAMPLE_CARD_ID).unwrap();
+    event_for_card(storage, SAMPLE_CARD_ID, id, reviewed_at_ms)
+}
+
+fn event_for_card(storage: &Storage, card_id: &str, id: &str, reviewed_at_ms: i64) -> ReviewEvent {
+    let stored = storage.load_study_card(card_id).unwrap();
     let mut next = stored.schedule.clone();
     next.version += 1;
     next.lifecycle = CardLifecycle::Introduced;
@@ -577,10 +581,42 @@ fn pristine_bundle_import() -> PristineBundleImport {
     }
 }
 
+fn leave_bundle_content_in_legacy_trash(
+    storage: &mut Storage,
+    bundle: &PristineBundleImport,
+    deleted_at_ms: i64,
+) {
+    for stage in &bundle.decks {
+        let card_ids = stage
+            .notes
+            .iter()
+            .flat_map(|note| note.cards.iter().map(|card| card.card.id.clone()))
+            .collect::<Vec<_>>();
+        storage
+            .move_deck_cards(&card_ids, DEFAULT_DECK_ID, deleted_at_ms)
+            .unwrap();
+        storage
+            .set_deck_cards_deleted(&card_ids, Some(deleted_at_ms), deleted_at_ms)
+            .unwrap();
+        storage.delete_deck(&stage.deck.id).unwrap();
+    }
+    storage
+        .connection
+        .execute(
+            "DELETE FROM bundle_installations WHERE language_tag = ?1",
+            [&bundle.language_tag],
+        )
+        .unwrap();
+}
+
 #[test]
 fn pristine_bundle_import_adds_only_missing_decks_with_associations_and_inherited_scheduling() {
     let mut storage = Storage::open_in_memory().unwrap();
-    let bundle = pristine_bundle_import();
+    let mut bundle = pristine_bundle_import();
+    bundle.decks[1].deck.created_at_ms = 1_500;
+    bundle.decks[1].deck.updated_at_ms = 1_500;
+    bundle.decks[1].notes[0].note.source_item.created_at_ms = 1_500;
+    bundle.decks[1].notes[0].note.source_item.updated_at_ms = 1_500;
     let first_stage = PristineBundleImport {
         language_tag: bundle.language_tag.clone(),
         decks: vec![bundle.decks[0].clone()],
@@ -682,15 +718,13 @@ fn pristine_bundle_failure_rolls_back_all_decks_and_associations() {
 }
 
 #[test]
-fn pristine_bundle_restoration_failure_leaves_removed_content_in_trash() {
+fn legacy_bundle_remnant_purge_failure_leaves_trashed_content_unchanged() {
     let mut storage = Storage::open_in_memory().unwrap();
     let bundle = pristine_bundle_import();
     storage
         .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
         .unwrap();
-    storage
-        .remove_bundle("ja-JP", 2, 4, 3_000, |_, _| {})
-        .unwrap();
+    leave_bundle_content_in_legacy_trash(&mut storage, &bundle, 3_000);
     let removed_notes = storage.library_notes().unwrap();
 
     assert!(matches!(
@@ -710,7 +744,61 @@ fn pristine_bundle_restoration_failure_leaves_removed_content_in_trash() {
 }
 
 #[test]
-fn pristine_bundle_restoration_rejects_an_identity_owned_by_another_bundle() {
+fn exact_legacy_bundle_remnants_are_purged_before_a_fresh_import() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let review = event_for_card(&storage, "pristine-card-0", "legacy-review", 3_000);
+    storage.commit_review(&review).unwrap();
+    storage
+        .set_deck_cards_suspended(&["pristine-card-0".into()], true, 3_100)
+        .unwrap();
+    let mut changed = storage.get_card("pristine-card-0").unwrap();
+    changed.content_version = 7;
+    changed.updated_at_ms = 3_200;
+    storage.update_card(&changed).unwrap();
+    leave_bundle_content_in_legacy_trash(&mut storage, &bundle, 4_000);
+
+    let plan = storage.validate_pristine_bundle_import(&bundle).unwrap();
+    assert_eq!(plan.stale_source_ids.len(), 2);
+    let mut imported_cards = 0;
+    storage
+        .import_pristine_bundle(&bundle, || imported_cards += 1, || Ok::<(), ()>(()))
+        .unwrap();
+
+    assert_eq!(imported_cards, 4);
+    let fresh = storage.load_study_card("pristine-card-0").unwrap();
+    assert!(!fresh.card.suspended);
+    assert_eq!(fresh.card.content_version, 0);
+    assert_eq!(fresh.schedule.lifecycle, CardLifecycle::Unseen);
+    assert_eq!(fresh.schedule.version, 0);
+    assert!(storage.review_events("pristine-card-0").unwrap().is_empty());
+    for (table, id) in [
+        ("source_items", "source-mixed"),
+        ("cards", "pristine-card-0"),
+        ("tags", "tag-mixed"),
+        ("annotations", "annotation-source"),
+        ("media_references", "media-source"),
+    ] {
+        assert_eq!(
+            storage
+                .connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE id = ?1"),
+                    [id],
+                    |row| row.get::<_, u64>(0),
+                )
+                .unwrap(),
+            1,
+            "{table}"
+        );
+    }
+}
+
+#[test]
+fn pristine_bundle_import_rejects_an_active_identity_owned_by_another_bundle() {
     let mut storage = Storage::open_in_memory().unwrap();
     let bundle = pristine_bundle_import();
     storage
@@ -746,7 +834,7 @@ fn pristine_bundle_restoration_rejects_an_identity_owned_by_another_bundle() {
     assert!(matches!(
         storage.validate_pristine_bundle_import(&bundle),
         Err(StorageError::InvalidAggregate(message))
-            if message.contains("belongs to another installed bundle")
+            if message.contains("active or differently owned content")
     ));
     for stage in &bundle.decks {
         assert!(matches!(
@@ -757,6 +845,7 @@ fn pristine_bundle_restoration_rejects_an_identity_owned_by_another_bundle() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn bundle_removal_uses_one_confirmation_for_six_stages_and_preserves_unrelated_content() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();
@@ -780,6 +869,13 @@ fn bundle_removal_uses_one_confirmation_for_six_stages_and_preserves_unrelated_c
             .unwrap();
     }
 
+    let moved_out_review = event_for_card(
+        &storage,
+        "pristine-card-0",
+        "moved-out-bundle-review",
+        2_500,
+    );
+    storage.commit_review(&moved_out_review).unwrap();
     storage
         .move_deck_cards(
             &["pristine-card-0".into(), "pristine-card-1".into()],
@@ -804,7 +900,9 @@ fn bundle_removal_uses_one_confirmation_for_six_stages_and_preserves_unrelated_c
             progress.push((decks, cards));
         })
         .unwrap();
-    assert_eq!(removed, preview[0]);
+    assert_eq!(removed.language_tag, preview[0].language_tag);
+    assert_eq!(removed.deck_count, preview[0].deck_count);
+    assert_eq!(removed.active_card_count, preview[0].active_card_count);
     assert_eq!(progress.len(), 6);
     assert_eq!(progress.last(), Some(&(6, 3)));
     assert!(
@@ -827,27 +925,37 @@ fn bundle_removal_uses_one_confirmation_for_six_stages_and_preserves_unrelated_c
         .unwrap();
     assert_eq!(moved_out.note.source_item.deck_id, DEFAULT_DECK_ID);
     assert_eq!(moved_out.deleted_at_ms, None);
+    assert_eq!(
+        storage.review_events("pristine-card-0").unwrap(),
+        vec![moved_out_review]
+    );
     let manually_added = notes
         .iter()
         .find(|note| note.note.source_item.id == SAMPLE_SOURCE_ID)
         .unwrap();
     assert_eq!(manually_added.note.source_item.deck_id, DEFAULT_DECK_ID);
     assert_eq!(manually_added.deleted_at_ms, Some(5_000));
-    let remaining_bundle_note = notes
-        .iter()
-        .find(|note| note.note.source_item.id == "source-mixed-2")
-        .unwrap();
-    assert_eq!(
-        remaining_bundle_note.note.source_item.deck_id,
-        DEFAULT_DECK_ID
+    assert!(
+        notes
+            .iter()
+            .all(|note| note.note.source_item.id != "source-mixed-2")
     );
-    assert_eq!(remaining_bundle_note.deleted_at_ms, Some(5_000));
     assert_eq!(storage.review_events(SAMPLE_CARD_ID).unwrap(), vec![review]);
-    assert_eq!(storage.media_reference_usage("media-source-2").unwrap(), 1);
     assert!(matches!(
-        storage.delete_media_reference("media-source-2"),
-        Err(StorageError::MediaInUse { references: 1, .. })
+        storage.get_media_reference("media-source-2"),
+        Err(StorageError::EntityNotFound { .. })
     ));
+    assert!(
+        !removed
+            .orphaned_media_hashes
+            .contains(&"sha256-media-source".into())
+    );
+    assert_eq!(
+        storage
+            .media_reference_count_for_hash("sha256-media-source")
+            .unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -875,15 +983,62 @@ fn bundle_removal_removes_only_stages_that_remain_associated() {
         .unwrap();
 
     assert!(storage.installed_bundles().unwrap().is_empty());
-    assert_eq!(
-        storage
-            .library_notes()
-            .unwrap()
-            .iter()
-            .filter(|note| note.deleted_at_ms.is_some())
-            .count(),
-        2
+    assert!(storage.library_notes().unwrap().is_empty());
+}
+
+#[test]
+fn deleting_an_imported_stage_purges_bundle_content_and_safely_trashes_personal_content() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let bundle_review = event_for_card(
+        &storage,
+        "pristine-card-0",
+        "stage-deletion-bundle-review",
+        3_000,
     );
+    storage.commit_review(&bundle_review).unwrap();
+    let personal_review = sample_event(&storage, "stage-deletion-personal-review", 3_100);
+    storage.commit_review(&personal_review).unwrap();
+    storage
+        .move_deck_cards(&[SAMPLE_CARD_ID.into()], &bundle.decks[0].deck.id, 3_200)
+        .unwrap();
+
+    let first = storage
+        .delete_deck_and_rehome_notes(&bundle.decks[0].deck.id, None, 4_000)
+        .unwrap();
+    assert!(matches!(
+        storage.get_source_note("source-mixed"),
+        Err(StorageError::EntityNotFound { .. })
+    ));
+    assert!(storage.review_events("pristine-card-0").is_err());
+    let personal = storage
+        .library_notes()
+        .unwrap()
+        .into_iter()
+        .find(|note| note.note.source_item.id == SAMPLE_SOURCE_ID)
+        .unwrap();
+    assert_eq!(personal.note.source_item.deck_id, DEFAULT_DECK_ID);
+    assert_eq!(personal.deleted_at_ms, Some(4_000));
+    assert_eq!(
+        storage.review_events(SAMPLE_CARD_ID).unwrap(),
+        vec![personal_review]
+    );
+    assert!(first.orphaned_media_hashes.is_empty());
+    assert_eq!(storage.installed_bundles().unwrap()[0].deck_count, 1);
+
+    let second = storage
+        .delete_deck_and_rehome_notes(&bundle.decks[1].deck.id, None, 5_000)
+        .unwrap();
+    assert!(storage.installed_bundles().unwrap().is_empty());
+    assert!(matches!(
+        storage.get_source_note("source-mixed-2"),
+        Err(StorageError::EntityNotFound { .. })
+    ));
+    assert!(!second.orphaned_media_hashes.is_empty());
 }
 
 #[test]
@@ -893,6 +1048,13 @@ fn bundle_removal_rolls_back_every_stage_when_one_deck_fails() {
     storage
         .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
         .unwrap();
+    let review = event_for_card(
+        &storage,
+        "pristine-card-0",
+        "bundle-removal-rollback-review",
+        2_500,
+    );
+    storage.commit_review(&review).unwrap();
     let notes_before = storage.library_notes().unwrap();
     storage
         .connection
@@ -913,6 +1075,7 @@ fn bundle_removal_rolls_back_every_stage_when_one_deck_fails() {
     );
     assert_eq!(storage.installed_bundles().unwrap()[0].deck_count, 2);
     assert_eq!(storage.library_notes().unwrap(), notes_before);
+    assert_eq!(storage.review_events("pristine-card-0").unwrap(), [review]);
     for stage in bundle.decks {
         assert_eq!(storage.get_deck(&stage.deck.id).unwrap(), stage.deck);
     }
@@ -1002,6 +1165,56 @@ fn sample_data_survives_reopening_the_database() {
 }
 
 #[test]
+fn version_twelve_tracks_only_existing_bundle_sources_from_each_stage_timestamp() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("bundle-v11.db");
+    let mut storage = Storage::open(&path).unwrap();
+    storage.seed_walking_skeleton(500).unwrap();
+    let mut bundle = pristine_bundle_import();
+    bundle.decks[1].deck.created_at_ms = 1_500;
+    bundle.decks[1].deck.updated_at_ms = 1_500;
+    bundle.decks[1].notes[0].note.source_item.created_at_ms = 1_500;
+    bundle.decks[1].notes[0].note.source_item.updated_at_ms = 1_500;
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    storage
+        .move_deck_cards(&[SAMPLE_CARD_ID.into()], &bundle.decks[0].deck.id, 2_000)
+        .unwrap();
+    storage
+        .connection
+        .execute_batch(
+            "DROP TRIGGER review_events_are_append_only_delete;
+             DROP TRIGGER bundle_source_notes_leave_stage;
+             DROP TABLE bundle_source_notes;
+             CREATE TRIGGER review_events_are_append_only_delete
+             BEFORE DELETE ON review_events
+             BEGIN
+                 SELECT RAISE(ABORT, 'review events are append-only');
+             END;
+             DELETE FROM schema_migrations WHERE version = 12;",
+        )
+        .unwrap();
+    drop(storage);
+
+    let migrated = Storage::open(&path).unwrap();
+    assert_eq!(migrated.schema_version().unwrap(), 12);
+    let tracked = {
+        let mut statement = migrated
+            .connection
+            .prepare("SELECT source_item_id FROM bundle_source_notes ORDER BY source_item_id")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    assert_eq!(tracked, ["source-mixed", "source-mixed-2"]);
+    assert!(!tracked.contains(&SAMPLE_SOURCE_ID.into()));
+}
+
+#[test]
 fn wal_writer_process() {
     let Some(path) = std::env::var_os("MEIKI_TEST_WAL_WRITER_PATH") else {
         return;
@@ -1065,7 +1278,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     std::fs::write(&path, RELEASED_V0_1_SCHEMA).unwrap();
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
     assert_eq!(storage.get_deck(DEFAULT_DECK_ID).unwrap().name, "Default");
     assert_eq!(
         storage
@@ -1120,7 +1333,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     drop(storage);
 
     let reopened = Storage::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 11);
+    assert_eq!(reopened.schema_version().unwrap(), 12);
     assert_eq!(
         reopened
             .connection
@@ -1134,7 +1347,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
 
     let restored_path = directory.path().join("released-v0.1-restored.db");
     let restored = Storage::restore_from_backup(&backup, &restored_path).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 11);
+    assert_eq!(restored.schema_version().unwrap(), 12);
     assert!(!restored.has_learning_material().unwrap());
     assert!(
         restored
@@ -1173,7 +1386,7 @@ fn newer_schema_fails_without_migration_or_backup_writes() {
         Storage::open(&path),
         Err(StorageError::UnsupportedSchema {
             found: 999,
-            supported: 11
+            supported: 12
         })
     ));
     let connection = Connection::open(&path).unwrap();
@@ -1305,7 +1518,7 @@ fn version_ten_migrates_legacy_policy_without_losing_user_choices() {
     drop(legacy);
 
     let migrated = Storage::open(&path).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 11);
+    assert_eq!(migrated.schema_version().unwrap(), 12);
     assert_eq!(
         migrated
             .collection_scheduling_settings()
@@ -1779,7 +1992,7 @@ fn version_nine_migration_backs_up_and_repairs_only_from_recorded_snapshots() {
     drop(storage);
 
     let repaired = Storage::open(&path).unwrap();
-    assert_eq!(repaired.schema_version().unwrap(), 11);
+    assert_eq!(repaired.schema_version().unwrap(), 12);
     assert_eq!(repaired.projection_migration_repaired_cards().unwrap(), 1);
     assert_eq!(repaired.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
     assert_eq!(
@@ -2010,7 +2223,7 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "v1.db.migration-v1-"),
         1
@@ -2087,7 +2300,7 @@ fn version_five_media_migrates_to_roles_and_technical_metadata() {
     drop(connection);
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "legacy-media.db.migration-v5-"),
         5
@@ -2525,7 +2738,7 @@ fn release_budget_large_version_eight_migration() {
     let integrity = migrated.check_collection_schedule_integrity().unwrap();
     let after_bytes = std::fs::metadata(&path).unwrap().len();
 
-    assert_eq!(migrated.schema_version().unwrap(), 11);
+    assert_eq!(migrated.schema_version().unwrap(), 12);
     assert_eq!(
         integrity.checked_cards,
         usize::try_from(CARD_COUNT).unwrap()

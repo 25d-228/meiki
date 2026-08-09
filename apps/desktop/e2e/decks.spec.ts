@@ -73,10 +73,10 @@ test("previews and adds the complete Japanese bundle in ordered progress stages"
   const bundleDecks = dialog.getByRole("list", { name: "Bundle decks" });
   await expect(bundleDecks.getByRole("listitem")).toHaveCount(6);
   await expect(bundleDecks.getByRole("listitem").nth(0)).toContainText(
-    /Japanese 00 — Kana, sound, and Japanese input\s+300\s+cards\s+Missing/,
+    /Japanese 00 — Kana, sound, and Japanese input\s+300\s+cards\s+Will add/,
   );
   await expect(bundleDecks.getByRole("listitem").nth(5)).toContainText(
-    /Japanese 05 — N1 \/ balanced C1 bridge\s+3,000\s+cards\s+Missing/,
+    /Japanese 05 — N1 \/ balanced C1 bridge\s+3,000\s+cards\s+Will add/,
   );
 
   await dialog.getByRole("button", { name: "Add bundle" }).click();
@@ -105,7 +105,7 @@ test("marks installed bundle decks and disables an already installed bundle", as
   await page.getByRole("button", { name: "Import bundle" }).click();
   let dialog = page.getByRole("dialog", { name: "Import bundle" });
   await expect(dialog.getByText("Installed", { exact: true })).toHaveCount(2);
-  await expect(dialog.getByText("Missing", { exact: true })).toHaveCount(4);
+  await expect(dialog.getByText("Will add", { exact: true })).toHaveCount(4);
 
   await page.keyboard.press("Escape");
   await page.goto("/?bundle=installed");
@@ -138,25 +138,6 @@ test("reports installation when existing decks only need bundle associations", a
   await expect(page.getByText(/Added Japanese with 0 decks/)).toHaveCount(0);
 });
 
-test("previews and restores a previously removed bundle", async ({ page }) => {
-  await page.goto("/?bundle=restorable");
-  await openDecks(page);
-  await page.getByRole("button", { name: "Import bundle" }).click();
-
-  const dialog = page.getByRole("dialog", { name: "Import bundle" });
-  await expect(dialog.getByText("Restorable", { exact: true })).toHaveCount(6);
-  await expect(
-    dialog.getByText("Japanese was previously removed and can be restored.", {
-      exact: true,
-    }),
-  ).toBeVisible();
-  await dialog.getByRole("button", { name: "Add bundle" }).click();
-
-  await expect(
-    page.getByText("Restored Japanese with 6 decks.", { exact: true }),
-  ).toBeVisible();
-});
-
 test("removes an installed bundle after one confirmation and leaves unrelated decks", async ({
   page,
 }) => {
@@ -174,7 +155,7 @@ test("removes an installed bundle after one confirmation and leaves unrelated de
     name: "Remove Japanese?",
   });
   await expect(confirmation).toContainText(
-    /This removes 6 decks and moves their 9,700 cards to Trash\./,
+    /This permanently removes bundled content from 6 decks\. Personal cards in those decks move to Trash\./,
   );
   await confirmation.getByRole("button", { name: "Cancel" }).click();
   await expect(lastRequest(page, "remove_bundle")).resolves.toBeUndefined();
@@ -183,9 +164,7 @@ test("removes an installed bundle after one confirmation and leaves unrelated de
 
   const progress = page.getByRole("dialog", { name: "Removing bundle" });
   await expect(progress.getByRole("status")).toContainText(/Decks\s*1 \/ 6/);
-  await expect(
-    page.getByText("Removed Japanese. 6 decks and 9,700 cards moved to Trash."),
-  ).toBeVisible();
+  await expect(page.getByText("Removed Japanese with 6 decks.")).toBeVisible();
   await expect(page.getByTestId("deck-deck:ja-JP:05")).toHaveCount(0);
   await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
   await expect(

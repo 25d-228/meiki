@@ -226,37 +226,37 @@ const bundleDecks = [
     id: "deck:ja-JP:00",
     name: "Japanese 00 — Kana, sound, and Japanese input",
     cards: 300,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:01",
     name: "Japanese 01 — N5 / A1 foundation",
     cards: 1_000,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:02",
     name: "Japanese 02 — N4 / A2 elementary",
     cards: 1_200,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:03",
     name: "Japanese 03 — N3 / B1 intermediate",
     cards: 1_800,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:04",
     name: "Japanese 04 — N2 / B2 upper-intermediate",
     cards: 2_400,
-    status: "missing",
+    status: "will_add",
   },
   {
     id: "deck:ja-JP:05",
     name: "Japanese 05 — N1 / balanced C1 bridge",
     cards: 3_000,
-    status: "missing",
+    status: "will_add",
   },
 ] as const;
 

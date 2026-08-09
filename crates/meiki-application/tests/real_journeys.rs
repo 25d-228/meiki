@@ -442,7 +442,7 @@ fn released_schema_fixture_migrates_and_reopens_idempotently() {
         StudyAvailabilityDto::EmptyCollection
     );
     let storage = Storage::open(&source_path).expect("open the migrated SQLite collection");
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
     assert!(
         storage
             .check_collection_schedule_integrity()

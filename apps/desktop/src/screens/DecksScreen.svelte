@@ -152,11 +152,9 @@
       await loadDecks();
       bundleDialogOpen = false;
       notice =
-        result.restored_decks > 0
-          ? `Restored ${languageName(result.language_tag)} with ${result.restored_decks.toLocaleString()} ${result.restored_decks === 1 ? "deck" : "decks"}.`
-          : result.added_decks === 0
-            ? `${languageName(result.language_tag)} is now installed.`
-            : `Added ${languageName(result.language_tag)} with ${result.added_decks.toLocaleString()} ${result.added_decks === 1 ? "deck" : "decks"} and ${result.added_cards.toLocaleString()} ${result.added_cards === 1 ? "card" : "cards"}.`;
+        result.added_decks === 0
+          ? `${languageName(result.language_tag)} is now installed.`
+          : `Added ${languageName(result.language_tag)} with ${result.added_decks.toLocaleString()} ${result.added_decks === 1 ? "deck" : "decks"} and ${result.added_cards.toLocaleString()} ${result.added_cards === 1 ? "card" : "cards"}.`;
     } catch (cause) {
       bundleError = message(cause);
     } finally {
@@ -201,7 +199,7 @@
     bundleRemovalProgress = {
       removed_decks: 0,
       total_decks: bundle.decks,
-      moved_cards: 0,
+      processed_cards: 0,
       total_cards: bundle.cards,
     };
     try {
@@ -225,7 +223,7 @@
       }
       bundleRemovalProgressDialogOpen = false;
       selectedBundle = null;
-      notice = `Removed ${languageName(result.language_tag)}. ${result.removed_decks.toLocaleString()} ${result.removed_decks === 1 ? "deck" : "decks"} and ${result.moved_cards.toLocaleString()} ${result.moved_cards === 1 ? "card" : "cards"} moved to Trash.`;
+      notice = `Removed ${languageName(result.language_tag)} with ${result.removed_decks.toLocaleString()} ${result.removed_decks === 1 ? "deck" : "decks"}.`;
     } catch (cause) {
       bundleRemovalError = message(cause);
     } finally {
@@ -501,7 +499,7 @@
       </AlertDialog.Title>
       <AlertDialog.Description>
         {#if selectedBundle}
-          {`This removes ${selectedBundle.decks.toLocaleString()} ${selectedBundle.decks === 1 ? "deck" : "decks"} and moves their ${selectedBundle.cards.toLocaleString()} ${selectedBundle.cards === 1 ? "card" : "cards"} to Trash.`}
+          {`This permanently removes bundled content from ${selectedBundle.decks.toLocaleString()} ${selectedBundle.decks === 1 ? "deck" : "decks"}. Personal cards in those decks move to Trash.`}
         {/if}
       </AlertDialog.Description>
     </AlertDialog.Header>
@@ -535,7 +533,7 @@
       </Alert.Root>
     {:else if bundleRemovalProgress}
       <div class="bundle-removal-progress" role="status" aria-live="polite">
-        <strong>Moving cards to Trash</strong>
+        <strong>Removing bundle content</strong>
         <label>
           Decks
           <progress
@@ -550,10 +548,10 @@
           Cards
           <progress
             max={Math.max(1, bundleRemovalProgress.total_cards)}
-            value={bundleRemovalProgress.moved_cards}
+            value={bundleRemovalProgress.processed_cards}
           ></progress>
           <span>
-            {bundleRemovalProgress.moved_cards.toLocaleString()} / {bundleRemovalProgress.total_cards.toLocaleString()}
+            {bundleRemovalProgress.processed_cards.toLocaleString()} / {bundleRemovalProgress.total_cards.toLocaleString()}
           </span>
         </label>
       </div>
@@ -613,11 +611,7 @@
               >
             </div>
             <span class:installed={deck.status === "installed"}
-              >{deck.status === "installed"
-                ? "Installed"
-                : deck.status === "restorable"
-                  ? "Restorable"
-                  : "Missing"}</span
+              >{deck.status === "installed" ? "Installed" : "Will add"}</span
             >
           </li>
         {/each}
@@ -626,11 +620,6 @@
       {#if !bundlePreview.can_import}
         <p role="status">
           {languageName(bundlePreview.language_tag)} is already installed
-        </p>
-      {:else if bundlePreview.decks.some((deck) => deck.status === "restorable")}
-        <p role="status">
-          {languageName(bundlePreview.language_tag)} was previously removed and can
-          be restored.
         </p>
       {/if}
     {/if}

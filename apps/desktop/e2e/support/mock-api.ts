@@ -554,7 +554,6 @@ export async function installMockApi(page: Page): Promise<void> {
       }
 
       if (command === "preview_bundle") {
-        const restorable = params.get("bundle") === "restorable";
         const installedDecks =
           params.get("bundle") === "installed" ||
           params.get("bundle") === "unassociated"
@@ -566,14 +565,9 @@ export async function installMockApi(page: Page): Promise<void> {
           ...dtos.bundlePreview,
           decks: dtos.bundlePreview.decks.map((deck, index) => ({
             ...deck,
-            status: restorable
-              ? "restorable"
-              : index < installedDecks
-                ? "installed"
-                : "missing",
+            status: index < installedDecks ? "installed" : "will_add",
           })),
           can_import:
-            restorable ||
             params.get("bundle") === "unassociated" ||
             installedDecks < dtos.bundlePreview.decks.length,
         });
@@ -598,26 +592,14 @@ export async function installMockApi(page: Page): Promise<void> {
           return {
             language_tag: "ja-JP",
             added_decks: 0,
-            restored_decks: 0,
             added_cards: 0,
             imported_media_objects: 0,
             deduplicated_media_objects: 0,
           };
         }
-        if (params.get("bundle") === "restorable") {
-          return {
-            language_tag: "ja-JP",
-            added_decks: 6,
-            restored_decks: 6,
-            added_cards: 0,
-            imported_media_objects: 0,
-            deduplicated_media_objects: 9_700,
-          };
-        }
         return {
           language_tag: "ja-JP",
           added_decks: 6,
-          restored_decks: 0,
           added_cards: 9_700,
           imported_media_objects: 9_700,
           deduplicated_media_objects: 0,
@@ -644,11 +626,11 @@ export async function installMockApi(page: Page): Promise<void> {
       }
       if (command === "remove_bundle") {
         const cardTotals = [300, 1_100, 2_100, 3_700, 6_700, 9_700];
-        for (const [index, movedCards] of cardTotals.entries()) {
+        for (const [index, processedCards] of cardTotals.entries()) {
           window.__MEIKI_TEST_BUNDLE_REMOVAL_PROGRESS__?.({
             removed_decks: index + 1,
             total_decks: 6,
-            moved_cards: movedCards,
+            processed_cards: processedCards,
             total_cards: 9_700,
           });
           await new Promise((resolve) => setTimeout(resolve, 100));
@@ -658,7 +640,7 @@ export async function installMockApi(page: Page): Promise<void> {
         return {
           language_tag: "ja-JP",
           removed_decks: 6,
-          moved_cards: 9_700,
+          affected_cards: 9_700,
         };
       }
       throw new Error(`No DTO fixture for command: ${command}`);
