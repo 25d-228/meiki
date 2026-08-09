@@ -1487,6 +1487,7 @@ fn validate_pristine_bundle_import(
     let mut installed_deck_ids = Vec::new();
     let mut missing_deck_ids = Vec::new();
     let mut unassociated_deck_ids = Vec::new();
+    let mut source_ids_to_associate = Vec::new();
     let mut stale_source_ids = Vec::new();
     let mut imported_ordinals = HashMap::new();
     let mut previous_associated_ordinal = None;
@@ -1536,6 +1537,10 @@ fn validate_pristine_bundle_import(
             installed_deck_ids.push(deck.id.clone());
             if deck_association.is_none() {
                 unassociated_deck_ids.push(deck.id.clone());
+                source_ids_to_associate.extend(matching_unassociated_bundle_source_ids(
+                    connection,
+                    imported_deck,
+                )?);
             }
             continue;
         }
@@ -1553,8 +1558,39 @@ fn validate_pristine_bundle_import(
         installed_deck_ids,
         missing_deck_ids,
         unassociated_deck_ids,
+        source_ids_to_associate,
         stale_source_ids,
     })
+}
+
+fn matching_unassociated_bundle_source_ids(
+    connection: &Connection,
+    imported_deck: &PristineDeckImport,
+) -> Result<Vec<String>, StorageError> {
+    let mut matching_source_ids = Vec::new();
+    for imported_note in &imported_deck.notes {
+        let source_id = &imported_note.note.source_item.id;
+        let stored_deck_id = connection
+            .query_row(
+                "SELECT deck_id FROM source_items WHERE id = ?1",
+                [source_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if stored_deck_id.as_deref() != Some(imported_deck.deck.id.as_str())
+            || entity_id_exists(
+                connection,
+                "SELECT 1 FROM bundle_source_notes WHERE source_item_id = ?1",
+                source_id,
+            )?
+        {
+            continue;
+        }
+        if pristine_source_matches(connection, imported_note)? {
+            matching_source_ids.push(source_id.clone());
+        }
+    }
+    Ok(matching_source_ids)
 }
 
 fn validate_bundle_stage_associations(
@@ -1640,18 +1676,29 @@ fn validate_matching_pristine_source(
     connection: &Connection,
     imported_note: &crate::PristineDeckNote,
 ) -> Result<(), StorageError> {
+    if pristine_source_matches(connection, imported_note)? {
+        Ok(())
+    } else {
+        Err(StorageError::InvalidAggregate(format!(
+            "imported source note identity {} already exists with different content",
+            imported_note.note.source_item.id
+        )))
+    }
+}
+
+fn pristine_source_matches(
+    connection: &Connection,
+    imported_note: &crate::PristineDeckNote,
+) -> Result<bool, StorageError> {
     match validate_matching_pristine_note(connection, imported_note) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(true),
         Err(
             StorageError::InvalidAggregate(_)
             | StorageError::InvalidStoredValue { .. }
             | StorageError::EntityNotFound { .. }
             | StorageError::CardNotFound(_)
             | StorageError::InvalidJson(_),
-        ) => Err(StorageError::InvalidAggregate(format!(
-            "imported source note identity {} already exists with different content",
-            imported_note.note.source_item.id
-        ))),
+        ) => Ok(false),
         Err(error) => Err(error),
     }
 }
@@ -2114,6 +2161,18 @@ fn persist_pristine_bundle_import(
                     .map_err(|_| StorageError::NumericRange("bundle deck ordinal"))?
             ],
         )?;
+    }
+    for source_id in &plan.source_ids_to_associate {
+        let changed = transaction.execute(
+            "INSERT INTO bundle_source_notes(source_item_id, language_tag, deck_id)
+             SELECT source_items.id, bundle_decks.language_tag, source_items.deck_id
+             FROM source_items
+             JOIN bundle_decks ON bundle_decks.deck_id = source_items.deck_id
+             WHERE source_items.id = ?1
+               AND bundle_decks.language_tag = ?2",
+            params![source_id, import.language_tag],
+        )?;
+        ensure_changed(changed, "matching bundle source", source_id)?;
     }
     Ok(())
 }

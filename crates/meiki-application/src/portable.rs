@@ -1487,6 +1487,103 @@ mod tests {
     }
 
     #[test]
+    fn removed_two_stage_bundle_previews_and_imports_three_stages_fresh() {
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let two_stage_path = write_bundle_fixture(directory.path(), "two-stage", 2, |_| {});
+        let three_stage_path = write_bundle_fixture(directory.path(), "three-stage", 3, |_| {});
+        service
+            .import_bundle(
+                &BundleImportRequest {
+                    path: two_stage_path.to_string_lossy().into_owned(),
+                    now_ms: 400_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+
+        let card = service.get_study_card(&bundle_card_id(0)).unwrap();
+        service
+            .grade_review_at(
+                &GradeReviewRequest {
+                    review_event_id: "two-stage-review-before-removal".into(),
+                    card_id: card.card_id,
+                    card_content_version: card.card_content_version,
+                    schedule_version: card.schedule_version,
+                    raw_response: "晴れです".into(),
+                    chosen_grade: GradeDto::Good,
+                    response_duration_ms: 700,
+                },
+                410_000,
+            )
+            .unwrap();
+        let learned_schedule = Storage::open(&collection_path)
+            .unwrap()
+            .load_schedule(&bundle_card_id(0))
+            .unwrap();
+        assert_eq!(learned_schedule.lifecycle, CardLifecycle::Introduced);
+        assert_eq!(learned_schedule.version, 1);
+
+        let removal = service.list_installed_bundles().unwrap().remove(0);
+        service
+            .remove_bundle(
+                &BundleRemovalRequest {
+                    language_tag: removal.language_tag,
+                    expected_decks: removal.decks,
+                    expected_cards: removal.cards,
+                    now_ms: 500_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+
+        let preview = service
+            .preview_bundle(&three_stage_path.to_string_lossy())
+            .unwrap();
+        assert_eq!(
+            preview
+                .decks
+                .iter()
+                .map(|deck| deck.id.clone())
+                .collect::<Vec<_>>(),
+            [bundle_deck_id(0), bundle_deck_id(1), bundle_deck_id(2),]
+        );
+        assert!(
+            preview
+                .decks
+                .iter()
+                .all(|deck| deck.status == BundleDeckInstallStatusDto::WillAdd)
+        );
+        let imported = service
+            .import_bundle(
+                &BundleImportRequest {
+                    path: three_stage_path.to_string_lossy().into_owned(),
+                    now_ms: 600_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!((imported.added_decks, imported.added_cards), (3, 3));
+
+        let storage = Storage::open(&collection_path).unwrap();
+        assert_eq!(
+            storage.bundle_deck_ids("ja-JP").unwrap(),
+            (0..3).map(bundle_deck_id).collect::<Vec<_>>()
+        );
+        let fresh_schedule = storage.load_schedule(&bundle_card_id(0)).unwrap();
+        assert_ne!(fresh_schedule, learned_schedule);
+        assert_eq!(fresh_schedule.version, 0);
+        assert_eq!(fresh_schedule.lifecycle, CardLifecycle::Unseen);
+        assert!(
+            storage
+                .review_events(&bundle_card_id(0))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn bundle_removal_keeps_managed_media_referenced_by_unrelated_content() {
         let directory = tempdir().unwrap();
         let collection_path = directory.path().join("collection.db");
@@ -1929,17 +2026,29 @@ mod tests {
         let archive = read_archive(&archive_path).unwrap();
         let bundle = build_pristine_bundle_import(&archive.collection, 400_000).unwrap();
         let mut storage = Storage::open(&collection_path).unwrap();
-        for stage in &bundle.decks {
+        for (stage_index, stage) in bundle.decks.iter().enumerate() {
             storage.create_deck(&stage.deck).unwrap();
             for imported_note in &stage.notes {
-                storage.create_source_note(&imported_note.note).unwrap();
-                for imported_card in &imported_note.cards {
+                let mut stored_note = imported_note.clone();
+                if stage_index == 5 {
+                    stored_note.note.source_item.language_tag = Some("ko-KR".into());
+                }
+                storage.create_source_note(&stored_note.note).unwrap();
+                for imported_card in &stored_note.cards {
                     storage
                         .create_card(&imported_card.card, &imported_card.initial_schedule)
                         .unwrap();
                 }
             }
         }
+        let manual_note =
+            distinct_test_note(&bundle.decks[0].notes[0], "-manual", &bundle_deck_id(0));
+        let manual_source_id = manual_note.note.source_item.id.clone();
+        create_test_note(&mut storage, &manual_note);
+        storage
+            .move_deck_cards(&[bundle_card_id(4)], DEFAULT_DECK_ID, 405_000)
+            .unwrap();
+        let moved_before = storage.load_study_card(&bundle_card_id(4)).unwrap();
         let first_deck_id = bundle_deck_id(0);
         let mut personalized_deck = storage.get_deck(&first_deck_id).unwrap();
         personalized_deck.name = "My Japanese foundation".into();
@@ -1980,6 +2089,15 @@ mod tests {
                 430_000,
             )
             .unwrap();
+        service
+            .apply_deck_card_action(&DeckCardActionRequest {
+                deck_id: first_deck_id.clone(),
+                card_ids: vec![bundle_card_id(0)],
+                action: DeckCardActionDto::Suspend,
+                destination_deck_id: None,
+                now_ms: 435_000,
+            })
+            .unwrap();
         let before = {
             let storage = Storage::open(&collection_path).unwrap();
             (
@@ -2000,6 +2118,14 @@ mod tests {
                 .decks
                 .iter()
                 .all(|deck| deck.status == BundleDeckInstallStatusDto::Installed)
+        );
+        assert_eq!(
+            Storage::open(&collection_path)
+                .unwrap()
+                .validate_pristine_bundle_import(&bundle)
+                .unwrap()
+                .source_ids_to_associate,
+            (0..4).map(bundle_source_id).collect::<Vec<_>>()
         );
         let result = service
             .import_bundle(
@@ -2032,6 +2158,7 @@ mod tests {
         assert_eq!(installed.installed_deck_ids.len(), 6);
         assert!(installed.missing_deck_ids.is_empty());
         assert!(installed.unassociated_deck_ids.is_empty());
+        assert!(installed.source_ids_to_associate.is_empty());
         drop(storage);
         assert!(
             !service
@@ -2039,6 +2166,38 @@ mod tests {
                 .unwrap()
                 .can_import
         );
+
+        let removal = service.list_installed_bundles().unwrap().remove(0);
+        service
+            .remove_bundle(
+                &BundleRemovalRequest {
+                    language_tag: removal.language_tag,
+                    expected_decks: removal.decks,
+                    expected_cards: removal.cards,
+                    now_ms: 600_000,
+                },
+                |_| {},
+            )
+            .unwrap();
+
+        let storage = Storage::open(&collection_path).unwrap();
+        for stage in 0..4 {
+            assert!(storage.get_source_note(&bundle_source_id(stage)).is_err());
+            assert!(storage.review_events(&bundle_card_id(stage)).is_err());
+        }
+        assert_eq!(
+            storage.load_study_card(&bundle_card_id(4)).unwrap(),
+            moved_before
+        );
+        let personal_notes = storage.library_notes().unwrap();
+        for source_id in [&manual_source_id, &bundle_source_id(5)] {
+            let note = personal_notes
+                .iter()
+                .find(|note| &note.note.source_item.id == source_id)
+                .unwrap();
+            assert_eq!(note.note.source_item.deck_id, DEFAULT_DECK_ID);
+            assert_eq!(note.deleted_at_ms, Some(600_000));
+        }
     }
 
     #[test]
