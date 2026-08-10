@@ -1056,9 +1056,10 @@
 
   .prompt mark {
     padding: 0.08em 0.18em;
-    border-radius: var(--radius-sm);
-    color: var(--primary);
-    background: var(--accent);
+    border-radius: 0;
+    color: var(--primary-foreground);
+    background: var(--primary);
+    font-weight: 700;
   }
 
   .prompt-tools,

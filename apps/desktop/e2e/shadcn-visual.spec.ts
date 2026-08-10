@@ -366,6 +366,21 @@ for (const revealCase of [
     theme: "dark",
     viewport: "medium",
   },
+  {
+    name: "study-reveal-desktop-light-korean",
+    fixture: "korean",
+    answer: "읽어요",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "study-reveal-narrow-dark-long-answer",
+    fixture: "longanswer",
+    answer:
+      "this intentionally long highlighted answer includes 한국어, 日本語, and العربية while wrapping naturally across several lines",
+    theme: "dark",
+    viewport: "narrow",
+  },
 ] as const) {
   test(`visual regression: ${revealCase.name}`, async ({ page }) => {
     await prepare(page, {

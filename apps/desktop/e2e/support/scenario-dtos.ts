@@ -95,6 +95,15 @@ const content = {
     languageTag: "fr",
     direction: "ltr",
   },
+  korean: {
+    prompt: "저는 매일 책을 […]",
+    fullSource: "저는 매일 책을 읽어요",
+    answer: "읽어요",
+    rawResponse: "읽어요",
+    normalizedResponse: "읽어요",
+    languageTag: "ko",
+    direction: "auto",
+  },
   rtl: {
     prompt: "من هر روز […] می‌خوانم",
     fullSource: "من هر روز کتاب می‌خوانم",
@@ -121,6 +130,19 @@ const content = {
     answer: "三時",
     rawResponse: "三時",
     normalizedResponse: "三時",
+    languageTag: null,
+    direction: "auto",
+  },
+  longanswer: {
+    prompt: "Remember: […] before tomorrow.",
+    fullSource:
+      "Remember: this intentionally long highlighted answer includes 한국어, 日本語, and العربية while wrapping naturally across several lines before tomorrow.",
+    answer:
+      "this intentionally long highlighted answer includes 한국어, 日本語, and العربية while wrapping naturally across several lines",
+    rawResponse:
+      "this intentionally long highlighted answer includes 한국어, 日本語, and العربية while wrapping naturally across several lines",
+    normalizedResponse:
+      "this intentionally long highlighted answer includes 한국어, 日本語, and العربية while wrapping naturally across several lines",
     languageTag: null,
     direction: "auto",
   },
