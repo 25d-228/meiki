@@ -186,6 +186,9 @@ test("keeps bundle-stage deletion copy and Move cards instead behavior on Decks"
   await expect(moveDialog).toContainText(
     "Move active cards to another deck, then delete “Japanese 00 — Kana, sound, and Japanese input”.",
   );
+  await expect(moveDialog.locator('option[value="default-deck"]')).toHaveCount(
+    1,
+  );
   await moveDialog.getByLabel("Destination deck").selectOption("default-deck");
   await moveDialog
     .getByRole("button", { name: "Move cards and delete" })
@@ -347,6 +350,39 @@ test("hides the empty internal default deck", async ({ page }) => {
 
   await expect(page.getByTestId("deck-default-deck")).toHaveCount(0);
   await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
+});
+
+test("offers hidden empty Unsorted as the direct deletion destination", async ({
+  page,
+}) => {
+  await page.goto("/?decks=empty-default");
+  await openDecks(page);
+  await expect(page.getByTestId("deck-default-deck")).toHaveCount(0);
+  await expect(page.locator(".deck-grid").getByTestId(/^deck-/)).toHaveCount(1);
+  await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Move cards instead" })
+    .click();
+
+  const moveDialog = page.getByRole("dialog", { name: "Move cards instead" });
+  const destination = moveDialog.getByLabel("Destination deck");
+  await expect(destination.locator('option[value="default-deck"]')).toHaveText(
+    "Unsorted",
+  );
+  await destination.selectOption("default-deck");
+  await moveDialog
+    .getByRole("button", { name: "Move cards and delete" })
+    .click();
+
+  await expect(page.getByTestId("deck-travel-deck")).toHaveCount(0);
+  expect(await deleteDeckRequestCount(page)).toBe(1);
+  expect((await lastRequest(page, "delete_deck"))?.args).toMatchObject({
+    request: {
+      deck_id: "travel-deck",
+      move_cards_to_deck_id: "default-deck",
+    },
+  });
 });
 
 test("previews and adds the complete Japanese bundle in ordered progress stages", async ({

@@ -527,7 +527,10 @@ export async function installMockApi(page: Page): Promise<void> {
         }
         if (params.get("decks") === "empty-default") {
           return clone(
-            dtos.deckSummaries.filter((deck) => deck.id !== "default-deck"),
+            dtos.deckSummaries.filter(
+              (deck) =>
+                deck.id !== "default-deck" && !deletedDeckIds.has(deck.id),
+            ),
           );
         }
         return clone(

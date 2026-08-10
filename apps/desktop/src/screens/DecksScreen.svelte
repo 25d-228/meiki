@@ -142,6 +142,7 @@
   }
 
   function openDeleteDeck(deck: DeckSummaryDto): void {
+    if (deck.id === defaultDeckId) return;
     deleteTarget = deck;
     deleteFlowOpen = true;
   }
@@ -453,7 +454,15 @@
     deckName={deleteTarget.name}
     isBundleStage={deleteTarget.is_bundle_stage}
     cardCount={deleteTarget.total_cards}
-    destinationDecks={decks.filter((deck) => deck.id !== deleteTarget?.id)}
+    destinationDecks={[
+      ...(deleteTarget.id !== defaultDeckId &&
+      !decks.some((deck) => deck.id === defaultDeckId)
+        ? [{ id: defaultDeckId, name: "Unsorted" }]
+        : []),
+      ...decks
+        .filter((deck) => deck.id !== deleteTarget?.id)
+        .map(({ id, name }) => ({ id, name })),
+    ]}
     onCommitted={handleDeckDeletionCommitted}
     onFinished={finishDeckDeletion}
   />
