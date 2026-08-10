@@ -27,6 +27,63 @@ async function lastRequest(
   }, command);
 }
 
+async function openDeckDeleteAction(
+  page: import("@playwright/test").Page,
+  deckId: string,
+  deckName: string,
+): Promise<void> {
+  await page
+    .getByTestId(`deck-${deckId}`)
+    .getByRole("button", { name: `Actions for ${deckName}` })
+    .click();
+  await page.getByRole("menuitem", { name: "Delete deck" }).click();
+}
+
+async function seedStudyState(
+  page: import("@playwright/test").Page,
+  queueDeckId: string,
+  todayDeckId: string,
+): Promise<void> {
+  await page.evaluate(
+    ({ deckId, selectedTodayDeckId }) => {
+      localStorage.setItem(
+        "meiki-active-study-queue",
+        JSON.stringify({
+          version: 2,
+          deckId,
+          entries: [
+            {
+              card_id: "due-card",
+              card_content_version: 0,
+              schedule_version: 0,
+            },
+          ],
+          position: 0,
+          startedAtMs: 1_700_000_000_000,
+          pendingReview: null,
+        }),
+      );
+      sessionStorage.setItem(
+        "meiki-active-study-session",
+        `session for ${deckId}`,
+      );
+      localStorage.setItem("meiki-today-deck", selectedTodayDeckId);
+    },
+    { deckId: queueDeckId, selectedTodayDeckId: todayDeckId },
+  );
+}
+
+async function deleteDeckRequestCount(
+  page: import("@playwright/test").Page,
+): Promise<number> {
+  return page.evaluate(
+    () =>
+      (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+        (request) => request.command === "delete_deck",
+      ).length,
+  );
+}
+
 async function confirmJapaneseBundleRemoval(
   page: import("@playwright/test").Page,
 ): Promise<void> {
@@ -52,6 +109,237 @@ test("includes suspended cards in Total and presents the populated default deck 
     /Total\s*3\s*Due\s*1\s*New\s*1/,
   );
 });
+
+test("opens each deletable deck's actions by keyboard and keeps Unsorted non-deletable", async ({
+  page,
+}) => {
+  await openDecks(page);
+
+  const actions = page.getByRole("button", {
+    name: "Actions for Travel phrases",
+  });
+  await actions.focus();
+  await page.keyboard.press("Enter");
+  const deleteAction = page.getByRole("menuitem", { name: "Delete deck" });
+  await expect(deleteAction).toBeVisible();
+  await expect(deleteAction).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(actions).toBeFocused();
+  await expect(
+    page
+      .getByTestId("deck-default-deck")
+      .getByRole("button", { name: /Actions for/ }),
+  ).toHaveCount(0);
+});
+
+test("deletes an ordinary deck from its card once and refreshes Decks in place", async ({
+  page,
+}) => {
+  await openDecks(page);
+  await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
+
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete “Travel phrases”?",
+  });
+  await expect(confirmation).toContainText(
+    "Its 2 cards will be moved to Trash.",
+  );
+  await expect(confirmation.getByRole("textbox")).toHaveCount(0);
+  await confirmation.getByRole("button", { name: "Delete deck" }).click();
+
+  await expect(page.getByTestId("deck-travel-deck")).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Decks", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByText("Deleted Travel phrases.")).toBeVisible();
+  expect(await deleteDeckRequestCount(page)).toBe(1);
+  expect((await lastRequest(page, "delete_deck"))?.args).toMatchObject({
+    request: {
+      deck_id: "travel-deck",
+      move_cards_to_deck_id: null,
+      confirmation: "Travel phrases",
+    },
+  });
+});
+
+test("keeps bundle-stage deletion copy and Move cards instead behavior on Decks", async ({
+  page,
+}) => {
+  await page.goto("/?bundleRemoval=installed");
+  await openDecks(page);
+  await openDeckDeleteAction(
+    page,
+    "deck:ja-JP:00",
+    "Japanese 00 — Kana, sound, and Japanese input",
+  );
+
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete “Japanese 00 — Kana, sound, and Japanese input”?",
+  });
+  await expect(confirmation).toContainText(
+    "Bundled cards in this deck will be permanently removed. Personal cards will be moved to Trash.",
+  );
+  await confirmation
+    .getByRole("button", { name: "Move cards instead" })
+    .click();
+  const moveDialog = page.getByRole("dialog", { name: "Move cards instead" });
+  await expect(moveDialog).toContainText(
+    "Move active cards to another deck, then delete “Japanese 00 — Kana, sound, and Japanese input”.",
+  );
+  await moveDialog.getByLabel("Destination deck").selectOption("default-deck");
+  await moveDialog
+    .getByRole("button", { name: "Move cards and delete" })
+    .click();
+
+  await expect(page.getByTestId("deck-deck:ja-JP:00")).toHaveCount(0);
+  expect(await deleteDeckRequestCount(page)).toBe(1);
+  expect((await lastRequest(page, "delete_deck"))?.args).toMatchObject({
+    request: {
+      deck_id: "deck:ja-JP:00",
+      move_cards_to_deck_id: "default-deck",
+    },
+  });
+});
+
+test("shows the shared monotonic deletion progress from a deck card", async ({
+  page,
+}) => {
+  await page.goto("/?deckDeletion=progress");
+  await openDecks(page);
+  await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+
+  const dialog = page.getByRole("dialog", {
+    name: "Deleting “Travel phrases”",
+  });
+  const progressbar = dialog.getByRole("progressbar");
+  await expect(dialog).toContainText("Preparing");
+  await expect(progressbar).not.toHaveAttribute("aria-valuenow");
+  await expect(dialog).toContainText("Removing cards");
+  await expect(dialog).toContainText("0 / 3,000");
+  await expect(dialog).toContainText("3,000 / 3,000");
+  await expect(dialog).toContainText("Cleaning audio");
+  await expect(dialog).toContainText("2,999 / 2,999");
+  await expect(dialog).toContainText("Finalizing");
+  await expect(progressbar).not.toHaveAttribute("aria-valuenow");
+  await expect(page.getByTestId("deck-travel-deck")).toHaveCount(0);
+});
+
+test("preserves queue, session, Today selection, and deck after a pre-commit failure", async ({
+  page,
+}) => {
+  await seedStudyState(page, "travel-deck", "travel-deck");
+  const queueBefore = await page.evaluate(() =>
+    localStorage.getItem("meiki-active-study-queue"),
+  );
+  const sessionBefore = await page.evaluate(() =>
+    sessionStorage.getItem("meiki-active-study-session"),
+  );
+  await page.goto("/?deckDeletion=precommit-failure");
+  await openDecks(page);
+  await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+
+  const failure = page.getByRole("dialog", { name: "Deck was not deleted" });
+  await expect(failure).toContainText("Could not delete the deck. Try again.");
+  await expect(failure).not.toContainText("raw fixture id");
+  await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
+  expect(await deleteDeckRequestCount(page)).toBe(1);
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-active-study-queue")),
+  ).toBe(queueBefore);
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("meiki-active-study-session"),
+    ),
+  ).toBe(sessionBefore);
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-today-deck")),
+  ).toBe("travel-deck");
+});
+
+test("refreshes the deleted deck while preserving the post-commit cleanup warning", async ({
+  page,
+}) => {
+  await page.goto("/?deckDeletion=postcommit-failure");
+  await openDecks(page);
+  await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+
+  const warning = page.getByRole("dialog", { name: "Deck deleted" });
+  await expect(warning).toContainText(
+    "Deck deleted, but some unused audio could not be cleaned up.",
+  );
+  await expect(page.getByTestId("deck-travel-deck")).toHaveCount(0);
+  await warning.getByRole("button", { name: "Close" }).last().click();
+  await expect(
+    page.getByRole("heading", { name: "Decks", level: 1 }),
+  ).toBeVisible();
+  expect(await deleteDeckRequestCount(page)).toBe(1);
+});
+
+test("clears only the deleted deck's focused queue and resets its Today selection", async ({
+  page,
+}) => {
+  await seedStudyState(page, "travel-deck", "travel-deck");
+  await page.goto("/");
+  await openDecks(page);
+  await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-active-study-queue")),
+  ).toBeNull();
+  expect(
+    await page.evaluate(() =>
+      sessionStorage.getItem("meiki-active-study-session"),
+    ),
+  ).toBeNull();
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-today-deck")),
+  ).toBe("__all_decks__");
+});
+
+for (const preservedQueue of ["__all_decks__", "default-deck"] as const) {
+  test(`preserves the ${preservedQueue} queue and unrelated Today state`, async ({
+    page,
+  }) => {
+    await seedStudyState(page, preservedQueue, "default-deck");
+    await page.goto("/");
+    await openDecks(page);
+    await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
+    await page
+      .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+      .getByRole("button", { name: "Delete deck" })
+      .click();
+
+    expect(
+      await page.evaluate(() =>
+        JSON.parse(localStorage.getItem("meiki-active-study-queue") ?? "null"),
+      ),
+    ).toMatchObject({ deckId: preservedQueue, position: 0 });
+    expect(
+      await page.evaluate(() =>
+        sessionStorage.getItem("meiki-active-study-session"),
+      ),
+    ).toBe(`session for ${preservedQueue}`);
+    expect(
+      await page.evaluate(() => localStorage.getItem("meiki-today-deck")),
+    ).toBe("default-deck");
+  });
+}
 
 test("hides the empty internal default deck", async ({ page }) => {
   await page.goto("/?decks=empty-default");
