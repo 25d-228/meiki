@@ -453,8 +453,22 @@ test("IME composition stays separate and its committing Enter never submits prem
   const input = await startPractice(page);
 
   await dispatchComposition(input, "compositionstart", "");
-  await dispatchComposition(input, "compositionupdate", "あ");
-  await expect(page.getByTestId("typing-composition")).toHaveText("あ");
+  await dispatchComposition(input, "compositionupdate", "あいうえお");
+  for (const [code, key] of [
+    ["KeyA", "a"],
+    ["KeyI", "i"],
+    ["KeyU", "u"],
+    ["KeyE", "e"],
+    ["KeyO", "o"],
+  ]) {
+    await dispatchKey(input, "keydown", {
+      code,
+      key,
+      isComposing: true,
+    });
+    await dispatchKey(input, "keyup", { code, key, isComposing: true });
+  }
+  await expect(page.getByTestId("typing-composition")).toHaveText("あいうえお");
   await expect(page.getByTestId("typing-committed-output")).toHaveText("None");
   await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
   await expect(page.locator("#typing-live-status")).not.toContainText(
@@ -468,17 +482,19 @@ test("IME composition stays separate and its committing Enter never submits prem
   });
   await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
   await input.evaluate((element) => {
-    (element as HTMLInputElement).value = "あ";
+    (element as HTMLInputElement).value = "あいうえお";
   });
-  await dispatchComposition(input, "compositionend", "あ");
+  await dispatchComposition(input, "compositionend", "あいうえお");
   await dispatchKey(input, "keyup", { code: "Enter", key: "Enter" });
   await expect(page.getByTestId("typing-composition")).toHaveText("None");
-  await expect(page.getByTestId("typing-committed-output")).toHaveText("あ");
+  await expect(page.getByTestId("typing-committed-output")).toHaveText(
+    "あいうえお",
+  );
   await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
 
   await input.press("Enter");
   await expect(page.locator("#typing-live-status")).toContainText(
-    "Correct — あ",
+    "Correct — あいうえお",
   );
   await expect(page.getByRole("button", { name: "Next" })).toBeEnabled();
   expect(
@@ -490,14 +506,14 @@ test("IME composition stays separate and its committing Enter never submits prem
         localStorage.getItem("meiki-typing-completed"),
       )) ?? "[]",
     ),
-  ).toContain("typing-japanese-foundation");
+  ).toContain("typing-japanese-basic-hiragana");
 
   await page.reload();
   await openTyping(page);
   await expect(
     page.getByRole("button", { name: "Japanese — Romaji input" }),
   ).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByText("Completed", { exact: true })).toBeVisible();
+  await expect(page.getByText("Basic hiragana", { exact: true })).toBeVisible();
 });
 
 test("committed-text comparison treats a decomposed accent as one matching grapheme", async ({

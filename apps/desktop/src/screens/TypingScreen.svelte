@@ -8,6 +8,7 @@
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
+  import JapaneseConversionSandbox from "../components/JapaneseConversionSandbox.svelte";
   import TypingPractice from "../components/TypingPractice.svelte";
   import {
     detectInstructionPlatform,
@@ -253,6 +254,10 @@
         </p>
       </Card.Content>
     </Card.Root>
+  {/if}
+
+  {#if selectedLanguage === "japanese"}
+    <JapaneseConversionSandbox />
   {/if}
 </section>
 

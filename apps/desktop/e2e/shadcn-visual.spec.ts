@@ -219,6 +219,18 @@ for (const typingCase of [
     viewport: "narrow",
     language: "Korean — 2-set Hangul",
   },
+  {
+    name: "typing-japanese-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+    language: "Japanese — Romaji input",
+  },
+  {
+    name: "typing-japanese-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+    language: "Japanese — Romaji input",
+  },
 ] as const) {
   test(`visual regression: ${typingCase.name}`, async ({ page }) => {
     await page.addInitScript(() => {
@@ -239,7 +251,7 @@ for (const typingCase of [
     });
     await page.getByRole("button", { name: typingCase.language }).click();
     await page.getByRole("button", { name: "Start practice" }).click();
-    const keyboard = page.getByTestId("typing-keyboard");
+    const keyboard = page.locator(".practice").getByTestId("typing-keyboard");
     await expect(keyboard).toBeVisible();
     expect(
       await page.evaluate(
