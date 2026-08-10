@@ -124,10 +124,23 @@ pub struct ArchivePreview {
     pub collection: PortableCollection,
 }
 
-struct ArchiveContents {
+/// An archive whose manifest and collection relationships are validated.
+///
+/// Media payloads remain unread until [`Self::read_next_media`] is called.
+#[derive(Debug)]
+pub struct OpenedArchive {
+    pub manifest: ArchiveManifest,
+    pub collection: PortableCollection,
     archive: ZipArchive<File>,
-    manifest: ArchiveManifest,
-    collection: PortableCollection,
+    next_media_index: usize,
+}
+
+/// One checksum-validated media payload read from an opened archive.
+#[derive(Debug)]
+pub struct ValidatedMediaBytes {
+    pub content_hash: String,
+    pub bytes: Vec<u8>,
+    pub byte_size: u64,
 }
 
 #[derive(Debug, Error)]
@@ -288,7 +301,7 @@ pub fn write_archive(
 /// Returns an error for an unsafe container, invalid manifest or collection,
 /// mismatched counts, or inconsistent media metadata.
 pub fn read_archive_preview(path: &Path) -> Result<ArchivePreview, PortableError> {
-    let contents = read_archive_contents(path)?;
+    let contents = open_archive(path)?;
     Ok(ArchivePreview {
         manifest: contents.manifest,
         collection: contents.collection,
@@ -304,32 +317,42 @@ pub fn read_archive_preview(path: &Path) -> Result<ArchivePreview, PortableError
 /// Returns an error before exposing collection data when any entry, identity,
 /// relationship, size, or checksum is invalid.
 pub fn read_archive(path: &Path) -> Result<ValidatedArchive, PortableError> {
-    let ArchiveContents {
-        mut archive,
-        manifest,
-        collection,
-    } = read_archive_contents(path)?;
+    let mut archive = open_archive(path)?;
     let temporary =
         tempfile::tempdir().map_err(|error| portable_io("create import workspace", path, error))?;
-    let mut media_objects = Vec::with_capacity(manifest.media.len());
-    for (index, entry) in manifest.media.iter().enumerate() {
+    let mut media_objects = Vec::with_capacity(archive.manifest.media.len());
+    while let Some(media) = archive.read_next_media()? {
+        let index = media_objects.len();
         let output = temporary.path().join(index.to_string());
-        extract_media_entry(&mut archive, entry, &output)?;
+        let mut destination =
+            File::create(&output).map_err(|error| portable_io("create media", &output, error))?;
+        destination
+            .write_all(&media.bytes)
+            .map_err(|error| portable_io("write media", &output, error))?;
+        destination
+            .sync_all()
+            .map_err(|error| portable_io("sync media", &output, error))?;
         media_objects.push(ValidatedMediaObject {
-            content_hash: entry.content_hash.clone(),
+            content_hash: media.content_hash,
             path: output,
-            byte_size: entry.byte_size,
+            byte_size: media.byte_size,
         });
     }
     Ok(ValidatedArchive {
-        manifest,
-        collection,
+        manifest: archive.manifest,
+        collection: archive.collection,
         media_objects,
         _temporary: temporary,
     })
 }
 
-fn read_archive_contents(path: &Path) -> Result<ArchiveContents, PortableError> {
+/// Opens and validates archive metadata and collection data once.
+///
+/// # Errors
+///
+/// Returns an error for an unsafe container, invalid metadata, or invalid
+/// collection relationships. Media payloads are not read.
+pub fn open_archive(path: &Path) -> Result<OpenedArchive, PortableError> {
     let metadata = fs::metadata(path).map_err(|error| portable_io("inspect", path, error))?;
     if !metadata.is_file() || metadata.len() > MAX_ARCHIVE_BYTES {
         return Err(PortableError::ArchiveTooLarge);
@@ -392,11 +415,40 @@ fn read_archive_contents(path: &Path) -> Result<ArchiveContents, PortableError> 
         }
     }
 
-    Ok(ArchiveContents {
+    Ok(OpenedArchive {
         archive,
         manifest,
         collection,
+        next_media_index: 0,
     })
+}
+
+impl OpenedArchive {
+    /// Reads and checksum-validates the next media object without staging it
+    /// in a second temporary filesystem tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the payload is missing, oversized, or does not
+    /// match its manifest size and checksum.
+    pub fn read_next_media(&mut self) -> Result<Option<ValidatedMediaBytes>, PortableError> {
+        let Some(entry) = self.manifest.media.get(self.next_media_index).cloned() else {
+            return Ok(None);
+        };
+        let bytes = read_entry(&mut self.archive, &entry.path, MAX_MEDIA_BYTES)?;
+        if portable_count(bytes.len())? != entry.byte_size {
+            return Err(PortableError::InvalidMedia(entry.content_hash));
+        }
+        if content_hash(&bytes) != entry.content_hash {
+            return Err(PortableError::ChecksumMismatch(entry.content_hash));
+        }
+        self.next_media_index += 1;
+        Ok(Some(ValidatedMediaBytes {
+            content_hash: entry.content_hash,
+            bytes,
+            byte_size: entry.byte_size,
+        }))
+    }
 }
 
 fn upgrade_legacy_policy(collection: &mut PortableCollection) {
@@ -917,48 +969,6 @@ fn validate_manifest(manifest: &ArchiveManifest) -> Result<(), PortableError> {
         }
     }
     Ok(())
-}
-
-fn extract_media_entry<R: Read + Seek>(
-    archive: &mut ZipArchive<R>,
-    entry: &ArchiveMediaEntry,
-    output: &Path,
-) -> Result<(), PortableError> {
-    let mut input = archive.by_name(&entry.path)?;
-    if input.is_dir() || input.size() != entry.byte_size || input.size() > MAX_MEDIA_BYTES {
-        return Err(PortableError::InvalidMedia(entry.content_hash.clone()));
-    }
-    let mut destination =
-        File::create(output).map_err(|error| portable_io("create media", output, error))?;
-    let mut digest = Sha256::new();
-    let mut total = 0_u64;
-    let mut buffer = vec![0_u8; 64 * 1024];
-    loop {
-        let count = input
-            .read(&mut buffer)
-            .map_err(|error| portable_io("read media entry", output, error))?;
-        if count == 0 {
-            break;
-        }
-        total = total
-            .checked_add(portable_count(count)?)
-            .ok_or(PortableError::ArchiveTooLarge)?;
-        if total > entry.byte_size || total > MAX_MEDIA_BYTES {
-            return Err(PortableError::InvalidMedia(entry.content_hash.clone()));
-        }
-        digest.update(&buffer[..count]);
-        destination
-            .write_all(&buffer[..count])
-            .map_err(|error| portable_io("write media", output, error))?;
-    }
-    if total != entry.byte_size
-        || format!("{HASH_PREFIX}{}", hex::encode(digest.finalize())) != entry.content_hash
-    {
-        return Err(PortableError::ChecksumMismatch(entry.content_hash.clone()));
-    }
-    destination
-        .sync_all()
-        .map_err(|error| portable_io("sync media", output, error))
 }
 
 fn archive_names(

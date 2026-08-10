@@ -4,6 +4,7 @@
 //! names remain display metadata and never participate in filesystem paths.
 
 use std::{
+    collections::HashSet,
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -50,8 +51,13 @@ pub enum MediaError {
     MissingObject(String),
     #[error("media object checksum does not match {0}")]
     ChecksumMismatch(String),
+    #[error("media import contains duplicate object: {0}")]
+    DuplicateObject(String),
     #[error("destination already exists: {}", .0.display())]
     DestinationExists(PathBuf),
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[error("fixture media index range overflows u32")]
+    FixtureRangeOverflow,
     #[error("media filesystem operation {operation} failed for {}: {source}", path.display())]
     Io {
         operation: &'static str,
@@ -86,7 +92,28 @@ impl MediaStore {
     /// Returns an error when an object path cannot be created or written.
     #[cfg(any(test, feature = "test-fixtures"))]
     pub fn seed_wav_objects(&self, count: u32) -> Result<Vec<String>, MediaError> {
-        (0..count)
+        self.seed_wav_objects_from(0, count)
+    }
+
+    /// Seeds a deterministic range of distinct valid WAV objects.
+    ///
+    /// This helper is available only to tests and explicit test-fixture
+    /// builds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] when the requested range overflows or an object
+    /// cannot be created.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn seed_wav_objects_from(
+        &self,
+        first_index: u32,
+        count: u32,
+    ) -> Result<Vec<String>, MediaError> {
+        let end = first_index
+            .checked_add(count)
+            .ok_or(MediaError::FixtureRangeOverflow)?;
+        (first_index..end)
             .map(|index| {
                 let bytes = fixture_wav(index);
                 let hash = content_hash(&bytes);
@@ -138,31 +165,107 @@ impl MediaStore {
             return Err(MediaError::FileTooLarge);
         }
 
-        let detected = infer::get(&bytes).ok_or(MediaError::UnsupportedFormat)?;
-        let (kind, media_type) = supported_media_type(detected.mime_type())?;
-        validate_media_structure(media_type, &bytes)?;
         let content_hash = content_hash(&bytes);
-        let destination = self.object_path(&content_hash)?;
-        let deduplicated = if destination.exists() {
-            self.verify(&content_hash)?;
+        self.import_bytes(&content_hash, &bytes, sanitized_file_name(source))
+    }
+
+    /// Imports one bounded batch after validating every checksum and looking
+    /// up existing managed objects before writing new ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] when an expected hash is duplicated, any bytes
+    /// or existing object are invalid, or persistence fails. New objects from
+    /// the failing batch are removed before the error is returned.
+    pub fn import_checked_batch<'a>(
+        &self,
+        objects: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+    ) -> Result<Vec<ImportedMedia>, MediaError> {
+        let objects = objects.into_iter().collect::<Vec<_>>();
+        let mut hashes = HashSet::with_capacity(objects.len());
+        let mut inspected = Vec::with_capacity(objects.len());
+        for (expected_content_hash, bytes) in &objects {
+            if !hashes.insert(*expected_content_hash) {
+                return Err(MediaError::DuplicateObject(
+                    (*expected_content_hash).to_owned(),
+                ));
+            }
+            if u64::try_from(bytes.len()).map_or(true, |length| length > MAX_MEDIA_BYTES) {
+                return Err(MediaError::FileTooLarge);
+            }
+            canonical_digest(expected_content_hash)?;
+            if content_hash(bytes) != *expected_content_hash {
+                return Err(MediaError::ChecksumMismatch(
+                    (*expected_content_hash).to_owned(),
+                ));
+            }
+            inspected.push(self.inspect_bytes(expected_content_hash, bytes, String::new())?);
+        }
+
+        for media in &mut inspected {
+            if media.object_path.exists() {
+                self.verify(&media.content_hash)?;
+                media.deduplicated = true;
+            }
+        }
+        let mut new_hashes = Vec::new();
+        for (media, (_, bytes)) in inspected.iter_mut().zip(objects) {
+            if media.deduplicated {
+                continue;
+            }
+            match write_object_atomically(&media.object_path, bytes) {
+                Ok(true) => new_hashes.push(media.content_hash.clone()),
+                Ok(false) => media.deduplicated = true,
+                Err(error) => {
+                    for hash in new_hashes.iter().rev() {
+                        self.remove(hash)?;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(inspected)
+    }
+
+    fn import_bytes(
+        &self,
+        content_hash: &str,
+        bytes: &[u8],
+        original_file_name: String,
+    ) -> Result<ImportedMedia, MediaError> {
+        let mut imported = self.inspect_bytes(content_hash, bytes, original_file_name)?;
+        imported.deduplicated = if imported.object_path.exists() {
+            self.verify(content_hash)?;
             true
         } else {
-            write_object_atomically(&destination, &bytes)?;
-            false
+            !write_object_atomically(&imported.object_path, bytes)?
         };
-        let (width, height) = image_dimensions(media_type, &bytes).unwrap_or((None, None));
-        let duration_ms = audio_duration_ms(media_type, &bytes);
+        Ok(imported)
+    }
+
+    fn inspect_bytes(
+        &self,
+        content_hash: &str,
+        bytes: &[u8],
+        original_file_name: String,
+    ) -> Result<ImportedMedia, MediaError> {
+        let detected = infer::get(bytes).ok_or(MediaError::UnsupportedFormat)?;
+        let (kind, media_type) = supported_media_type(detected.mime_type())?;
+        validate_media_structure(media_type, bytes)?;
+        let destination = self.object_path(content_hash)?;
+        let (width, height) = image_dimensions(media_type, bytes).unwrap_or((None, None));
+        let duration_ms = audio_duration_ms(media_type, bytes);
         Ok(ImportedMedia {
-            content_hash,
+            content_hash: content_hash.to_owned(),
             kind,
             media_type: media_type.to_owned(),
             byte_size: u64::try_from(bytes.len()).map_err(|_| MediaError::FileTooLarge)?,
-            original_file_name: sanitized_file_name(source),
+            original_file_name,
             width,
             height,
             duration_ms,
             object_path: destination,
-            deduplicated,
+            deduplicated: false,
         })
     }
 
@@ -433,7 +536,7 @@ fn copy_atomically(source: &Path, destination: &Path) -> Result<(), MediaError> 
     Ok(())
 }
 
-fn write_object_atomically(destination: &Path, bytes: &[u8]) -> Result<(), MediaError> {
+fn write_object_atomically(destination: &Path, bytes: &[u8]) -> Result<bool, MediaError> {
     let parent = destination.parent().ok_or_else(|| {
         media_io(
             "resolve object parent",
@@ -453,12 +556,12 @@ fn write_object_atomically(destination: &Path, bytes: &[u8]) -> Result<(), Media
         .sync_all()
         .map_err(|error| media_io("sync object", destination, error))?;
     match temporary.persist_noclobber(destination) {
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(true),
         Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
             let expected = content_hash(bytes);
             let actual = hash_file(destination)?;
             if actual == expected {
-                Ok(())
+                Ok(false)
             } else {
                 Err(MediaError::ChecksumMismatch(expected))
             }
@@ -767,6 +870,40 @@ mod tests {
         existing.merge_from_backup(&backup).unwrap();
         existing.merge_from_backup(&backup).unwrap();
         assert_eq!(existing.verify_all().unwrap(), vec![imported.content_hash]);
+    }
+
+    #[test]
+    fn checked_batch_validates_before_writing_and_reuses_existing_objects() {
+        let directory = tempdir().unwrap();
+        let store = MediaStore::new(directory.path().join("media"));
+        let first_bytes = wav(100);
+        let second_bytes = wav(200);
+        let first_hash = content_hash(&first_bytes);
+        let second_hash = content_hash(&second_bytes);
+
+        let imported = store
+            .import_checked_batch([
+                (first_hash.as_str(), first_bytes.as_slice()),
+                (second_hash.as_str(), second_bytes.as_slice()),
+            ])
+            .unwrap();
+        assert!(imported.iter().all(|media| !media.deduplicated));
+        let deduplicated = store
+            .import_checked_batch([
+                (first_hash.as_str(), first_bytes.as_slice()),
+                (second_hash.as_str(), second_bytes.as_slice()),
+            ])
+            .unwrap();
+        assert!(deduplicated.iter().all(|media| media.deduplicated));
+
+        let mismatched = store.import_checked_batch([
+            (first_hash.as_str(), first_bytes.as_slice()),
+            (second_hash.as_str(), first_bytes.as_slice()),
+        ]);
+        assert!(matches!(mismatched, Err(MediaError::ChecksumMismatch(_))));
+        let mut expected_hashes = vec![first_hash, second_hash];
+        expected_hashes.sort();
+        assert_eq!(store.verify_all().unwrap(), expected_hashes);
     }
 
     #[test]
