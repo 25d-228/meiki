@@ -26,6 +26,7 @@ test("all primary screens have labelled responsive shells", async ({
     ["Today", "Today"],
     ["Decks", "Decks"],
     ["Add", "Add / Edit card"],
+    ["Typing", "Typing"],
     ["Settings", "Settings"],
   ] as const;
 

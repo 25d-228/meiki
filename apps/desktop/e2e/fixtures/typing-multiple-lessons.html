@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Typing multiple lessons fixture</title>
+  </head>
+  <body>
+    <main id="fixture"></main>
+    <script type="module">
+      import { mount } from "svelte";
+
+      import "/src/app.css";
+      import TypingScreen from "/src/screens/TypingScreen.svelte";
+      import { typingLessons } from "/src/lib/typing-lessons.ts";
+
+      const firstKoreanLesson = typingLessons.find(
+        (lesson) => lesson.id === "typing-korean-foundation",
+      );
+      if (!firstKoreanLesson) throw new Error("Korean foundation is missing");
+      const firstKoreanIndex = typingLessons.indexOf(firstKoreanLesson);
+      typingLessons.splice(firstKoreanIndex + 1, 0, {
+        ...firstKoreanLesson,
+        id: "typing-korean-fixture-second",
+        title: "Second Korean fixture lesson",
+      });
+
+      mount(TypingScreen, {
+        target: document.querySelector("#fixture"),
+      });
+    </script>
+  </body>
+</html>

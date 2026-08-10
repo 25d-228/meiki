@@ -3,7 +3,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { installMockApi } from "./support/mock-api";
 
 type Theme = "system" | "light" | "dark";
-type Screen = "Today" | "Study" | "Decks" | "Deck" | "Add" | "Settings";
+type Screen =
+  "Today" | "Study" | "Decks" | "Deck" | "Add" | "Typing" | "Settings";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
@@ -21,7 +22,7 @@ async function chooseTheme(page: Page, theme: Theme): Promise<void> {
 
 async function navigatePrimary(
   page: Page,
-  screen: "Today" | "Decks" | "Add" | "Settings",
+  screen: "Today" | "Decks" | "Add" | "Typing" | "Settings",
 ): Promise<void> {
   const openNavigation = page.getByRole("button", {
     name: "Open navigation",
@@ -194,6 +195,55 @@ for (const visualCase of visualCases) {
     await expect(page).toHaveScreenshot(`${visualCase.name}.png`, {
       animations: "disabled",
       caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
+for (const typingCase of [
+  {
+    name: "typing-practice-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+    language: "Korean — 2-set Hangul",
+  },
+  {
+    name: "typing-practice-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+    language: "French — Dead-key accents",
+  },
+] as const) {
+  test(`visual regression: ${typingCase.name}`, async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "platform", {
+        configurable: true,
+        get: () => "MacIntel",
+      });
+      Object.defineProperty(navigator, "userAgentData", {
+        configurable: true,
+        get: () => ({ platform: "macOS" }),
+      });
+    });
+    await prepare(page, {
+      route: "/",
+      screen: "Typing",
+      theme: typingCase.theme,
+      viewport: typingCase.viewport,
+    });
+    await page.getByRole("button", { name: typingCase.language }).click();
+    await page.getByRole("button", { name: "Start practice" }).click();
+    const keyboard = page.getByTestId("typing-keyboard");
+    await expect(keyboard).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${typingCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      fullPage: true,
       maxDiffPixelRatio: 0.12,
     });
   });

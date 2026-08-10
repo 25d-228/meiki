@@ -9,7 +9,7 @@ test.beforeEach(async ({ page }) => {
 
 async function navigatePrimary(
   page: Page,
-  screen: "Today" | "Decks" | "Add" | "Settings",
+  screen: "Today" | "Decks" | "Add" | "Typing" | "Settings",
 ): Promise<void> {
   const openNavigation = page.getByRole("button", {
     name: "Open navigation",
@@ -182,7 +182,7 @@ test("keeps one monotonic import visible and refreshes Decks after background su
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
-  for (const screen of ["Add", "Settings", "Decks"] as const) {
+  for (const screen of ["Add", "Typing", "Settings", "Decks"] as const) {
     await navigatePrimary(page, screen);
     await expect(card).toBeVisible();
   }

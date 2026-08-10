@@ -2,6 +2,7 @@
   import RiBookShelfLine from "remixicon-svelte/icons/book-shelf-line";
   import RiCalendarTodoLine from "remixicon-svelte/icons/calendar-todo-line";
   import RiEditLine from "remixicon-svelte/icons/edit-line";
+  import RiKeyboardLine from "remixicon-svelte/icons/keyboard-line";
   import RiMenuLine from "remixicon-svelte/icons/menu-line";
   import RiSettings3Line from "remixicon-svelte/icons/settings-3-line";
   import { onMount, tick } from "svelte";
@@ -30,11 +31,13 @@
   import SettingsScreen from "./screens/SettingsScreen.svelte";
   import StudyScreen from "./screens/StudyScreen.svelte";
   import TodayScreen from "./screens/TodayScreen.svelte";
+  import TypingScreen from "./screens/TypingScreen.svelte";
 
   const menuItems = [
     { id: "today", label: "Today", icon: RiCalendarTodoLine },
     { id: "decks", label: "Decks", icon: RiBookShelfLine },
     { id: "editor", label: "Add", icon: RiEditLine },
+    { id: "typing", label: "Typing", icon: RiKeyboardLine },
     { id: "settings", label: "Settings", icon: RiSettings3Line },
   ];
 
@@ -553,6 +556,8 @@
               ? "Cancel"
               : "Return to study"}
           />
+        {:else if activeScreen === "typing"}
+          <TypingScreen />
         {:else}
           <SettingsScreen {theme} onThemeChange={applyTheme} />
         {/if}
