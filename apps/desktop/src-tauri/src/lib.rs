@@ -6,12 +6,13 @@ use meiki_application::{
     BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
     BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
     DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
-    DeleteDeckProgressDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest,
-    GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest, MakeClozeRequest,
-    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
-    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
-    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
-    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    DeleteDeckProgressDto, DeleteDeckRequest, DeleteDeckResultDto, DeleteDecksRequest,
+    DeleteDecksResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
+    ImportSchedulerParametersRequest, MakeClozeRequest, PortableExportResultDto,
+    ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
+    RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto,
+    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
+    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
     UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State, ipc::Channel};
@@ -48,6 +49,7 @@ macro_rules! desktop_commands {
             create_deck,
             rename_deck,
             delete_deck,
+            delete_decks,
             new_authoring_draft,
             import_media,
             read_managed_audio,
@@ -336,6 +338,23 @@ async fn delete_deck(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+async fn delete_decks(
+    request: DeleteDecksRequest,
+    on_progress: Channel<DeleteDeckProgressDto>,
+    state: State<'_, AppContext>,
+) -> Result<DeleteDecksResultDto, String> {
+    let service = state.service();
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::delete_decks(&service, &request, |progress| {
+            drop(on_progress.send(progress));
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 fn new_authoring_draft(state: State<'_, AppContext>) -> Result<AuthoringDraftDto, String> {
     commands::new_authoring_draft(&state.service())
 }
@@ -471,6 +490,7 @@ mod tests {
         "create_deck",
         "rename_deck",
         "delete_deck",
+        "delete_decks",
         "new_authoring_draft",
         "import_media",
         "read_managed_audio",

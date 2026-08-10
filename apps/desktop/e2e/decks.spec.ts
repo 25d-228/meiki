@@ -88,6 +88,30 @@ async function deleteDeckRequestCount(
   );
 }
 
+async function batchDeleteRequestCount(
+  page: import("@playwright/test").Page,
+): Promise<number> {
+  return page.evaluate(
+    () =>
+      (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+        (request) => request.command === "delete_decks",
+      ).length,
+  );
+}
+
+async function enterDeckSelection(
+  page: import("@playwright/test").Page,
+): Promise<void> {
+  await page.getByRole("button", { name: "Select", exact: true }).click();
+}
+
+async function selectDeck(
+  page: import("@playwright/test").Page,
+  deckName: string,
+): Promise<void> {
+  await page.getByRole("checkbox", { name: `Select ${deckName}` }).click();
+}
+
 async function selectDeckView(
   page: import("@playwright/test").Page,
   view: "Grid" | "List",
@@ -237,6 +261,284 @@ test("uses the shared single-deck deletion flow from List", async ({
   await expect(page.getByTestId("deck-travel-deck")).toHaveCount(0);
   await expect(page.getByTestId("deck-list")).toBeVisible();
   expect(await deleteDeckRequestCount(page)).toBe(1);
+});
+
+for (const deckView of ["Grid", "List"] as const) {
+  test(`enters and clears selection mode in ${deckView}`, async ({ page }) => {
+    await page.goto("/?decks=batch");
+    await openDecks(page);
+    if (deckView === "List") await selectDeckView(page, "List");
+
+    await enterDeckSelection(page);
+    await expect(page.getByRole("checkbox")).toHaveCount(5);
+    await expect(
+      page
+        .getByTestId("deck-default-deck")
+        .getByRole("checkbox", { name: /Select Unsorted/ }),
+    ).toHaveCount(0);
+    await selectDeck(page, "Travel phrases");
+    await expect(page.getByTestId("deck-selection-count")).toContainText(
+      "1 deck selected",
+    );
+    await page.getByRole("button", { name: "Clear selection" }).click();
+
+    await expect(page.getByRole("checkbox")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Select", exact: true }),
+    ).toBeVisible();
+  });
+}
+
+test("keeps selected decks while switching between Grid and List", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await openDecks(page);
+  await enterDeckSelection(page);
+  await selectDeck(page, "Travel phrases");
+  await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
+  await expect(page.getByTestId("deck-selection-count")).toContainText(
+    "2 decks selected",
+  );
+
+  await selectDeckView(page, "List");
+  await expect(
+    page.getByRole("checkbox", { name: "Select Travel phrases" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(
+    page.getByRole("checkbox", {
+      name: "Select Japanese 00 — Kana, sound, and Japanese input",
+    }),
+  ).toHaveAttribute("aria-checked", "true");
+  await selectDeckView(page, "Grid");
+  await expect(page.getByTestId("deck-selection-count")).toContainText(
+    "2 decks selected",
+  );
+});
+
+test("deletes several ordinary decks with one batch command", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await openDecks(page);
+  await enterDeckSelection(page);
+  for (const deckName of [
+    "Travel phrases",
+    "Listening practice",
+    "Archived phrases",
+  ]) {
+    await selectDeck(page, deckName);
+  }
+  await page.getByRole("button", { name: "Delete selected" }).click();
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete 3 selected decks?",
+  });
+  await expect(confirmation).toContainText(
+    "7 cards in 3 ordinary decks will be moved to Trash.",
+  );
+  await confirmation.getByRole("button", { name: "Delete selected" }).click();
+
+  await expect(page.getByText("Deleted 3 decks.")).toBeVisible();
+  expect(await batchDeleteRequestCount(page)).toBe(1);
+  expect(await deleteDeckRequestCount(page)).toBe(0);
+  expect((await lastRequest(page, "delete_decks"))?.args).toMatchObject({
+    request: {
+      deck_ids: ["travel-deck", "listening-deck", "archive-deck"],
+    },
+  });
+  await expect(page.getByTestId("deck-travel-deck")).toHaveCount(0);
+  await expect(page.getByTestId("deck-listening-deck")).toHaveCount(0);
+  await expect(page.getByTestId("deck-archive-deck")).toHaveCount(0);
+});
+
+test("confirms several bundle stages once with permanent-content copy", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await openDecks(page);
+  await enterDeckSelection(page);
+  await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
+  await selectDeck(page, "Japanese 01 — N5 / A1 foundation");
+  await page.getByRole("button", { name: "Delete selected" }).click();
+
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete 2 selected decks?",
+  });
+  await expect(confirmation).toContainText(
+    "Bundled content in 2 bundle stages will be permanently removed.",
+  );
+  await expect(confirmation).toContainText(
+    "Personal cards in those stages will be moved to Trash.",
+  );
+  await confirmation.getByRole("button", { name: "Delete selected" }).click();
+  await expect(page.getByText("Deleted 2 decks.")).toBeVisible();
+  expect(await batchDeleteRequestCount(page)).toBe(1);
+});
+
+test("mixed deletion clears only removed focused queue and Today state", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await seedStudyState(page, "travel-deck", "deck:ja-JP:00");
+  await page.evaluate(() => localStorage.setItem("meiki-decks-view", "list"));
+  await openDecks(page);
+  await enterDeckSelection(page);
+  await selectDeck(page, "Travel phrases");
+  await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
+  await page.getByRole("button", { name: "Delete selected" }).click();
+
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete 2 selected decks?",
+  });
+  await expect(confirmation).toContainText(
+    "2 cards in 1 ordinary deck will be moved to Trash.",
+  );
+  await expect(confirmation).toContainText(
+    "Bundled content in 1 bundle stage will be permanently removed.",
+  );
+  await confirmation.getByRole("button", { name: "Delete selected" }).click();
+  await expect(page.getByText("Deleted 2 decks.")).toBeVisible();
+
+  expect(
+    await page.evaluate(() => ({
+      queue: localStorage.getItem("meiki-active-study-queue"),
+      session: sessionStorage.getItem("meiki-active-study-session"),
+      today: localStorage.getItem("meiki-today-deck"),
+      view: localStorage.getItem("meiki-decks-view"),
+    })),
+  ).toEqual({
+    queue: null,
+    session: null,
+    today: "__all_decks__",
+    view: "list",
+  });
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await expect(page.getByTestId("deck-list")).toBeVisible();
+});
+
+test("batch deletion preserves all-decks queue and unrelated Today state", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await seedStudyState(page, "__all_decks__", "archive-deck");
+  await openDecks(page);
+  await enterDeckSelection(page);
+  await selectDeck(page, "Listening practice");
+  await page.getByRole("button", { name: "Delete selected" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete 1 selected deck?" })
+    .getByRole("button", { name: "Delete selected" })
+    .click();
+  await expect(page.getByText("Deleted 1 deck.")).toBeVisible();
+
+  expect(
+    await page.evaluate(() => ({
+      queue: JSON.parse(
+        localStorage.getItem("meiki-active-study-queue") ?? "null",
+      ) as { deckId?: string } | null,
+      session: sessionStorage.getItem("meiki-active-study-session"),
+      today: localStorage.getItem("meiki-today-deck"),
+    })),
+  ).toMatchObject({
+    queue: { deckId: "__all_decks__" },
+    session: "session for __all_decks__",
+    today: "archive-deck",
+  });
+});
+
+test("pre-commit batch failure preserves decks, selection, queue, and Today", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch&batchDeletion=precommit-failure");
+  await seedStudyState(page, "travel-deck", "travel-deck");
+  await openDecks(page);
+  await enterDeckSelection(page);
+  await selectDeck(page, "Travel phrases");
+  await selectDeck(page, "Listening practice");
+  await page.getByRole("button", { name: "Delete selected" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete 2 selected decks?" })
+    .getByRole("button", { name: "Delete selected" })
+    .click();
+
+  const failure = page.getByRole("dialog", { name: "Decks were not deleted" });
+  await expect(failure).toContainText("Your collection was left unchanged.");
+  await failure.locator('[data-slot="dialog-footer"] button').click();
+  await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
+  await expect(page.getByTestId("deck-listening-deck")).toBeVisible();
+  await expect(page.getByTestId("deck-selection-count")).toContainText(
+    "2 decks selected",
+  );
+  expect(
+    await page.evaluate(() => ({
+      queue: JSON.parse(
+        localStorage.getItem("meiki-active-study-queue") ?? "null",
+      ) as { deckId?: string } | null,
+      session: sessionStorage.getItem("meiki-active-study-session"),
+      today: localStorage.getItem("meiki-today-deck"),
+    })),
+  ).toMatchObject({
+    queue: { deckId: "travel-deck" },
+    session: "session for travel-deck",
+    today: "travel-deck",
+  });
+});
+
+test("post-commit cleanup failure reports that every selected deck was deleted", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch&batchDeletion=postcommit-failure");
+  await openDecks(page);
+  await enterDeckSelection(page);
+  await selectDeck(page, "Travel phrases");
+  await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
+  await page.getByRole("button", { name: "Delete selected" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete 2 selected decks?" })
+    .getByRole("button", { name: "Delete selected" })
+    .click();
+
+  const warning = page.getByRole("dialog", { name: "Decks deleted" });
+  await expect(warning).toContainText(
+    "Decks deleted, but some unused audio could not be cleaned up.",
+  );
+  await warning.locator('[data-slot="dialog-footer"] button').click();
+  await expect(page.getByText("Deleted 2 decks.")).toBeVisible();
+  await expect(page.getByTestId("deck-travel-deck")).toHaveCount(0);
+  await expect(page.getByTestId("deck-deck:ja-JP:00")).toHaveCount(0);
+});
+
+test("batch deletion progress is semantic and monotonic", async ({ page }) => {
+  await page.goto("/?decks=batch&batchDeletion=progress");
+  await openDecks(page);
+  await enterDeckSelection(page);
+  await selectDeck(page, "Travel phrases");
+  await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
+  await page.getByRole("button", { name: "Delete selected" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete 2 selected decks?" })
+    .getByRole("button", { name: "Delete selected" })
+    .click();
+
+  const progress = page.getByRole("dialog", { name: "Deleting 2 decks" });
+  await expect(progress.getByText("Preparing", { exact: true })).toBeVisible();
+  await expect(
+    progress.getByRole("progressbar", { name: "Preparing" }),
+  ).not.toHaveAttribute("aria-valuenow");
+  await expect(
+    progress.getByText("Removing cards", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    progress.getByRole("progressbar", { name: "Removing cards" }),
+  ).toHaveAttribute("aria-valuenow", "302");
+  await expect(
+    progress.getByText("Cleaning audio", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    progress.getByRole("progressbar", { name: "Cleaning audio" }),
+  ).toHaveAttribute("aria-valuenow", "300");
+  await expect(progress.getByText("Finalizing", { exact: true })).toBeVisible();
+  await expect(page.getByText("Deleted 2 decks.")).toBeVisible();
 });
 
 for (const deckView of ["Grid", "List"] as const) {

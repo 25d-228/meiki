@@ -4,12 +4,13 @@ use meiki_application::{
     BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
     BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
     DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
-    DeleteDeckProgressDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest,
-    GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest, MakeClozeRequest,
-    PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
-    ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
-    SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
-    SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
+    DeleteDeckProgressDto, DeleteDeckRequest, DeleteDeckResultDto, DeleteDecksRequest,
+    DeleteDecksResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
+    ImportSchedulerParametersRequest, MakeClozeRequest, PortableExportResultDto,
+    ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
+    RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto,
+    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
+    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
     UpdateSchedulerSettingsRequest,
 };
 
@@ -198,6 +199,14 @@ pub(crate) fn delete_deck(
     on_progress: impl FnMut(DeleteDeckProgressDto),
 ) -> CommandResult<DeleteDeckResultDto> {
     map_error(service.delete_deck(request, on_progress))
+}
+
+pub(crate) fn delete_decks(
+    service: &ApplicationService,
+    request: &DeleteDecksRequest,
+    on_progress: impl FnMut(DeleteDeckProgressDto),
+) -> CommandResult<DeleteDecksResultDto> {
+    map_error(service.delete_decks(request, on_progress))
 }
 
 pub(crate) fn new_authoring_draft(

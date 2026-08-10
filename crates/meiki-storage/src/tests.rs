@@ -1042,6 +1042,203 @@ fn deleting_an_imported_stage_purges_bundle_content_and_safely_trashes_personal_
 }
 
 #[test]
+fn batch_deletion_rejects_the_complete_invalid_set_before_writing() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    for (id, name) in [("first-deck", "First"), ("second-deck", "Second")] {
+        storage
+            .create_deck(&Deck {
+                id: id.into(),
+                name: name.into(),
+                description: None,
+                language_tag: None,
+                direction: Direction::Auto,
+                matching_policy: MatchingPolicy::Strict,
+                settings: StudySettingsOverride::default(),
+                created_at_ms: 1_000,
+                updated_at_ms: 1_000,
+            })
+            .unwrap();
+    }
+    storage
+        .move_deck_cards(&[SAMPLE_CARD_ID.into()], "first-deck", 2_000)
+        .unwrap();
+
+    for invalid_ids in [
+        vec!["first-deck".into(), "first-deck".into()],
+        vec!["first-deck".into(), DEFAULT_DECK_ID.into()],
+        vec!["first-deck".into(), "missing-deck".into()],
+    ] {
+        assert!(
+            storage
+                .delete_decks_and_rehome_notes(&invalid_ids, 3_000, |_, _| {})
+                .is_err()
+        );
+        assert!(storage.get_deck("first-deck").is_ok());
+        assert!(storage.get_deck("second-deck").is_ok());
+        let note = storage.get_source_note(SAMPLE_SOURCE_ID).unwrap();
+        assert_eq!(note.source_item.deck_id, "first-deck");
+    }
+}
+
+#[test]
+fn batch_deletion_preserves_mixed_semantics_and_shared_media() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    storage
+        .create_deck(&Deck {
+            id: "ordinary-deck".into(),
+            name: "Ordinary".into(),
+            description: None,
+            language_tag: None,
+            direction: Direction::Auto,
+            matching_policy: MatchingPolicy::Strict,
+            settings: StudySettingsOverride::default(),
+            created_at_ms: 2_000,
+            updated_at_ms: 2_000,
+        })
+        .unwrap();
+    storage
+        .move_deck_cards(&[SAMPLE_CARD_ID.into()], &bundle.decks[1].deck.id, 2_500)
+        .unwrap();
+    let sample_schedule = storage.load_schedule(SAMPLE_CARD_ID).unwrap();
+    let unrelated_schedule = storage.load_schedule("pristine-card-0").unwrap();
+
+    let mut progress = Vec::new();
+    let deleted = storage
+        .delete_decks_and_rehome_notes(
+            &["ordinary-deck".into(), bundle.decks[1].deck.id.clone()],
+            3_000,
+            |current, total| progress.push((current, total)),
+        )
+        .unwrap();
+
+    assert_eq!(deleted.deck_ids.len(), 2);
+    assert_eq!(deleted.active_card_count, 3);
+    assert_eq!(progress.first(), Some(&(0, 3)));
+    assert_eq!(progress.last(), Some(&(3, 3)));
+    assert!(storage.get_deck("ordinary-deck").is_err());
+    assert!(storage.get_deck(&bundle.decks[1].deck.id).is_err());
+    assert!(storage.get_deck(&bundle.decks[0].deck.id).is_ok());
+    assert_eq!(storage.installed_bundles().unwrap()[0].deck_count, 1);
+    assert!(storage.get_source_note("source-mixed-2").is_err());
+    let personal = storage
+        .library_notes()
+        .unwrap()
+        .into_iter()
+        .find(|note| note.note.source_item.id == SAMPLE_SOURCE_ID)
+        .unwrap();
+    assert_eq!(personal.note.source_item.deck_id, DEFAULT_DECK_ID);
+    assert_eq!(personal.deleted_at_ms, Some(3_000));
+    assert_eq!(
+        storage.load_schedule(SAMPLE_CARD_ID).unwrap(),
+        sample_schedule
+    );
+    let unrelated = storage.get_source_note("source-mixed").unwrap();
+    assert_eq!(unrelated.source_item.deck_id, bundle.decks[0].deck.id);
+    assert_eq!(
+        storage.load_schedule("pristine-card-0").unwrap(),
+        unrelated_schedule
+    );
+    assert_eq!(
+        storage
+            .media_reference_count_for_hash("sha256-media-source")
+            .unwrap(),
+        1
+    );
+    assert!(
+        !deleted
+            .orphaned_media_hashes
+            .contains(&"sha256-media-source".into())
+    );
+
+    storage
+        .delete_decks_and_rehome_notes(&[bundle.decks[0].deck.id.clone()], 4_000, |_, _| {})
+        .unwrap();
+    assert!(storage.installed_bundles().unwrap().is_empty());
+}
+
+#[test]
+fn batch_deletion_moves_ordinary_content_to_trash_with_learning_state() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    for id in ["first-ordinary", "second-ordinary"] {
+        let mut created = deck(id);
+        created.name = id.into();
+        storage.create_deck(&created).unwrap();
+    }
+    storage
+        .move_deck_cards(&[SAMPLE_CARD_ID.into()], "first-ordinary", 2_000)
+        .unwrap();
+    let review = sample_event(&storage, "ordinary-batch-review", 2_500);
+    storage.commit_review(&review).unwrap();
+    let schedule = storage.load_schedule(SAMPLE_CARD_ID).unwrap();
+
+    let deleted = storage
+        .delete_decks_and_rehome_notes(
+            &["first-ordinary".into(), "second-ordinary".into()],
+            3_000,
+            |_, _| {},
+        )
+        .unwrap();
+
+    assert_eq!(deleted.active_card_count, 1);
+    let note = storage
+        .library_notes()
+        .unwrap()
+        .into_iter()
+        .find(|note| note.note.source_item.id == SAMPLE_SOURCE_ID)
+        .unwrap();
+    assert_eq!(note.note.source_item.deck_id, DEFAULT_DECK_ID);
+    assert_eq!(note.deleted_at_ms, Some(3_000));
+    assert_eq!(storage.load_schedule(SAMPLE_CARD_ID).unwrap(), schedule);
+    assert_eq!(storage.review_events(SAMPLE_CARD_ID).unwrap(), vec![review]);
+}
+
+#[test]
+fn batch_deletion_rolls_back_every_selected_deck() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    for id in ["first-deck", "second-deck"] {
+        let mut created = deck(id);
+        created.name = id.into();
+        storage.create_deck(&created).unwrap();
+    }
+    storage
+        .move_deck_cards(&[SAMPLE_CARD_ID.into()], "first-deck", 2_000)
+        .unwrap();
+    storage
+        .connection
+        .execute_batch(
+            "CREATE TRIGGER fail_second_batch_deck_delete
+             BEFORE DELETE ON decks
+             WHEN OLD.id = 'second-deck'
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected batch deletion failure');
+             END;",
+        )
+        .unwrap();
+
+    assert!(
+        storage
+            .delete_decks_and_rehome_notes(
+                &["first-deck".into(), "second-deck".into()],
+                3_000,
+                |_, _| {},
+            )
+            .is_err()
+    );
+    assert!(storage.get_deck("first-deck").is_ok());
+    assert!(storage.get_deck("second-deck").is_ok());
+    let note = storage.get_source_note(SAMPLE_SOURCE_ID).unwrap();
+    assert_eq!(note.source_item.deck_id, "first-deck");
+}
+
+#[test]
 fn bundle_removal_rolls_back_every_stage_when_one_deck_fails() {
     let mut storage = Storage::open_in_memory().unwrap();
     let bundle = pristine_bundle_import();

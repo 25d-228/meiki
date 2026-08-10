@@ -20,6 +20,9 @@ declare global {
     __MEIKI_TEST_DECK_DELETION_PROGRESS__?: (
       progress: DeleteDeckProgressDto,
     ) => void;
+    __MEIKI_TEST_DECKS_DELETION_PROGRESS__?: (
+      progress: DeleteDeckProgressDto,
+    ) => void;
     __MEIKI_TEST_PICK_SCHEDULER_PARAMETERS__?: () => Promise<string | null>;
     __MEIKI_TEST_REQUESTS__?: Array<{
       command: string;

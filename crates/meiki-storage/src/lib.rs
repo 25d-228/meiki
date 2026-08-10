@@ -199,6 +199,13 @@ pub struct DeckDeletion {
     pub orphaned_media_hashes: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecksDeletion {
+    pub deck_ids: Vec<String>,
+    pub active_card_count: u64,
+    pub orphaned_media_hashes: Vec<String>,
+}
+
 impl PristineBundleImportPlan {
     #[must_use]
     pub fn requires_changes(&self) -> bool {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{ApplicationError, ApplicationService, DirectionDto, MatchingPolicyDto, desktop_u32};
 use meiki_domain::{Deck, Direction, MatchingPolicy, StudySettingsOverride};
@@ -60,6 +60,21 @@ pub struct DeleteDeckRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct DeleteDeckResultDto {
     pub deleted_deck_id: String,
+    #[ts(type = "number")]
+    pub affected_cards: u64,
+    pub media_cleanup_warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct DeleteDecksRequest {
+    pub deck_ids: Vec<String>,
+    #[ts(type = "number")]
+    pub now_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct DeleteDecksResultDto {
+    pub deleted_deck_ids: Vec<String>,
     #[ts(type = "number")]
     pub affected_cards: u64,
     pub media_cleanup_warning: Option<String>,
@@ -346,7 +361,7 @@ impl ApplicationService {
             },
         )?;
         let media_cleanup_warning = self
-            .clean_deleted_deck_media(
+            .clean_deck_deletion_media(
                 &storage,
                 recovery_backup.as_deref(),
                 &deletion.orphaned_media_hashes,
@@ -366,7 +381,87 @@ impl ApplicationService {
         })
     }
 
-    fn clean_deleted_deck_media(
+    /// Deletes several explicit non-default decks in one atomic application operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before commit when the request is empty, contains an
+    /// invalid deck set, or any selected deck changed since it was loaded.
+    pub fn delete_decks(
+        &self,
+        request: &DeleteDecksRequest,
+        mut on_progress: impl FnMut(DeleteDeckProgressDto),
+    ) -> Result<DeleteDecksResultDto, ApplicationError> {
+        on_progress(DeleteDeckProgressDto {
+            phase: DeleteDeckPhaseDto::Preparing,
+            current: None,
+            total: None,
+        });
+        if request.deck_ids.is_empty() || request.now_ms < 0 {
+            return Err(ApplicationError::InvalidDeck(
+                "batch deck deletion requires at least one deck and a valid timestamp".into(),
+            ));
+        }
+        if request
+            .deck_ids
+            .iter()
+            .any(|deck_id| deck_id == DEFAULT_DECK_ID)
+        {
+            return Err(ApplicationError::InvalidDeck(
+                "the default deck cannot be deleted".into(),
+            ));
+        }
+        let unique_deck_ids = request.deck_ids.iter().collect::<HashSet<_>>();
+        if unique_deck_ids.len() != request.deck_ids.len() {
+            return Err(ApplicationError::InvalidDeck(
+                "batch deck deletion cannot contain duplicate deck ids".into(),
+            ));
+        }
+
+        let mut storage = self.open_storage()?;
+        let mut includes_bundle_stage = false;
+        for deck_id in &request.deck_ids {
+            storage.get_deck(deck_id)?;
+            includes_bundle_stage |= storage.bundle_language_for_deck(deck_id)?.is_some();
+        }
+        let recovery_backup = if includes_bundle_stage {
+            Some(self.create_database_recovery_backup(&storage, "pre-delete-decks")?)
+        } else {
+            None
+        };
+        let deletion = storage.delete_decks_and_rehome_notes(
+            &request.deck_ids,
+            request.now_ms,
+            |current, total| {
+                on_progress(DeleteDeckProgressDto {
+                    phase: DeleteDeckPhaseDto::RemovingCards,
+                    current: Some(current),
+                    total: Some(total),
+                });
+            },
+        )?;
+        let media_cleanup_warning = self
+            .clean_deck_deletion_media(
+                &storage,
+                recovery_backup.as_deref(),
+                &deletion.orphaned_media_hashes,
+                &mut on_progress,
+            )
+            .err()
+            .map(|_| "Decks deleted, but some unused audio could not be cleaned up.".into());
+        on_progress(DeleteDeckProgressDto {
+            phase: DeleteDeckPhaseDto::Finalizing,
+            current: None,
+            total: None,
+        });
+        Ok(DeleteDecksResultDto {
+            deleted_deck_ids: deletion.deck_ids,
+            affected_cards: deletion.active_card_count,
+            media_cleanup_warning,
+        })
+    }
+
+    fn clean_deck_deletion_media(
         &self,
         storage: &Storage,
         recovery_backup: Option<&std::path::Path>,
@@ -488,7 +583,8 @@ mod tests {
 
     use super::{
         BundleRemovalProgressDto, BundleRemovalRequest, CreateDeckRequest, DeckSummaryDto,
-        DeleteDeckPhaseDto, DeleteDeckProgressDto, DeleteDeckRequest, RenameDeckRequest,
+        DeleteDeckPhaseDto, DeleteDeckProgressDto, DeleteDeckRequest, DeleteDecksRequest,
+        RenameDeckRequest,
     };
     use crate::{
         ApplicationService, DeckCardActionDto, DeckCardActionRequest, DeckCardRequest,
@@ -1037,6 +1133,76 @@ mod tests {
     }
 
     #[test]
+    fn batch_deletion_reports_post_commit_cleanup_failure_and_monotonic_progress() {
+        let directory = tempdir().unwrap();
+        let service = ApplicationService::new(directory.path().join("collection.db"));
+        let content_hash = service.media_store().seed_wav_objects(1).unwrap().remove(0);
+        let mut storage = service.open_storage().unwrap();
+        storage
+            .import_pristine_bundle(
+                &one_card_bundle(content_hash.clone()),
+                || {},
+                || Ok::<(), ()>(()),
+            )
+            .unwrap();
+        drop(storage);
+        let ordinary = service
+            .create_deck(&CreateDeckRequest {
+                name: "Temporary".into(),
+                now_ms: 1_500,
+            })
+            .unwrap();
+        let object = service.media_store().resolve(&content_hash).unwrap();
+        fs::remove_file(&object).unwrap();
+        fs::create_dir(&object).unwrap();
+
+        let mut progress = Vec::new();
+        let result = service
+            .delete_decks(
+                &DeleteDecksRequest {
+                    deck_ids: vec![ordinary.id.clone(), "cleanup-stage".into()],
+                    now_ms: 2_000,
+                },
+                |update| progress.push(update),
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.deleted_deck_ids,
+            [ordinary.id, "cleanup-stage".into()]
+        );
+        assert_eq!(result.affected_cards, 1);
+        assert_eq!(
+            result.media_cleanup_warning.as_deref(),
+            Some("Decks deleted, but some unused audio could not be cleaned up.")
+        );
+        assert_eq!(
+            progress.first(),
+            Some(&DeleteDeckProgressDto {
+                phase: DeleteDeckPhaseDto::Preparing,
+                current: None,
+                total: None,
+            })
+        );
+        assert_eq!(
+            progress.last().unwrap().phase,
+            DeleteDeckPhaseDto::Finalizing
+        );
+        assert!(progress.windows(2).all(|updates| {
+            phase_index(updates[0].phase) <= phase_index(updates[1].phase)
+                && (updates[0].phase != updates[1].phase
+                    || updates[0]
+                        .current
+                        .zip(updates[1].current)
+                        .is_none_or(|(previous, current)| previous <= current))
+        }));
+        let storage = service.open_storage().unwrap();
+        assert!(storage.get_deck("cleanup-stage").is_err());
+        assert!(storage.get_deck(&result.deleted_deck_ids[0]).is_err());
+        assert!(storage.get_source_note("cleanup-source").is_err());
+    }
+
+    #[test]
     fn deck_summaries_count_suspended_cards_only_in_total_and_present_default_as_unsorted() {
         let directory = tempdir().unwrap();
         let service = ApplicationService::new(directory.path().join("collection.db"));
@@ -1306,6 +1472,79 @@ mod tests {
             .verify_all()
             .unwrap();
         assert_eq!(recovered_hashes.len(), 2_999);
+    }
+
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    fn release_budget_batch_deletion_3000_cards_ignores_9700_unrelated_media_objects() {
+        const NOW_MS: i64 = 1_000_000_000;
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("batch-deletion.db");
+        let service = ApplicationService::new(&collection_path);
+        let (imported_media, unrelated_media) = seed_deck_deletion_media(&service);
+        let mut storage = service.open_storage().unwrap();
+        storage
+            .seed_deck_deletion_release_fixture(&imported_media, &unrelated_media, NOW_MS)
+            .unwrap();
+        drop(storage);
+        let ordinary = service
+            .create_deck(&CreateDeckRequest {
+                name: "Empty ordinary deck".into(),
+                now_ms: NOW_MS,
+            })
+            .unwrap();
+
+        let mut progress = Vec::new();
+        let started = Instant::now();
+        let result = service
+            .delete_decks(
+                &DeleteDecksRequest {
+                    deck_ids: vec!["performance-deck".into(), ordinary.id.clone()],
+                    now_ms: NOW_MS + 1,
+                },
+                |update| progress.push(update),
+            )
+            .unwrap();
+        let elapsed = started.elapsed();
+        eprintln!("issue #97 batch deck deletion: {elapsed:?}");
+
+        assert_eq!(result.affected_cards, 3_001);
+        assert_eq!(result.media_cleanup_warning, None);
+        assert!(
+            elapsed <= std::time::Duration::from_secs(5),
+            "representative batch deletion exceeded 5 s: {elapsed:?}"
+        );
+        assert_eq!(
+            progress.first(),
+            Some(&DeleteDeckProgressDto {
+                phase: DeleteDeckPhaseDto::Preparing,
+                current: None,
+                total: None,
+            })
+        );
+        assert_eq!(
+            progress.last().unwrap().phase,
+            DeleteDeckPhaseDto::Finalizing
+        );
+        assert!(progress.windows(2).all(|updates| {
+            phase_index(updates[0].phase) <= phase_index(updates[1].phase)
+                && (updates[0].phase != updates[1].phase
+                    || updates[0]
+                        .current
+                        .zip(updates[1].current)
+                        .is_none_or(|(previous, current)| previous <= current))
+        }));
+        let storage = service.open_storage().unwrap();
+        assert!(storage.get_deck("performance-deck").is_err());
+        assert!(storage.get_deck(&ordinary.id).is_err());
+        assert!(storage.get_deck(meiki_storage::DEFAULT_DECK_ID).is_ok());
+        assert!(
+            storage
+                .get_source_note("performance-source-0000000")
+                .is_ok()
+        );
+        assert!(service.media_store().resolve(&imported_media[0]).is_ok());
+        assert!(service.media_store().resolve(&unrelated_media[0]).is_ok());
     }
 
     #[test]

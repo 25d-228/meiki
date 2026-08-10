@@ -260,6 +260,68 @@ for (const deckViewCase of [
   });
 }
 
+for (const selectionCase of [
+  {
+    name: "deck-selection-grid-desktop-light",
+    view: "Grid",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "deck-selection-list-narrow-dark-selected",
+    view: "List",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${selectionCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/?decks=batch",
+      screen: "Decks",
+      theme: selectionCase.theme,
+      viewport: selectionCase.viewport,
+    });
+    if (selectionCase.view === "List") {
+      await page
+        .getByRole("group", { name: "Deck view" })
+        .getByRole("button", { name: "List" })
+        .click();
+    }
+    await page.getByRole("button", { name: "Select", exact: true }).click();
+    await page.getByRole("checkbox", { name: "Select Travel phrases" }).click();
+    await page
+      .getByRole("checkbox", {
+        name: "Select Japanese 00 — Kana, sound, and Japanese input",
+      })
+      .click();
+    await expect(page.getByTestId("deck-selection-count")).toContainText(
+      "2 decks selected",
+    );
+    await page.locator("#main-content").focus();
+    await page.evaluate(() => {
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    });
+    const heading = page.getByRole("heading", { name: "Decks", level: 1 });
+    await heading.scrollIntoViewIfNeeded();
+    await expect(heading).toBeInViewport();
+    expect(
+      await heading.evaluate((element) => element.getBoundingClientRect().top),
+    ).toBeGreaterThanOrEqual(48);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${selectionCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 for (const deckActionsCase of [
   {
     name: "deck-actions-menu-desktop-light",
