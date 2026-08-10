@@ -213,6 +213,12 @@ for (const typingCase of [
     viewport: "narrow",
     language: "French — Dead-key accents",
   },
+  {
+    name: "typing-korean-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+    language: "Korean — 2-set Hangul",
+  },
 ] as const) {
   test(`visual regression: ${typingCase.name}`, async ({ page }) => {
     await page.addInitScript(() => {

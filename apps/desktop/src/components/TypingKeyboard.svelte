@@ -239,7 +239,7 @@
 
   .shifted-target-legend {
     top: 0.15rem;
-    font-size: clamp(0.45rem, 1.3vw, 0.7rem);
+    font-size: clamp(0.55rem, 1.5vw, 0.85rem);
   }
 
   .target-legend {

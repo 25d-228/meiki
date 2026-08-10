@@ -15,9 +15,16 @@
       import { typingLessons } from "/src/lib/typing-lessons.ts";
 
       const firstKoreanLesson = typingLessons.find(
-        (lesson) => lesson.id === "typing-korean-foundation",
+        (lesson) => lesson.id === "typing-korean-basic-consonants",
       );
       if (!firstKoreanLesson) throw new Error("Korean foundation is missing");
+      Object.assign(firstKoreanLesson, {
+        title: "First Korean fixture lesson",
+        target: "아",
+        expectedText: "아",
+        sharedPhysicalCodes: ["KeyD", "KeyK"],
+        hint: "Press D, then K.",
+      });
       const firstKoreanIndex = typingLessons.indexOf(firstKoreanLesson);
       typingLessons.splice(firstKoreanIndex + 1, 0, {
         ...firstKoreanLesson,
