@@ -208,6 +208,10 @@
     if (localStorage.getItem(selectedTodayDeckKey) === result.deleted_deck_id) {
       localStorage.setItem(selectedTodayDeckKey, allDecksId);
     }
+    clearSelection();
+    batchDeleteFlowOpen = false;
+    batchDeleteDeckIds = [];
+    batchDeleteTargets = [];
     await loadDecks();
   }
 
