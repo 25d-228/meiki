@@ -10,8 +10,8 @@ use meiki_domain::{
     CardLifecycle, MediaKind, MediaReference, ScheduleState, SchedulingMode, StudySettingsOverride,
 };
 use meiki_portable::{
-    ArchiveMediaSource, ArchivePreview, PortableCard, PortableCollection, PortableNote,
-    ValidatedArchive, read_archive, read_archive_preview, write_archive,
+    ArchiveMediaSource, ArchivePreview, OpenedArchive, PortableCard, PortableCollection,
+    PortableNote, ValidatedMediaBytes, open_archive, read_archive_preview, write_archive,
 };
 use meiki_scheduler::{BASELINE_TARGET_RETENTION_BASIS_POINTS, CONTROLLER_VERSION};
 use meiki_storage::{
@@ -26,6 +26,9 @@ use ts_rs::TS;
 const BACKUP_RETENTION: usize = 5;
 const BUNDLE_DEFAULT_NEW_CARDS_PER_DAY: u32 = 20;
 const BUNDLE_DEFAULT_DAY_BOUNDARY_MINUTES: u16 = 240;
+// Both limits bound memory while grouping tiny audio-object lookups.
+const BUNDLE_MEDIA_BATCH_SIZE: usize = 128;
+const BUNDLE_MEDIA_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct PortableExportResultDto {
@@ -120,6 +123,7 @@ struct MissingBundleContent {
     added_cards: u64,
     media_hashes: HashSet<String>,
     audio_hashes: HashSet<String>,
+    media_references: HashMap<String, Vec<MediaReference>>,
 }
 
 impl ApplicationService {
@@ -155,19 +159,16 @@ impl ApplicationService {
             ));
         }
 
-        let fast_archive = read_archive_preview(Path::new(&request.path))?;
-        let fast_import = build_pristine_bundle_import(&fast_archive.collection, request.now_ms)?;
-        let fast_plan = self
-            .open_storage()?
-            .validate_pristine_bundle_import(&fast_import);
-        let fast_plan = fast_plan.map_err(map_bundle_storage_error)?;
-        if !fast_plan.requires_changes() {
-            return Ok(bundle_import_result(&fast_import.language_tag));
+        let mut archive = open_archive(Path::new(&request.path))?;
+        let bundle = build_pristine_bundle_import(&archive.collection, request.now_ms)?;
+        let mut storage = self.open_storage()?;
+        let plan = storage
+            .validate_pristine_bundle_import(&bundle)
+            .map_err(map_bundle_storage_error)?;
+        if !plan.requires_changes() {
+            return Ok(bundle_import_result(&bundle.language_tag));
         }
-        let missing_decks = count(
-            fast_plan.missing_deck_ids.len(),
-            "missing bundle deck count",
-        )?;
+        let missing_decks = count(plan.missing_deck_ids.len(), "missing bundle deck count")?;
         let progress = RefCell::new(on_progress);
         (progress.borrow_mut())(BundleImportProgressDto {
             stage: BundleImportStageDto::PreparingDecks,
@@ -175,14 +176,6 @@ impl ApplicationService {
             total: missing_decks,
         });
 
-        let archive = read_archive(Path::new(&request.path))?;
-        let bundle = build_pristine_bundle_import(&archive.collection, request.now_ms)?;
-        let mut storage = self.open_storage()?;
-        let plan = storage.validate_pristine_bundle_import(&bundle);
-        let plan = plan.map_err(map_bundle_storage_error)?;
-        if !plan.requires_changes() {
-            return Ok(bundle_import_result(&bundle.language_tag));
-        }
         let missing_content = missing_bundle_content(&archive.collection, &bundle, &plan)?;
         let added_decks = count(plan.missing_deck_ids.len(), "added bundle deck count")?;
         (progress.borrow_mut())(BundleImportProgressDto {
@@ -191,12 +184,15 @@ impl ApplicationService {
             total: added_decks,
         });
 
-        self.create_recovery_backup(&storage, "pre-add-bundle")?;
+        // Additive import never changes existing media, so its staged hashes
+        // are the complete media rollback set.
+        self.create_database_recovery_backup(&storage, "pre-add-bundle")?;
+        prune_orphan_media_backups(&self.backup_directory())?;
         let media_store = self.media_store();
         let (imported_plan, media_import) = import_bundle_content(
             &mut storage,
             &bundle,
-            &archive,
+            &mut archive,
             &missing_content,
             &media_store,
             &progress,
@@ -301,7 +297,7 @@ impl ApplicationService {
 fn import_bundle_content(
     storage: &mut Storage,
     bundle: &PristineBundleImport,
-    archive: &ValidatedArchive,
+    archive: &mut OpenedArchive,
     missing_content: &MissingBundleContent,
     media_store: &meiki_media::MediaStore,
     progress: &RefCell<impl FnMut(BundleImportProgressDto)>,
@@ -334,7 +330,7 @@ fn import_bundle_content(
             let media_import = import_archive_media_subset(
                 archive,
                 media_store,
-                &missing_content.media_hashes,
+                missing_content,
                 |content_hash| {
                     if missing_content.audio_hashes.contains(content_hash) {
                         imported_audio += 1;
@@ -742,12 +738,35 @@ fn missing_bundle_content(
             .checked_add(deck_cards)
             .ok_or(ApplicationError::NumericRange("bundle card count"))?;
     }
-    let media_hashes = bundle_media_hashes(collection, Some(&missing), None);
-    let audio_hashes = bundle_media_hashes(collection, Some(&missing), Some(MediaKind::Audio));
+    let mut media_hashes = HashSet::new();
+    let mut audio_hashes = HashSet::new();
+    let mut media_references = HashMap::<String, Vec<MediaReference>>::new();
+    for note in collection
+        .notes
+        .iter()
+        .filter(|note| missing.contains(note.source_item.deck_id.as_str()))
+    {
+        for media in note
+            .source_item
+            .media
+            .iter()
+            .chain(note.clozes.iter().flat_map(|cloze| cloze.media.iter()))
+        {
+            media_hashes.insert(media.content_hash.clone());
+            if media.kind == MediaKind::Audio {
+                audio_hashes.insert(media.content_hash.clone());
+            }
+            media_references
+                .entry(media.content_hash.clone())
+                .or_default()
+                .push(media.clone());
+        }
+    }
     Ok(MissingBundleContent {
         added_cards,
         media_hashes,
         audio_hashes,
+        media_references,
     })
 }
 
@@ -806,31 +825,79 @@ struct ArchiveMediaImport {
 }
 
 fn import_archive_media_subset(
-    archive: &ValidatedArchive,
+    archive: &mut OpenedArchive,
     store: &meiki_media::MediaStore,
-    included_hashes: &HashSet<String>,
+    included: &MissingBundleContent,
     mut on_media_imported: impl FnMut(&str) -> Result<(), ApplicationError>,
 ) -> Result<ArchiveMediaImport, ApplicationError> {
     let mut import = ArchiveMediaImport::default();
-    for media in archive
-        .media_objects
-        .iter()
-        .filter(|media| included_hashes.contains(&media.content_hash))
-    {
-        let result = match store.import_file(&media.path) {
-            Ok(result) => result,
-            Err(error) => {
-                rollback_archive_media(store, &import.new_hashes)?;
-                return Err(ApplicationError::Media(error));
-            }
-        };
+    let mut batch = Vec::new();
+    let mut batch_bytes = 0_usize;
+    while let Some(media) = archive.read_next_media()? {
+        if !included.media_hashes.contains(&media.content_hash) {
+            continue;
+        }
+        if !batch.is_empty()
+            && (batch.len() == BUNDLE_MEDIA_BATCH_SIZE
+                || batch_bytes.saturating_add(media.bytes.len()) > BUNDLE_MEDIA_BATCH_BYTES)
+        {
+            import_archive_media_batch(
+                &mut batch,
+                store,
+                included,
+                &mut import,
+                &mut on_media_imported,
+            )?;
+            batch_bytes = 0;
+        }
+        batch_bytes = batch_bytes.saturating_add(media.bytes.len());
+        batch.push(media);
+    }
+    if !batch.is_empty() {
+        import_archive_media_batch(
+            &mut batch,
+            store,
+            included,
+            &mut import,
+            &mut on_media_imported,
+        )?;
+    }
+    Ok(import)
+}
+
+fn import_archive_media_batch(
+    batch: &mut Vec<ValidatedMediaBytes>,
+    store: &meiki_media::MediaStore,
+    included: &MissingBundleContent,
+    import: &mut ArchiveMediaImport,
+    on_media_imported: &mut impl FnMut(&str) -> Result<(), ApplicationError>,
+) -> Result<(), ApplicationError> {
+    let results = match store.import_checked_batch(
+        batch
+            .iter()
+            .map(|media| (media.content_hash.as_str(), media.bytes.as_slice())),
+    ) {
+        Ok(results) => results,
+        Err(error) => {
+            rollback_archive_media(store, &import.new_hashes)?;
+            return Err(ApplicationError::Media(error));
+        }
+    };
+    for result in &results {
         if result.deduplicated {
             import.deduplicated += 1;
         } else {
             import.imported += 1;
             import.new_hashes.push(result.content_hash.clone());
         }
-        if let Err(error) = validate_imported_archive_media(archive, media, &result) {
+    }
+    for (media, result) in batch.iter().zip(&results) {
+        let references = included
+            .media_references
+            .get(media.content_hash.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if let Err(error) = validate_imported_archive_media(media, references, result) {
             rollback_archive_media(store, &import.new_hashes)?;
             return Err(error);
         }
@@ -839,12 +906,13 @@ fn import_archive_media_subset(
             return Err(error);
         }
     }
-    Ok(import)
+    batch.clear();
+    Ok(())
 }
 
 fn validate_imported_archive_media(
-    archive: &ValidatedArchive,
-    media: &meiki_portable::ValidatedMediaObject,
+    media: &ValidatedMediaBytes,
+    references: &[MediaReference],
     result: &meiki_media::ImportedMedia,
 ) -> Result<(), ApplicationError> {
     if result.content_hash != media.content_hash || result.byte_size != media.byte_size {
@@ -853,18 +921,7 @@ fn validate_imported_archive_media(
             media.content_hash
         )));
     }
-    for reference in archive
-        .collection
-        .notes
-        .iter()
-        .flat_map(|note| {
-            note.source_item
-                .media
-                .iter()
-                .chain(note.clozes.iter().flat_map(|cloze| cloze.media.iter()))
-        })
-        .filter(|reference| reference.content_hash == media.content_hash)
-    {
+    for reference in references {
         if !imported_media_metadata_matches(reference, result) {
             return Err(ApplicationError::InvalidPortable(format!(
                 "media technical metadata does not match {}",
@@ -906,9 +963,14 @@ fn rollback_archive_media(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        time::Instant,
+    };
 
-    use meiki_domain::{CardLifecycle, SchedulingMode, SegmentContent, StudySettingsOverride};
+    use meiki_domain::{
+        CardLifecycle, MediaKind, MediaRole, SchedulingMode, SegmentContent, StudySettingsOverride,
+    };
     use meiki_media::{DetectedMediaKind, ImportedMedia, MediaStore};
     use meiki_portable::{ArchiveMediaSource, PortableCollection, read_archive, write_archive};
     use meiki_storage::{
@@ -931,6 +993,14 @@ mod tests {
 
     const FIXTURE_SOURCE_ID: &str = "fixture-source-ja-001";
     const FIXTURE_CARD_ID: &str = "fixture-card-ja-001";
+    const JAPANESE_STAGE_NAMES: [&str; 6] = [
+        "Japanese 00 — Kana, sound, and Japanese input",
+        "Japanese 01 — N5 / A1 foundation",
+        "Japanese 02 — N4 / A2 elementary",
+        "Japanese 03 — N3 / B1 intermediate",
+        "Japanese 04 — N2 / B2 upper-intermediate",
+        "Japanese 05 — N1 / balanced C1 bridge",
+    ];
     const PRISTINE_FIXTURE: &[u8] = include_bytes!("../fixtures/pristine-deck-v4.meiki");
     const REAL_MP3: &[u8] = &[
         0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x54, 0x49, 0x54, 0x32, 0x00,
@@ -1003,15 +1073,6 @@ mod tests {
         stage_count: usize,
         mutate: impl FnOnce(&mut PortableCollection),
     ) -> PathBuf {
-        const STAGE_NAMES: [&str; 6] = [
-            "Japanese 00 — Kana, sound, and Japanese input",
-            "Japanese 01 — N5 / A1 foundation",
-            "Japanese 02 — N4 / A2 elementary",
-            "Japanese 03 — N3 / B1 intermediate",
-            "Japanese 04 — N2 / B2 upper-intermediate",
-            "Japanese 05 — N1 / balanced C1 bridge",
-        ];
-
         let fixture_path = copy_pristine_fixture(directory, &format!("{name}-source.meiki"));
         let archive = read_archive(&fixture_path).unwrap();
         let deck_template = archive.collection.decks[0].clone();
@@ -1021,7 +1082,7 @@ mod tests {
         collection.decks.clear();
         collection.notes.clear();
         collection.scheduler_profiles.clear();
-        for (stage, stage_name) in STAGE_NAMES.iter().take(stage_count).enumerate() {
+        for (stage, stage_name) in JAPANESE_STAGE_NAMES.iter().take(stage_count).enumerate() {
             let deck_id = bundle_deck_id(stage);
             collection.decks.push(meiki_domain::Deck {
                 id: deck_id.clone(),
@@ -1078,6 +1139,130 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let destination = directory.join(format!("{name}.meiki"));
+        write_archive(&destination, &collection, &media, 10_000).unwrap();
+        destination
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn write_generated_japanese_bundle(directory: &Path, media_store: &MediaStore) -> PathBuf {
+        const STAGE_CARD_COUNTS: [usize; 6] = [300, 1_000, 1_200, 1_800, 2_400, 3_000];
+        const CARD_COUNT: u32 = 9_700;
+        const MEDIA_BYTE_SIZE: u64 = 48;
+
+        let fixture_path = copy_pristine_fixture(directory, "release-bundle-source.meiki");
+        let archive = read_archive(&fixture_path).unwrap();
+        let deck_template = archive.collection.decks[0].clone();
+        let note_template = archive.collection.notes[0].clone();
+        let profile_template = archive.collection.scheduler_profiles[0].clone();
+        assert_eq!(note_template.clozes.len(), 1);
+        assert_eq!(note_template.cards.len(), 1);
+
+        let media_hashes = media_store
+            .seed_wav_objects_from(10_000, CARD_COUNT)
+            .unwrap();
+        let mut collection = archive.collection.clone();
+        collection.decks.clear();
+        collection.notes.clear();
+        collection.scheduler_profiles.clear();
+
+        for (stage, stage_name) in JAPANESE_STAGE_NAMES.iter().enumerate() {
+            let deck_id = bundle_deck_id(stage);
+            collection.decks.push(meiki_domain::Deck {
+                id: deck_id.clone(),
+                name: (*stage_name).into(),
+                description: None,
+                language_tag: Some("ja-JP".into()),
+                settings: StudySettingsOverride::default(),
+                ..deck_template.clone()
+            });
+            collection
+                .scheduler_profiles
+                .push(meiki_domain::SchedulerProfile {
+                    deck_id,
+                    scheduling_mode: SchedulingMode::Automatic,
+                    deck_daily_time_budget_minutes: None,
+                    ..profile_template.clone()
+                });
+        }
+
+        let mut card_index = 0_usize;
+        for (stage, stage_card_count) in STAGE_CARD_COUNTS.iter().enumerate() {
+            for _ in 0..*stage_card_count {
+                let suffix = format!("-{card_index:05}");
+                let source_id = format!("release-source{suffix}");
+                let cloze_id = format!("release-cloze{suffix}");
+                let card_id = format!("release-card{suffix}");
+                let media_hash = &media_hashes[card_index];
+                let mut note = note_template.clone();
+                note.source_item.id.clone_from(&source_id);
+                note.source_item.deck_id = bundle_deck_id(stage);
+                note.source_item.language_tag = Some("ja-JP".into());
+                for (index, segment) in note.source_item.segments.iter_mut().enumerate() {
+                    segment.id = format!("release-segment-{card_index:05}-{index}");
+                    if let SegmentContent::Cloze {
+                        cloze_id: segment_cloze_id,
+                        ..
+                    } = &mut segment.content
+                    {
+                        segment_cloze_id.clone_from(&cloze_id);
+                    }
+                }
+                for (index, annotation) in note.source_item.annotations.iter_mut().enumerate() {
+                    annotation.id = format!("release-source-annotation-{card_index:05}-{index}");
+                }
+                for (index, media) in note.source_item.media.iter_mut().enumerate() {
+                    media.id = format!("release-prompt-media-{card_index:05}-{index}");
+                    media.content_hash.clone_from(media_hash);
+                    media.kind = MediaKind::Audio;
+                    media.role = MediaRole::PromptAudio;
+                    media.media_type = "audio/wav".into();
+                    media.byte_size = MEDIA_BYTE_SIZE;
+                    media.original_file_name = Some(format!("{card_index:05}.wav"));
+                    media.width = None;
+                    media.height = None;
+                    media.duration_ms = Some(0);
+                    media.language_tag = Some("ja-JP".into());
+                }
+                let cloze = &mut note.clozes[0];
+                cloze.id.clone_from(&cloze_id);
+                cloze.source_item_id.clone_from(&source_id);
+                cloze.language_tag = Some("ja-JP".into());
+                for (index, annotation) in cloze.annotations.iter_mut().enumerate() {
+                    annotation.id = format!("release-cloze-annotation-{card_index:05}-{index}");
+                }
+                for (index, media) in cloze.media.iter_mut().enumerate() {
+                    media.id = format!("release-answer-media-{card_index:05}-{index}");
+                    media.content_hash.clone_from(media_hash);
+                    media.kind = MediaKind::Audio;
+                    media.role = MediaRole::AnswerAudio;
+                    media.media_type = "audio/wav".into();
+                    media.byte_size = MEDIA_BYTE_SIZE;
+                    media.original_file_name = Some(format!("{card_index:05}.wav"));
+                    media.width = None;
+                    media.height = None;
+                    media.duration_ms = Some(0);
+                    media.language_tag = Some("ja-JP".into());
+                }
+                let card = &mut note.cards[0];
+                card.card.id.clone_from(&card_id);
+                card.card.cloze_id.clone_from(&cloze_id);
+                card.baseline.card_id.clone_from(&card_id);
+                card.schedule = card.baseline.clone();
+                card.review_events.clear();
+                collection.notes.push(note);
+                card_index += 1;
+            }
+        }
+        assert_eq!(card_index, usize::try_from(CARD_COUNT).unwrap());
+
+        let media = media_hashes
+            .into_iter()
+            .map(|content_hash| ArchiveMediaSource {
+                path: media_store.resolve(&content_hash).unwrap(),
+                content_hash,
+            })
+            .collect::<Vec<_>>();
+        let destination = directory.join("generated-japanese.meiki");
         write_archive(&destination, &collection, &media, 10_000).unwrap();
         destination
     }
@@ -2288,7 +2473,14 @@ mod tests {
         let plan = storage.validate_pristine_bundle_import(&bundle).unwrap();
         let missing = super::missing_bundle_content(&archive.collection, &bundle, &plan).unwrap();
         let media_store = service.media_store();
+        let unrelated_hash = media_store
+            .seed_wav_objects_from(50_000, 1)
+            .unwrap()
+            .remove(0);
+        let unrelated_path = media_store.resolve(&unrelated_hash).unwrap();
+        let unrelated_bytes = std::fs::read(&unrelated_path).unwrap();
         let media_hash = archive.media_objects[0].content_hash.clone();
+        let mut media_archive = meiki_portable::open_archive(&archive_path).unwrap();
         let mut processed_media = 0;
 
         let result = storage.import_pristine_bundle(
@@ -2296,9 +2488,9 @@ mod tests {
             || {},
             || {
                 super::import_archive_media_subset(
-                    &archive,
+                    &mut media_archive,
                     &media_store,
-                    &missing.media_hashes,
+                    &missing,
                     |_| {
                         processed_media += 1;
                         Err(crate::ApplicationError::InvalidPortable(
@@ -2322,6 +2514,11 @@ mod tests {
         assert!(reopened.load_study_card(&bundle_card_id(0)).is_err());
         drop(reopened);
         assert!(media_store.resolve(&media_hash).is_err());
+        assert_eq!(
+            media_store.resolve(&unrelated_hash).unwrap(),
+            unrelated_path
+        );
+        assert_eq!(std::fs::read(unrelated_path).unwrap(), unrelated_bytes);
     }
 
     #[test]
@@ -2798,6 +2995,291 @@ mod tests {
             error
                 .to_string()
                 .contains("No installed decks remain for ja-JP.")
+        );
+    }
+
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    #[allow(clippy::too_many_lines)]
+    fn release_budget_bundle_import_9700_ignores_unrelated_content() {
+        const CARD_COUNT: u32 = 9_700;
+        const IMPORT_CEILING: std::time::Duration = std::time::Duration::from_secs(60);
+        const PREVIEW_CEILING: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let directory = tempdir().unwrap();
+        let source_media = MediaStore::new(directory.path().join("source-media"));
+        let archive_path = write_generated_japanese_bundle(directory.path(), &source_media);
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let mut storage = Storage::open(&collection_path).unwrap();
+        storage
+            .seed_large_performance_fixture(CARD_COUNT, 100_000)
+            .unwrap();
+        let unrelated_schedule = storage.load_schedule("performance-card-0000000").unwrap();
+        drop(storage);
+        let unrelated_hashes = service.media_store().seed_wav_objects(CARD_COUNT).unwrap();
+        let corrupted_unrelated_path = service
+            .media_store()
+            .resolve(unrelated_hashes.last().unwrap())
+            .unwrap();
+        std::fs::write(&corrupted_unrelated_path, b"unrelated corruption").unwrap();
+
+        let preview_started = Instant::now();
+        let preview = service
+            .preview_bundle(&archive_path.to_string_lossy())
+            .unwrap();
+        let preview_elapsed = preview_started.elapsed();
+        assert!(preview_elapsed <= PREVIEW_CEILING);
+        assert_eq!((preview.total_cards, preview.audio_objects), (9_700, 9_700));
+
+        let import_started = Instant::now();
+        let mut progress = Vec::new();
+        let result = service
+            .import_bundle(
+                &BundleImportRequest {
+                    path: archive_path.to_string_lossy().into_owned(),
+                    now_ms: 200_000,
+                },
+                |update| progress.push((update, import_started.elapsed())),
+            )
+            .unwrap();
+        let import_elapsed = import_started.elapsed();
+
+        assert!(
+            import_elapsed <= IMPORT_CEILING,
+            "9,700-card bundle import exceeded 60 s: {import_elapsed:?}"
+        );
+        assert_eq!(
+            (
+                result.added_decks,
+                result.added_cards,
+                result.imported_media_objects,
+                result.deduplicated_media_objects,
+            ),
+            (6, 9_700, 9_700, 0)
+        );
+        assert!(progress.windows(2).all(|updates| {
+            let stage = |update: &BundleImportProgressDto| match update.stage {
+                BundleImportStageDto::PreparingDecks => 0,
+                BundleImportStageDto::AddingCards => 1,
+                BundleImportStageDto::AddingAudio => 2,
+            };
+            stage(&updates[0].0) < stage(&updates[1].0)
+                || (updates[0].0.stage == updates[1].0.stage
+                    && updates[0].0.current <= updates[1].0.current
+                    && updates[0].0.total == updates[1].0.total)
+        }));
+        assert_eq!(
+            progress
+                .iter()
+                .find(|(update, _)| update.stage == BundleImportStageDto::PreparingDecks)
+                .map(|(update, _)| (update.current, update.total)),
+            Some((0, 6))
+        );
+        assert_eq!(
+            progress
+                .iter()
+                .rfind(|(update, _)| update.stage == BundleImportStageDto::PreparingDecks)
+                .map(|(update, _)| (update.current, update.total)),
+            Some((6, 6))
+        );
+        for stage in [
+            BundleImportStageDto::AddingCards,
+            BundleImportStageDto::AddingAudio,
+        ] {
+            assert_eq!(
+                progress
+                    .iter()
+                    .find(|(update, _)| update.stage == stage)
+                    .map(|(update, _)| (update.current, update.total)),
+                Some((0, 9_700))
+            );
+            assert_eq!(
+                progress
+                    .iter()
+                    .rfind(|(update, _)| update.stage == stage)
+                    .map(|(update, _)| (update.current, update.total)),
+                Some((9_700, 9_700))
+            );
+        }
+        assert_eq!(managed_backup_count(&collection_path), 1);
+        let media_backups = std::fs::read_dir(directory.path().join("backups"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".media"))
+            .count();
+        assert_eq!(media_backups, 0);
+        assert_eq!(
+            Storage::open(&collection_path)
+                .unwrap()
+                .load_schedule("performance-card-0000000")
+                .unwrap(),
+            unrelated_schedule
+        );
+        assert_eq!(
+            std::fs::read(&corrupted_unrelated_path).unwrap(),
+            b"unrelated corruption"
+        );
+
+        let first_preparing = progress
+            .iter()
+            .find(|(update, _)| update.stage == BundleImportStageDto::PreparingDecks)
+            .unwrap()
+            .1;
+        let prepared = progress
+            .iter()
+            .rfind(|(update, _)| update.stage == BundleImportStageDto::PreparingDecks)
+            .unwrap()
+            .1;
+        let adding_cards = progress
+            .iter()
+            .find(|(update, _)| update.stage == BundleImportStageDto::AddingCards)
+            .unwrap()
+            .1;
+        let adding_audio = progress
+            .iter()
+            .find(|(update, _)| update.stage == BundleImportStageDto::AddingAudio)
+            .unwrap()
+            .1;
+        let audio_complete = progress.last().unwrap().1;
+        eprintln!(
+            "release-budget bundle_import_9700 preview_ms={} total_ms={} \
+             validation_ms={} recovery_ms={} persistence_ms={} media_ms={}",
+            preview_elapsed.as_millis(),
+            import_elapsed.as_millis(),
+            prepared.saturating_sub(first_preparing).as_millis(),
+            adding_cards.saturating_sub(prepared).as_millis(),
+            adding_audio.saturating_sub(adding_cards).as_millis(),
+            audio_complete.saturating_sub(adding_audio).as_millis(),
+        );
+    }
+
+    #[test]
+    #[ignore = "manual reference-machine bundle import profile"]
+    #[allow(clippy::too_many_lines)]
+    fn profile_reference_bundle_import() {
+        const UNRELATED_CARD_COUNT: u32 = 9_700;
+        let bundle_path = PathBuf::from(
+            std::env::var("MEIKI_PROFILE_BUNDLE")
+                .expect("MEIKI_PROFILE_BUNDLE must identify a current language bundle"),
+        );
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("collection.db");
+        let service = ApplicationService::new(&collection_path);
+        let mut storage = Storage::open(&collection_path).unwrap();
+        storage
+            .seed_large_performance_fixture(UNRELATED_CARD_COUNT, 100_000)
+            .unwrap();
+        drop(storage);
+        service
+            .media_store()
+            .seed_wav_objects(UNRELATED_CARD_COUNT)
+            .unwrap();
+
+        let preview_started = Instant::now();
+        let preview = service
+            .preview_bundle(&bundle_path.to_string_lossy())
+            .unwrap();
+        let preview_elapsed = preview_started.elapsed();
+        let import_started = Instant::now();
+        let mut progress = Vec::new();
+        let result = service
+            .import_bundle(
+                &BundleImportRequest {
+                    path: bundle_path.to_string_lossy().into_owned(),
+                    now_ms: 200_000,
+                },
+                |update| progress.push((update, import_started.elapsed())),
+            )
+            .unwrap();
+        let import_elapsed = import_started.elapsed();
+
+        let archive_open_started = Instant::now();
+        drop(std::fs::File::open(&bundle_path).unwrap());
+        let archive_open_elapsed = archive_open_started.elapsed();
+        let metadata_started = Instant::now();
+        let profiled_archive = meiki_portable::open_archive(&bundle_path).unwrap();
+        let metadata_elapsed = metadata_started.elapsed();
+        let profiled_bundle =
+            build_pristine_bundle_import(&profiled_archive.collection, 200_000).unwrap();
+        let identity_collection_path = directory.path().join("identity-profile.db");
+        let identity_storage = Storage::open(&identity_collection_path).unwrap();
+        let identity_started = Instant::now();
+        identity_storage
+            .validate_pristine_bundle_import(&profiled_bundle)
+            .unwrap();
+        let identity_elapsed = identity_started.elapsed();
+
+        let lookup_store = MediaStore::new(directory.path().join("lookup-media"));
+        lookup_store.seed_wav_objects(UNRELATED_CARD_COUNT).unwrap();
+        let existing_lookup_started = Instant::now();
+        for entry in &profiled_archive.manifest.media {
+            assert!(matches!(
+                lookup_store.resolve(&entry.content_hash),
+                Err(meiki_media::MediaError::MissingObject(_))
+            ));
+        }
+        let existing_lookup_elapsed = existing_lookup_started.elapsed();
+
+        let mut checksum_archive = meiki_portable::open_archive(&bundle_path).unwrap();
+        let checksum_started = Instant::now();
+        let mut checksummed_media = 0_u64;
+        while checksum_archive.read_next_media().unwrap().is_some() {
+            checksummed_media += 1;
+        }
+        let checksum_elapsed = checksum_started.elapsed();
+        assert_eq!(checksummed_media, preview.audio_objects);
+
+        let first_preparing = progress
+            .iter()
+            .find(|(update, _)| update.stage == BundleImportStageDto::PreparingDecks)
+            .unwrap()
+            .1;
+        let prepared = progress
+            .iter()
+            .rfind(|(update, _)| update.stage == BundleImportStageDto::PreparingDecks)
+            .unwrap()
+            .1;
+        let adding_cards = progress
+            .iter()
+            .find(|(update, _)| update.stage == BundleImportStageDto::AddingCards)
+            .unwrap()
+            .1;
+        let adding_audio = progress
+            .iter()
+            .find(|(update, _)| update.stage == BundleImportStageDto::AddingAudio)
+            .unwrap()
+            .1;
+        let audio_complete = progress
+            .iter()
+            .rfind(|(update, _)| update.stage == BundleImportStageDto::AddingAudio)
+            .unwrap()
+            .1;
+        eprintln!(
+            "bundle-import-profile language={} cards={} audio={} unrelated_cards={} \
+             unrelated_media={} preview_ms={} total_ms={} initial_validation_ms={} \
+             archive_validation_and_extraction_ms={} recovery_ms={} persistence_ms={} \
+             media_copy_ms={} finalization_ms={} archive_open_us={} \
+             metadata_collection_manifest_validation_ms={} identity_validation_ms={} \
+             existing_media_lookup_ms={} checksum_ms={}",
+            preview.language_tag,
+            result.added_cards,
+            preview.audio_objects,
+            UNRELATED_CARD_COUNT,
+            UNRELATED_CARD_COUNT,
+            preview_elapsed.as_millis(),
+            import_elapsed.as_millis(),
+            first_preparing.as_millis(),
+            prepared.saturating_sub(first_preparing).as_millis(),
+            adding_cards.saturating_sub(prepared).as_millis(),
+            adding_audio.saturating_sub(adding_cards).as_millis(),
+            audio_complete.saturating_sub(adding_audio).as_millis(),
+            import_elapsed.saturating_sub(audio_complete).as_millis(),
+            archive_open_elapsed.as_micros(),
+            metadata_elapsed.as_millis(),
+            identity_elapsed.as_millis(),
+            existing_lookup_elapsed.as_millis(),
+            checksum_elapsed.as_millis(),
         );
     }
 }

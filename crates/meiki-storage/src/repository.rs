@@ -19,7 +19,7 @@ use crate::{
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
-const MEDIA_HASH_QUERY_BATCH_SIZE: usize = 500;
+const QUERY_BATCH_SIZE: usize = 500;
 
 /// Persistence operations for mutable decks.
 ///
@@ -1497,7 +1497,7 @@ fn query_unreferenced_media_hashes(
     content_hashes: &[String],
 ) -> Result<Vec<String>, StorageError> {
     let mut unreferenced = HashSet::new();
-    for batch in content_hashes.chunks(MEDIA_HASH_QUERY_BATCH_SIZE) {
+    for batch in content_hashes.chunks(QUERY_BATCH_SIZE) {
         let values = std::iter::repeat_n("(?)", batch.len())
             .collect::<Vec<_>>()
             .join(", ");
@@ -1537,7 +1537,6 @@ fn validate_pristine_bundle_import(
     }
 
     let mut deck_ids = HashSet::new();
-    let mut identities = PristineImportIdentities::default();
     let mut installed_deck_ids = Vec::new();
     let mut missing_deck_ids = Vec::new();
     let mut unassociated_deck_ids = Vec::new();
@@ -1598,13 +1597,13 @@ fn validate_pristine_bundle_import(
             }
             continue;
         }
-        stale_source_ids.extend(classify_missing_bundle_deck_content(
-            connection,
-            imported_deck,
-            &mut identities,
-        )?);
         missing_deck_ids.push(deck.id.clone());
     }
+    stale_source_ids.extend(classify_missing_bundle_content(
+        connection,
+        import,
+        &missing_deck_ids,
+    )?);
     if !missing_deck_ids.is_empty() || !unassociated_deck_ids.is_empty() {
         validate_bundle_stage_associations(connection, &import.language_tag, &imported_ordinals)?;
     }
@@ -1615,6 +1614,87 @@ fn validate_pristine_bundle_import(
         source_ids_to_associate,
         stale_source_ids,
     })
+}
+
+type StoredBundleSourceState = (String, Option<i64>, bool);
+
+fn classify_missing_bundle_content(
+    connection: &Connection,
+    import: &PristineBundleImport,
+    missing_deck_ids: &[String],
+) -> Result<Vec<String>, StorageError> {
+    let missing = missing_deck_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let source_states = stored_bundle_source_states(
+        connection,
+        import
+            .decks
+            .iter()
+            .filter(|deck| missing.contains(deck.deck.id.as_str()))
+            .flat_map(|deck| {
+                deck.notes
+                    .iter()
+                    .map(|note| note.note.source_item.id.as_str())
+            }),
+    )?;
+    let mut identities = PristineImportIdentities::default();
+    let mut new_identities = PristineImportIdentities::default();
+    let mut stale_source_ids = Vec::new();
+    for imported_deck in &import.decks {
+        if missing.contains(imported_deck.deck.id.as_str()) {
+            stale_source_ids.extend(classify_missing_bundle_deck_content(
+                connection,
+                imported_deck,
+                &source_states,
+                &mut identities,
+                &mut new_identities,
+            )?);
+        }
+    }
+    ensure_pristine_identities_available(connection, &new_identities)?;
+    Ok(stale_source_ids)
+}
+
+fn stored_bundle_source_states<'a>(
+    connection: &Connection,
+    source_ids: impl Iterator<Item = &'a str>,
+) -> Result<HashMap<String, StoredBundleSourceState>, StorageError> {
+    let source_ids = source_ids
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut states = HashMap::new();
+    for batch in source_ids.chunks(QUERY_BATCH_SIZE) {
+        let placeholders = sql_placeholders(batch.len());
+        let mut statement = connection.prepare(&format!(
+            "SELECT
+                source_items.id,
+                source_items.deck_id,
+                source_items.deleted_at_ms,
+                EXISTS(
+                    SELECT 1 FROM bundle_source_notes
+                    WHERE bundle_source_notes.source_item_id = source_items.id
+                )
+             FROM source_items
+             WHERE source_items.id IN ({placeholders})"
+        ))?;
+        let stored = statement
+            .query_map(params_from_iter(batch), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ),
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        states.extend(stored);
+    }
+    Ok(states)
 }
 
 fn matching_unassociated_bundle_source_ids(
@@ -1684,31 +1764,22 @@ fn validate_bundle_stage_associations(
 fn classify_missing_bundle_deck_content<'a>(
     connection: &Connection,
     imported_deck: &'a PristineDeckImport,
+    source_states: &HashMap<String, StoredBundleSourceState>,
     bundle_identities: &mut PristineImportIdentities<'a>,
+    new_identities: &mut PristineImportIdentities<'a>,
 ) -> Result<Vec<String>, StorageError> {
-    let mut new_identities = PristineImportIdentities::default();
     let mut stale_source_ids = Vec::new();
     for imported_note in &imported_deck.notes {
         validate_pristine_note(imported_note, &imported_deck.deck.id, bundle_identities)?;
         let source = &imported_note.note.source_item;
-        let state = connection
-            .query_row(
-                "SELECT deck_id, deleted_at_ms FROM source_items WHERE id = ?1",
-                [&source.id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
-            )
-            .optional()?;
-        let Some((stored_deck_id, deleted_at_ms)) = state else {
-            validate_pristine_note(imported_note, &imported_deck.deck.id, &mut new_identities)?;
+        let Some((stored_deck_id, deleted_at_ms, associated)) = source_states.get(&source.id)
+        else {
+            validate_pristine_note(imported_note, &imported_deck.deck.id, new_identities)?;
             continue;
         };
 
         validate_matching_pristine_source(connection, imported_note)?;
-        if entity_id_exists(
-            connection,
-            "SELECT 1 FROM bundle_source_notes WHERE source_item_id = ?1",
-            &source.id,
-        )? {
+        if *associated {
             return Err(StorageError::InvalidAggregate(format!(
                 "bundle source {} belongs to another installed bundle",
                 source.id
@@ -1722,7 +1793,6 @@ fn classify_missing_bundle_deck_content<'a>(
         }
         stale_source_ids.push(source.id.clone());
     }
-    ensure_pristine_identities_available(connection, &new_identities)?;
     Ok(stale_source_ids)
 }
 
@@ -2048,8 +2118,15 @@ fn ensure_pristine_identities_available(
     connection: &Connection,
     identities: &PristineImportIdentities<'_>,
 ) -> Result<(), StorageError> {
-    for id in &identities.aggregate {
-        if let Some(entity) = existing_aggregate_identity(connection, id)? {
+    for (entity, table) in [
+        ("source note", "source_items"),
+        ("semantic segment", "semantic_segments"),
+        ("cloze", "clozes"),
+        ("card", "cards"),
+    ] {
+        if let Some(id) =
+            first_existing_id(connection, table, identities.aggregate.iter().copied())?
+        {
             return Err(StorageError::InvalidAggregate(format!(
                 "imported {entity} identity {id} already exists"
             )));
@@ -2067,7 +2144,7 @@ fn ensure_pristine_identities_available(
         "media_references",
         "media reference",
     )?;
-    ensure_pristine_tags_available(connection, identities.tags.values().copied())
+    ensure_pristine_tags_available(connection, identities)
 }
 
 fn ensure_ids_available(
@@ -2076,34 +2153,65 @@ fn ensure_ids_available(
     table: &str,
     entity: &str,
 ) -> Result<(), StorageError> {
-    let sql = format!("SELECT 1 FROM {table} WHERE id = ?1");
-    for id in ids {
-        if entity_id_exists(connection, &sql, id)? {
-            return Err(StorageError::InvalidAggregate(format!(
-                "imported {entity} identity {id} already exists"
-            )));
-        }
+    if let Some(id) = first_existing_id(connection, table, ids.iter().copied())? {
+        return Err(StorageError::InvalidAggregate(format!(
+            "imported {entity} identity {id} already exists"
+        )));
     }
     Ok(())
 }
 
-fn ensure_pristine_tags_available<'a>(
+fn first_existing_id<'a>(
     connection: &Connection,
-    tags: impl Iterator<Item = &'a Tag>,
-) -> Result<(), StorageError> {
-    for tag in tags {
-        let existing = connection
-            .query_row(
-                "SELECT id, name FROM tags WHERE id = ?1 OR name = ?2",
-                params![tag.id, tag.name],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
+    table: &str,
+    ids: impl Iterator<Item = &'a str>,
+) -> Result<Option<String>, StorageError> {
+    let ids = ids.collect::<Vec<_>>();
+    for batch in ids.chunks(QUERY_BATCH_SIZE) {
+        let placeholders = sql_placeholders(batch.len());
+        let mut statement = connection.prepare(&format!(
+            "SELECT id FROM {table} WHERE id IN ({placeholders}) LIMIT 1"
+        ))?;
+        let existing = statement
+            .query_row(params_from_iter(batch), |row| row.get::<_, String>(0))
             .optional()?;
-        if existing.is_some_and(|(id, name)| id != tag.id || name != tag.name) {
-            return Err(StorageError::InvalidAggregate(format!(
-                "imported tag identity {} or name {:?} already exists",
-                tag.id, tag.name
-            )));
+        if existing.is_some() {
+            return Ok(existing);
+        }
+    }
+    Ok(None)
+}
+
+fn ensure_pristine_tags_available(
+    connection: &Connection,
+    identities: &PristineImportIdentities<'_>,
+) -> Result<(), StorageError> {
+    let tags = identities.tags.values().copied().collect::<Vec<_>>();
+    for batch in tags.chunks(QUERY_BATCH_SIZE) {
+        let placeholders = sql_placeholders(batch.len());
+        let mut statement = connection.prepare(&format!(
+            "SELECT id, name FROM tags
+             WHERE id IN ({placeholders}) OR name IN ({placeholders})"
+        ))?;
+        let parameters = batch
+            .iter()
+            .map(|tag| tag.id.as_str())
+            .chain(batch.iter().map(|tag| tag.name.as_str()));
+        let stored = statement
+            .query_map(params_from_iter(parameters), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (id, name) in stored {
+            if identities
+                .tags
+                .get(id.as_str())
+                .is_none_or(|tag| tag.name != name)
+            {
+                return Err(StorageError::InvalidAggregate(format!(
+                    "imported tag identity {id} or name {name:?} already exists"
+                )));
+            }
         }
     }
     Ok(())
@@ -2242,26 +2350,6 @@ fn insert_import_identity<'a>(
         )));
     }
     Ok(())
-}
-
-fn existing_aggregate_identity(
-    connection: &Connection,
-    id: &str,
-) -> Result<Option<&'static str>, StorageError> {
-    for (entity, sql) in [
-        ("source note", "SELECT 1 FROM source_items WHERE id = ?1"),
-        (
-            "semantic segment",
-            "SELECT 1 FROM semantic_segments WHERE id = ?1",
-        ),
-        ("cloze", "SELECT 1 FROM clozes WHERE id = ?1"),
-        ("card", "SELECT 1 FROM cards WHERE id = ?1"),
-    ] {
-        if entity_id_exists(connection, sql, id)? {
-            return Ok(Some(entity));
-        }
-    }
-    Ok(None)
 }
 
 fn entity_id_exists(connection: &Connection, sql: &str, id: &str) -> Result<bool, StorageError> {
