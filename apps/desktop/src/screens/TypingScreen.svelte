@@ -12,6 +12,7 @@
   import {
     detectInstructionPlatform,
     typingLessons,
+    typingTracks,
     type InstructionPlatform,
     type TypingLanguage,
   } from "../lib/typing-lessons";
@@ -25,14 +26,22 @@
   let detectedPlatform = $state<InstructionPlatform | null>(null);
   let completedLessonIds = $state<string[]>([]);
   let practiceStarted = $state(false);
+  let selectedLessonId = $state(typingLessons[0].id);
+  let selectedLanguageLessons = $derived(
+    typingLessons.filter((lesson) => lesson.language === selectedLanguage),
+  );
   let selectedLesson = $derived(
-    typingLessons.find((lesson) => lesson.language === selectedLanguage) ??
+    selectedLanguageLessons.find((lesson) => lesson.id === selectedLessonId) ??
+      selectedLanguageLessons[0] ??
       typingLessons[0],
   );
 
   onMount(() => {
     const savedLanguage = localStorage.getItem(languagePreferenceKey);
-    if (isTypingLanguage(savedLanguage)) selectedLanguage = savedLanguage;
+    if (isTypingLanguage(savedLanguage)) {
+      selectedLanguage = savedLanguage;
+      selectedLessonId = firstLessonId(savedLanguage);
+    }
 
     detectedPlatform = detectInstructionPlatform(navigator);
     const savedPlatform = localStorage.getItem(platformPreferenceKey);
@@ -61,7 +70,7 @@
   });
 
   function isTypingLanguage(value: string | null): value is TypingLanguage {
-    return typingLessons.some((lesson) => lesson.language === value);
+    return typingTracks.some((track) => track.language === value);
   }
 
   function isInstructionPlatform(
@@ -72,8 +81,26 @@
 
   function chooseLanguage(language: TypingLanguage): void {
     selectedLanguage = language;
+    selectedLessonId = firstLessonId(language);
     practiceStarted = false;
     localStorage.setItem(languagePreferenceKey, language);
+  }
+
+  function firstLessonId(language: TypingLanguage): string {
+    return (
+      typingLessons.find((lesson) => lesson.language === language)?.id ??
+      typingLessons[0].id
+    );
+  }
+
+  function trackIsCompleted(language: TypingLanguage): boolean {
+    const lessonIds = typingLessons
+      .filter((lesson) => lesson.language === language)
+      .map((lesson) => lesson.id);
+    return (
+      lessonIds.length > 0 &&
+      lessonIds.every((lessonId) => completedLessonIds.includes(lessonId))
+    );
   }
 
   function choosePlatform(platform: InstructionPlatform): void {
@@ -91,12 +118,14 @@
   }
 
   function nextLesson(): void {
-    const currentIndex = typingLessons.findIndex(
+    const currentIndex = selectedLanguageLessons.findIndex(
       (lesson) => lesson.id === selectedLesson.id,
     );
-    const next = typingLessons[(currentIndex + 1) % typingLessons.length];
-    selectedLanguage = next.language;
-    localStorage.setItem(languagePreferenceKey, next.language);
+    const next =
+      selectedLanguageLessons[
+        (currentIndex + 1) % selectedLanguageLessons.length
+      ];
+    selectedLessonId = next.id;
     practiceStarted = true;
   }
 </script>
@@ -121,18 +150,18 @@
     <fieldset class="choice-fieldset">
       <legend>Language</legend>
       <div class="language-choices">
-        {#each typingLessons as lesson (lesson.id)}
+        {#each typingTracks as track (track.language)}
           <Button
             class="h-auto min-h-13 justify-between whitespace-normal text-left"
-            variant={selectedLanguage === lesson.language
+            variant={selectedLanguage === track.language
               ? "secondary"
               : "outline"}
-            aria-label={lesson.selectionLabel}
-            aria-pressed={selectedLanguage === lesson.language}
-            onclick={() => chooseLanguage(lesson.language)}
+            aria-label={track.selectionLabel}
+            aria-pressed={selectedLanguage === track.language}
+            onclick={() => chooseLanguage(track.language)}
           >
-            <span>{lesson.selectionLabel}</span>
-            {#if completedLessonIds.includes(lesson.id)}
+            <span>{track.selectionLabel}</span>
+            {#if trackIsCompleted(track.language)}
               <Badge variant="secondary">
                 <RiCheckLine aria-hidden="true" />
                 Completed

@@ -28,7 +28,6 @@
   ]);
   let expectedIndex = $state(0);
   let pressedCodes = $state<string[]>([]);
-  let correctCodes = $state<string[]>([]);
   let incorrectCode = $state<string | null>(null);
   let physicalTrail = $state<string[]>([]);
   let compositionText = $state("");
@@ -41,9 +40,11 @@
   let liveStatus = $state("");
 
   let expectedCode = $derived(expectedCodes[expectedIndex] ?? null);
+  let completedCodes = $derived(expectedCodes.slice(0, expectedIndex));
 
   onMount(() => {
     if (completed) {
+      expectedIndex = expectedCodes.length;
       result = "correct";
       sequenceCompleted = true;
       feedback = `Completed — ${lesson.target}`;
@@ -152,9 +153,6 @@
     }
 
     incorrectCode = null;
-    if (!correctCodes.includes(event.code)) {
-      correctCodes = [...correctCodes, event.code];
-    }
     expectedIndex += 1;
     if (expectedIndex === expectedCodes.length) {
       sequenceCompleted = true;
@@ -252,7 +250,6 @@
   function retry(): void {
     expectedIndex = 0;
     pressedCodes = [];
-    correctCodes = [];
     incorrectCode = null;
     physicalTrail = [];
     compositionText = "";
@@ -321,7 +318,7 @@
     {expectedCode}
     {expectedCodes}
     {pressedCodes}
-    {correctCodes}
+    {completedCodes}
     {incorrectCode}
     {sequenceCompleted}
     keyLegends={lesson.keyLegends}

@@ -2,11 +2,15 @@ export type InstructionPlatform = "windows" | "macos";
 export type TypingLanguage = "korean" | "japanese" | "french" | "spanish";
 export type TypingDrillMode = "physical" | "committed";
 
+export type TypingTrack = {
+  language: TypingLanguage;
+  selectionLabel: string;
+};
+
 export type TypingLesson = {
   id: string;
   language: TypingLanguage;
   languageTag: string;
-  selectionLabel: string;
   title: string;
   mode: TypingDrillMode;
   target: string;
@@ -18,12 +22,18 @@ export type TypingLesson = {
   instructions: Record<InstructionPlatform, string>;
 };
 
+export const typingTracks: TypingTrack[] = [
+  { language: "korean", selectionLabel: "Korean — 2-set Hangul" },
+  { language: "japanese", selectionLabel: "Japanese — Romaji input" },
+  { language: "french", selectionLabel: "French — Dead-key accents" },
+  { language: "spanish", selectionLabel: "Spanish — Dead-key accents" },
+];
+
 export const typingLessons: TypingLesson[] = [
   {
     id: "typing-korean-foundation",
     language: "korean",
     languageTag: "ko",
-    selectionLabel: "Korean — 2-set Hangul",
     title: "Build 아 from two physical positions",
     mode: "physical",
     target: "아",
@@ -43,7 +53,6 @@ export const typingLessons: TypingLesson[] = [
     id: "typing-japanese-foundation",
     language: "japanese",
     languageTag: "ja",
-    selectionLabel: "Japanese — Romaji input",
     title: "Commit the first Japanese vowel",
     mode: "committed",
     target: "あ",
@@ -63,7 +72,6 @@ export const typingLessons: TypingLesson[] = [
     id: "typing-french-foundation",
     language: "french",
     languageTag: "fr",
-    selectionLabel: "French — Dead-key accents",
     title: "Commit one accented grapheme",
     mode: "committed",
     target: "é",
@@ -86,7 +94,6 @@ export const typingLessons: TypingLesson[] = [
     id: "typing-spanish-foundation",
     language: "spanish",
     languageTag: "es",
-    selectionLabel: "Spanish — Dead-key accents",
     title: "Commit one Spanish accented grapheme",
     mode: "committed",
     target: "á",

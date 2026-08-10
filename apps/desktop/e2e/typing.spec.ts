@@ -176,6 +176,50 @@ test("the empty collection offers exactly four static local tracks without netwo
   ).toEqual([]);
 });
 
+test("two static lessons in one language share one track and advance with separate completion IDs", async ({
+  page,
+}) => {
+  await page.goto("/e2e/fixtures/typing-multiple-lessons.html");
+  await expect(
+    page.getByRole("heading", { name: "Typing", level: 1 }),
+  ).toBeVisible();
+
+  const languageChoices = page.getByRole("group", { name: "Language" });
+  await expect(languageChoices.getByRole("button")).toHaveCount(4);
+  await expect(
+    languageChoices.getByRole("button", {
+      name: "Korean — 2-set Hangul",
+    }),
+  ).toHaveCount(1);
+
+  let input = await startPractice(page);
+  await dispatchKey(input, "keydown", { code: "KeyD", key: "d" });
+  await dispatchKey(input, "keyup", { code: "KeyD", key: "d" });
+  await dispatchKey(input, "keydown", { code: "KeyK", key: "k" });
+  await dispatchKey(input, "keyup", { code: "KeyK", key: "k" });
+  await page.getByRole("button", { name: "Next" }).click();
+
+  await expect(
+    page.getByRole("heading", {
+      name: "Second Korean fixture lesson",
+      level: 2,
+    }),
+  ).toBeVisible();
+  input = page.getByLabel("Practice input");
+  await dispatchKey(input, "keydown", { code: "KeyD", key: "d" });
+  await dispatchKey(input, "keyup", { code: "KeyD", key: "d" });
+  await dispatchKey(input, "keydown", { code: "KeyK", key: "k" });
+  await dispatchKey(input, "keyup", { code: "KeyK", key: "k" });
+
+  expect(
+    JSON.parse(
+      (await page.evaluate(() =>
+        localStorage.getItem("meiki-typing-completed"),
+      )) ?? "[]",
+    ),
+  ).toEqual(["typing-korean-foundation", "typing-korean-fixture-second"]);
+});
+
 for (const detected of [
   { runtime: "MacIntel", label: "macOS", stored: "macos" },
   { runtime: "Win32", label: "Windows", stored: "windows" },
@@ -283,6 +327,42 @@ test("physical drills expose live, held, repeated, ordered, and completed key st
     "F → D → K",
   );
   await expect(page.getByRole("button", { name: "Next" })).toBeEnabled();
+});
+
+test("a repeated physical code stays expected after its earlier ordinal is completed", async ({
+  page,
+}) => {
+  await setRuntimePlatform(page, "MacIntel");
+  await openTyping(page);
+  await page.getByRole("button", { name: "French — Dead-key accents" }).click();
+  const input = await startPractice(page);
+  const e = page.getByTestId("typing-key-KeyE");
+
+  await dispatchKey(input, "keydown", { code: "AltLeft", key: "Alt" });
+  await dispatchKey(input, "keyup", { code: "AltLeft", key: "Alt" });
+  await dispatchKey(input, "keydown", { code: "KeyE", key: "e" });
+
+  await expect(e).toHaveAttribute("data-correct", "true");
+  await expect(e).toHaveAttribute("data-expected", "true");
+  await expect(e.locator(".key-marker")).toHaveText("→");
+  await expect(page.getByTestId("typing-physical-trail")).toHaveText(
+    "Option → E",
+  );
+  await expect(page.locator("#typing-live-status")).toHaveText(
+    "Correct position. Next: E.",
+  );
+
+  await dispatchKey(input, "keyup", { code: "KeyE", key: "e" });
+  await dispatchKey(input, "keydown", { code: "KeyE", key: "e" });
+  await expect(e).toHaveAttribute("data-expected", "false");
+  await expect(e).toHaveAttribute("data-completed", "true");
+  await expect(e.locator(".key-marker")).toHaveText("✓");
+  await expect(page.getByTestId("typing-physical-trail")).toHaveText(
+    "Option → E → E",
+  );
+  await expect(page.locator("#typing-live-status")).toHaveText(
+    "Physical sequence complete. Commit the target text.",
+  );
 });
 
 test("IME composition stays separate and its committing Enter never submits prematurely", async ({
@@ -411,7 +491,10 @@ test("the presentation-only keyboard keeps required staggered rows and no narrow
 test("keyboard-only Retry and Next retain live semantics and pass accessibility checks", async ({
   page,
 }) => {
-  await openTyping(page);
+  await page.goto("/e2e/fixtures/typing-multiple-lessons.html");
+  await expect(
+    page.getByRole("heading", { name: "Typing", level: 1 }),
+  ).toBeVisible();
   const start = page.getByRole("button", { name: "Start practice" });
   await start.focus();
   await page.keyboard.press("Enter");
@@ -436,11 +519,11 @@ test("keyboard-only Retry and Next retain live semantics and pass accessibility 
   await next.focus();
   await page.keyboard.press("Enter");
   await expect(
-    page.getByRole("button", { name: "Japanese — Romaji input" }),
+    page.getByRole("button", { name: "Korean — 2-set Hangul" }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(
     page.getByRole("heading", {
-      name: "Commit the first Japanese vowel",
+      name: "Second Korean fixture lesson",
       level: 2,
     }),
   ).toBeVisible();

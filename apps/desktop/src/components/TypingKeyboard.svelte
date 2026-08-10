@@ -11,7 +11,7 @@
     expectedCode: string | null;
     expectedCodes: string[];
     pressedCodes: string[];
-    correctCodes: string[];
+    completedCodes: string[];
     incorrectCode: string | null;
     sequenceCompleted: boolean;
     keyLegends: Record<string, string>;
@@ -21,7 +21,7 @@
     expectedCode,
     expectedCodes,
     pressedCodes,
-    correctCodes,
+    completedCodes,
     incorrectCode,
     sequenceCompleted,
     keyLegends,
@@ -100,9 +100,9 @@
   function keyMarker(key: Keycap): string {
     if (incorrectCode === key.code) return "!";
     if (sequenceCompleted && expectedCodes.includes(key.code)) return "✓";
-    if (correctCodes.includes(key.code)) return "✓";
-    if (pressedCodes.includes(key.code)) return "●";
     if (expectedCode === key.code) return "→";
+    if (completedCodes.includes(key.code)) return "✓";
+    if (pressedCodes.includes(key.code)) return "●";
     return "";
   }
 </script>
@@ -120,7 +120,7 @@
           data-expected={expectedCode === key.code}
           data-pressed={pressedCodes.includes(key.code)}
           data-held={Boolean(key.modifier && pressedCodes.includes(key.code))}
-          data-correct={correctCodes.includes(key.code)}
+          data-correct={completedCodes.includes(key.code)}
           data-incorrect={incorrectCode === key.code}
           data-completed={Boolean(
             sequenceCompleted && expectedCodes.includes(key.code),
@@ -170,11 +170,6 @@
     background: var(--card);
   }
 
-  .keycap[data-expected="true"] {
-    border: 2px dashed var(--primary);
-    background: var(--secondary);
-  }
-
   .keycap[data-pressed="true"] {
     border-bottom-width: 1px;
     background: var(--muted);
@@ -187,6 +182,12 @@
     border-color: var(--primary);
     background: var(--primary);
     color: var(--primary-foreground);
+  }
+
+  .keycap[data-expected="true"] {
+    border: 2px dashed var(--primary);
+    color: var(--foreground);
+    background: var(--secondary);
   }
 
   .keycap[data-incorrect="true"] {
