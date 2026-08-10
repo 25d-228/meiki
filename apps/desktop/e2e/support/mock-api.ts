@@ -475,6 +475,25 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(dtos.decks);
       }
       if (command === "list_deck_summaries") {
+        if (params.get("decks") === "loading") {
+          await new Promise((resolve) => setTimeout(resolve, 350));
+        }
+        if (params.get("decks") === "error") {
+          throw new Error("The local collection is temporarily unavailable.");
+        }
+        if (params.get("decks") === "empty") return [];
+        if (params.get("decks") === "long-name") {
+          return clone(
+            dtos.deckSummaries.map((deck) =>
+              deck.id === "travel-deck"
+                ? {
+                    ...deck,
+                    name: "Travel phrases for an exceptionally long multilingual journey through 日本語 and العربية",
+                  }
+                : deck,
+            ),
+          );
+        }
         if (
           (bundleImported || params.get("bundleRemoval") === "installed") &&
           !bundleRemoved

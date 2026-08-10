@@ -1,6 +1,8 @@
 <script lang="ts">
   import { DropdownMenu } from "bits-ui";
   import RiDeleteBin6Line from "remixicon-svelte/icons/delete-bin-6-line";
+  import RiGridLine from "remixicon-svelte/icons/grid-line";
+  import RiListUnordered from "remixicon-svelte/icons/list-unordered";
   import RiMore2Line from "remixicon-svelte/icons/more-2-line";
   import { onMount } from "svelte";
   import { SvelteDate } from "svelte/reactivity";
@@ -37,7 +39,10 @@
     bundleImportRunning: boolean;
   };
 
+  type DeckView = "grid" | "list";
+
   const selectedTodayDeckKey = "meiki-today-deck";
+  const deckViewPreferenceKey = "meiki-decks-view";
   const allDecksId = "__all_decks__";
   const defaultDeckId = "default-deck";
 
@@ -71,10 +76,14 @@
   let retryStudyDeck = $state<DeckSummaryDto | null>(null);
   let deleteTarget = $state<DeckSummaryDto | null>(null);
   let deleteFlowOpen = $state(false);
+  let deckView = $state<DeckView>("grid");
   let loadedBundleImportRefresh = $state<number | null>(null);
 
   onMount(() => {
     onDeckContextChange("All decks");
+    if (localStorage.getItem(deckViewPreferenceKey) === "list") {
+      deckView = "list";
+    }
     const storedQueue = readStudyQueue();
     if (storedQueue && remainingStudyCards(storedQueue) > 0) {
       activeQueue = storedQueue;
@@ -145,6 +154,11 @@
     if (deck.id === defaultDeckId) return;
     deleteTarget = deck;
     deleteFlowOpen = true;
+  }
+
+  function selectDeckView(view: DeckView): void {
+    deckView = view;
+    localStorage.setItem(deckViewPreferenceKey, view);
   }
 
   async function handleDeckDeletionCommitted(
@@ -292,7 +306,77 @@
       return languageTag;
     }
   }
+
+  function studyActionLabel(deck: DeckSummaryDto): string {
+    if (activeQueue?.deckId === deck.id) return "Resume";
+    if (busyDeckId === deck.id) return "Planning…";
+    return "Study";
+  }
 </script>
+
+{#snippet deckCounts(deck: DeckSummaryDto)}
+  <dl class="deck-counts">
+    <div>
+      <dt>Total</dt>
+      <dd>{deck.total_cards}</dd>
+    </div>
+    <div>
+      <dt>Due</dt>
+      <dd>{deck.due_cards}</dd>
+    </div>
+    <div>
+      <dt>New</dt>
+      <dd>{deck.new_cards}</dd>
+    </div>
+  </dl>
+{/snippet}
+
+{#snippet deckNavigationActions(deck: DeckSummaryDto)}
+  <Button
+    variant="outline"
+    onclick={() => onOpen(deck.id, deck.name, deck.is_bundle_stage)}
+    >Open</Button
+  >
+  <Button
+    disabled={busyDeckId !== "" || deck.total_cards === 0}
+    onclick={() => void beginStudy(deck)}
+  >
+    {studyActionLabel(deck)}
+  </Button>
+{/snippet}
+
+{#snippet deckActionsMenu(deck: DeckSummaryDto)}
+  <DropdownMenu.Root>
+    <DropdownMenu.Trigger>
+      {#snippet child({ props })}
+        <Button
+          {...props}
+          size="icon-sm"
+          variant="ghost"
+          aria-label={`Actions for ${deck.name}`}
+        >
+          <RiMore2Line aria-hidden="true" />
+        </Button>
+      {/snippet}
+    </DropdownMenu.Trigger>
+    <DropdownMenu.Portal>
+      <DropdownMenu.Content
+        align="end"
+        sideOffset={4}
+        class="z-50 min-w-36 rounded-none bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10"
+      >
+        <DropdownMenu.Item
+          textValue="Delete deck"
+          class="flex cursor-default items-center gap-2 rounded-none px-2 py-1.5 text-sm text-destructive outline-none select-none data-highlighted:bg-destructive/10"
+          onSelect={() => openDeleteDeck(deck)}
+        >
+          <RiDeleteBin6Line class="size-4" aria-hidden="true" />
+          Delete deck
+        </DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu.Portal>
+  </DropdownMenu.Root>
+{/snippet}
 
 <section class="screen decks-screen" aria-labelledby="decks-title">
   <header class="screen-header">
@@ -350,90 +434,80 @@
     </p>
   {/if}
 
-  <div class="deck-grid" aria-busy={loading}>
-    {#if loading && decks.length === 0}
-      <Card.Root class="p-6">
-        <p class="text-muted-foreground">Loading decks…</p>
-      </Card.Root>
-    {:else}
-      {#each decks as deck (deck.id)}
-        <Card.Root class="gap-5 p-5" data-testid={`deck-${deck.id}`}>
-          <Card.Header class="p-0">
-            <Card.Title>{deck.name}</Card.Title>
-            <Card.Description>
-              {deck.total_cards}
-              {deck.total_cards === 1 ? "card" : "cards"}
-            </Card.Description>
-            {#if deck.id !== defaultDeckId}
-              <Card.Action>
-                <DropdownMenu.Root>
-                  <DropdownMenu.Trigger>
-                    {#snippet child({ props })}
-                      <Button
-                        {...props}
-                        size="icon-sm"
-                        variant="ghost"
-                        aria-label={`Actions for ${deck.name}`}
-                      >
-                        <RiMore2Line aria-hidden="true" />
-                      </Button>
-                    {/snippet}
-                  </DropdownMenu.Trigger>
-                  <DropdownMenu.Portal>
-                    <DropdownMenu.Content
-                      align="end"
-                      sideOffset={4}
-                      class="z-50 min-w-36 rounded-none bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10"
-                    >
-                      <DropdownMenu.Item
-                        textValue="Delete deck"
-                        class="flex cursor-default items-center gap-2 rounded-none px-2 py-1.5 text-sm text-destructive outline-none select-none data-highlighted:bg-destructive/10"
-                        onSelect={() => openDeleteDeck(deck)}
-                      >
-                        <RiDeleteBin6Line class="size-4" aria-hidden="true" />
-                        Delete deck
-                      </DropdownMenu.Item>
-                    </DropdownMenu.Content>
-                  </DropdownMenu.Portal>
-                </DropdownMenu.Root>
-              </Card.Action>
-            {/if}
-          </Card.Header>
-          <dl class="deck-counts">
-            <div>
-              <dt>Total</dt>
-              <dd>{deck.total_cards}</dd>
-            </div>
-            <div>
-              <dt>Due</dt>
-              <dd>{deck.due_cards}</dd>
-            </div>
-            <div>
-              <dt>New</dt>
-              <dd>{deck.new_cards}</dd>
-            </div>
-          </dl>
-          <Card.Footer class="justify-end p-0">
-            <Button
-              variant="outline"
-              onclick={() => onOpen(deck.id, deck.name, deck.is_bundle_stage)}
-              >Open</Button
-            >
-            <Button
-              disabled={busyDeckId !== "" || deck.total_cards === 0}
-              onclick={() => void beginStudy(deck)}
-            >
-              {activeQueue && activeQueue.deckId === deck.id
-                ? "Resume"
-                : busyDeckId === deck.id
-                  ? "Planning…"
-                  : "Study"}
-            </Button>
-          </Card.Footer>
-        </Card.Root>
-      {/each}
-    {/if}
+  <div class="deck-view-toolbar" role="group" aria-label="Deck view">
+    <Button
+      size="sm"
+      variant={deckView === "grid" ? "default" : "outline"}
+      aria-pressed={deckView === "grid"}
+      onclick={() => selectDeckView("grid")}
+    >
+      <RiGridLine data-icon="inline-start" aria-hidden="true" />
+      Grid
+    </Button>
+    <Button
+      size="sm"
+      variant={deckView === "list" ? "default" : "outline"}
+      aria-pressed={deckView === "list"}
+      onclick={() => selectDeckView("list")}
+    >
+      <RiListUnordered data-icon="inline-start" aria-hidden="true" />
+      List
+    </Button>
   </div>
+
+  {#if deckView === "grid"}
+    <div class="deck-grid" data-testid="deck-grid" aria-busy={loading}>
+      {#if loading && decks.length === 0}
+        <Card.Root class="p-6">
+          <p class="text-muted-foreground">Loading decks…</p>
+        </Card.Root>
+      {:else}
+        {#each decks as deck (deck.id)}
+          <Card.Root class="gap-5 p-5" data-testid={`deck-${deck.id}`}>
+            <Card.Header class="p-0">
+              <Card.Title class="[overflow-wrap:anywhere]" data-deck-name
+                >{deck.name}</Card.Title
+              >
+              <Card.Description>
+                {deck.total_cards}
+                {deck.total_cards === 1 ? "card" : "cards"}
+              </Card.Description>
+              {#if deck.id !== defaultDeckId}
+                <Card.Action>
+                  {@render deckActionsMenu(deck)}
+                </Card.Action>
+              {/if}
+            </Card.Header>
+            {@render deckCounts(deck)}
+            <Card.Footer class="justify-end p-0">
+              {@render deckNavigationActions(deck)}
+            </Card.Footer>
+          </Card.Root>
+        {/each}
+      {/if}
+    </div>
+  {:else}
+    <div class="deck-list" data-testid="deck-list" aria-busy={loading}>
+      {#if loading && decks.length === 0}
+        <Card.Root class="p-6">
+          <p class="text-muted-foreground">Loading decks…</p>
+        </Card.Root>
+      {:else}
+        {#each decks as deck (deck.id)}
+          <article class="deck-list-row" data-testid={`deck-${deck.id}`}>
+            <h2 class="deck-list-name" data-deck-name>{deck.name}</h2>
+            {@render deckCounts(deck)}
+            <div class="deck-list-actions">
+              {@render deckNavigationActions(deck)}
+              {#if deck.id !== defaultDeckId}
+                {@render deckActionsMenu(deck)}
+              {/if}
+            </div>
+          </article>
+        {/each}
+      {/if}
+    </div>
+  {/if}
 
   {#if !loading && decks.length === 0}
     <div class="empty-state">
@@ -650,6 +724,47 @@
     gap: 1rem;
   }
 
+  .deck-view-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-bottom: 1rem;
+  }
+
+  .deck-list {
+    display: grid;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .deck-list-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(13rem, 18rem) auto;
+    gap: 0.75rem;
+    align-items: center;
+    min-width: 0;
+    padding: 0.875rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+  }
+
+  .deck-list-name {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-size: 1rem;
+    line-height: 1.35;
+  }
+
+  .deck-list-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
   .deck-counts {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -672,6 +787,21 @@
   .deck-counts dd {
     font-size: 1.25rem;
     font-weight: 700;
+  }
+
+  .deck-list .deck-counts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .deck-list .deck-counts div {
+    gap: 0.1rem;
+    padding: 0;
+    border: 0;
+  }
+
+  .deck-list .deck-counts dd {
+    font-size: 1rem;
   }
 
   .saved-session-note {
@@ -700,5 +830,19 @@
 
   .bundle-removal-progress progress {
     width: 100%;
+  }
+
+  @media (max-width: 760px) {
+    .deck-view-toolbar {
+      justify-content: flex-start;
+    }
+
+    .deck-list-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .deck-list-actions {
+      justify-content: flex-start;
+    }
   }
 </style>
