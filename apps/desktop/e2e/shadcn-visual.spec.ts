@@ -214,6 +214,24 @@ for (const typingCase of [
     language: "French — Dead-key accents",
   },
   {
+    name: "typing-french-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+    language: "French — Dead-key accents",
+  },
+  {
+    name: "typing-spanish-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+    language: "Spanish — Dead-key accents",
+  },
+  {
+    name: "typing-spanish-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+    language: "Spanish — Dead-key accents",
+  },
+  {
     name: "typing-korean-narrow-dark",
     theme: "dark",
     viewport: "narrow",
