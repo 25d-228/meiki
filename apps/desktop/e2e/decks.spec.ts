@@ -8,6 +8,10 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function openDecks(page: import("@playwright/test").Page): Promise<void> {
+  const openNavigation = page.getByRole("button", {
+    name: "Open navigation",
+  });
+  if (await openNavigation.isVisible()) await openNavigation.click();
   await page
     .getByRole("navigation", { name: "Primary navigation" })
     .getByRole("button", { name: "Decks", exact: true })
@@ -84,6 +88,35 @@ async function deleteDeckRequestCount(
   );
 }
 
+async function selectDeckView(
+  page: import("@playwright/test").Page,
+  view: "Grid" | "List",
+): Promise<void> {
+  await page
+    .getByRole("group", { name: "Deck view" })
+    .getByRole("button", { name: view })
+    .click();
+}
+
+async function deckDetails(
+  page: import("@playwright/test").Page,
+  deckId: string,
+) {
+  const deck = page.getByTestId(`deck-${deckId}`);
+  return {
+    name: (await deck.locator("[data-deck-name]").innerText()).trim(),
+    counts: await deck.locator("dl > div").evaluateAll((items) =>
+      items.map((item) => ({
+        label: item.querySelector("dt")?.textContent?.trim(),
+        value: item.querySelector("dd")?.textContent?.trim(),
+      })),
+    ),
+    open: await deck.getByRole("button", { name: "Open" }).count(),
+    study: await deck.getByRole("button", { name: /^(Study|Resume)$/ }).count(),
+    actions: await deck.getByRole("button", { name: /Actions for/ }).count(),
+  };
+}
+
 async function confirmJapaneseBundleRemoval(
   page: import("@playwright/test").Page,
 ): Promise<void> {
@@ -108,6 +141,194 @@ test("includes suspended cards in Total and presents the populated default deck 
   await expect(unsorted.locator("dl")).toContainText(
     /Total\s*3\s*Due\s*1\s*New\s*1/,
   );
+});
+
+test("defaults to Grid and persists pointer and keyboard view changes", async ({
+  page,
+}) => {
+  await page.evaluate(() => localStorage.removeItem("meiki-decks-view"));
+  await page.reload();
+  await openDecks(page);
+  const viewControl = page.getByRole("group", { name: "Deck view" });
+  const grid = viewControl.getByRole("button", { name: "Grid" });
+  const list = viewControl.getByRole("button", { name: "List" });
+  await expect(grid).toHaveAttribute("aria-pressed", "true");
+  await expect(list).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByTestId("deck-grid")).toBeVisible();
+  await expect(page.getByTestId("deck-list")).toHaveCount(0);
+
+  await list.click();
+  await expect(list).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("deck-list")).toBeVisible();
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-decks-view")),
+  ).toBe("list");
+
+  await page.reload();
+  await openDecks(page);
+  await expect(list).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("deck-list")).toBeVisible();
+
+  await grid.focus();
+  await page.keyboard.press("Enter");
+  await expect(grid).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("deck-grid")).toBeVisible();
+  await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
+  await list.focus();
+  await page.keyboard.press("Space");
+  await expect(list).toHaveAttribute("aria-pressed", "true");
+});
+
+test("keeps deck information and actions identical in Grid and List", async ({
+  page,
+}) => {
+  await openDecks(page);
+  const gridDetails = await Promise.all([
+    deckDetails(page, "default-deck"),
+    deckDetails(page, "travel-deck"),
+  ]);
+  await selectDeckView(page, "List");
+  const listDetails = await Promise.all([
+    deckDetails(page, "default-deck"),
+    deckDetails(page, "travel-deck"),
+  ]);
+
+  expect(listDetails).toEqual(gridDetails);
+  expect(listDetails).toEqual([
+    {
+      name: "Unsorted",
+      counts: [
+        { label: "Total", value: "3" },
+        { label: "Due", value: "1" },
+        { label: "New", value: "1" },
+      ],
+      open: 1,
+      study: 1,
+      actions: 0,
+    },
+    {
+      name: "Travel phrases",
+      counts: [
+        { label: "Total", value: "2" },
+        { label: "Due", value: "0" },
+        { label: "New", value: "1" },
+      ],
+      open: 1,
+      study: 1,
+      actions: 1,
+    },
+  ]);
+});
+
+test("uses the shared single-deck deletion flow from List", async ({
+  page,
+}) => {
+  await openDecks(page);
+  await selectDeckView(page, "List");
+  await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete “Travel phrases”?",
+  });
+  await expect(confirmation).toContainText(
+    "Its 2 cards will be moved to Trash.",
+  );
+  await confirmation.getByRole("button", { name: "Delete deck" }).click();
+
+  await expect(page.getByTestId("deck-travel-deck")).toHaveCount(0);
+  await expect(page.getByTestId("deck-list")).toBeVisible();
+  expect(await deleteDeckRequestCount(page)).toBe(1);
+});
+
+for (const deckView of ["Grid", "List"] as const) {
+  test(`keeps loading, empty, error, session, notice, and bundle states in ${deckView}`, async ({
+    page,
+  }) => {
+    await page.evaluate((view) => {
+      localStorage.setItem("meiki-decks-view", view.toLocaleLowerCase());
+    }, deckView);
+
+    await page.goto("/?decks=loading");
+    await openDecks(page);
+    await expect(page.getByText("Loading decks…")).toBeVisible();
+    await expect(
+      page
+        .getByRole("group", { name: "Deck view" })
+        .getByRole("button", { name: deckView }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    await page.goto("/?decks=empty");
+    await openDecks(page);
+    await expect(
+      page.getByRole("heading", { name: "Create your first deck" }),
+    ).toBeVisible();
+
+    await page.goto("/?decks=error");
+    await openDecks(page);
+    await expect(page.getByRole("alert")).toContainText(
+      "The local collection is temporarily unavailable.",
+    );
+
+    await seedStudyState(page, "__all_decks__", "__all_decks__");
+    await page.goto("/?bundleRemoval=installed&today=empty");
+    await openDecks(page);
+    await expect(page.getByText(/A saved session is active/)).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Bundle actions" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Import bundle" }),
+    ).toBeVisible();
+    await page
+      .getByTestId("deck-travel-deck")
+      .getByRole("button", { name: "Study" })
+      .click();
+    await expect(
+      page.getByText("Travel phrases has no cards ready to study."),
+    ).toBeVisible();
+  });
+}
+
+test("wraps long names without horizontal overflow in Grid or narrow List", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 720 });
+  await page.goto("/?decks=long-name");
+  await openDecks(page);
+  const longName =
+    "Travel phrases for an exceptionally long multilingual journey through 日本語 and العربية";
+  const gridDeck = page.getByTestId("deck-travel-deck");
+  await expect(gridDeck.locator("[data-deck-name]")).toHaveText(longName);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+
+  await selectDeckView(page, "List");
+  const listDeck = page.getByTestId("deck-travel-deck");
+  const nameBounds = await listDeck.locator("[data-deck-name]").boundingBox();
+  const countBounds = await listDeck.locator("dl").boundingBox();
+  const actionBounds = await listDeck
+    .locator(".deck-list-actions")
+    .boundingBox();
+  expect(
+    nameBounds &&
+      countBounds &&
+      countBounds.y >= nameBounds.y + nameBounds.height,
+  ).toBe(true);
+  expect(
+    countBounds &&
+      actionBounds &&
+      actionBounds.y >= countBounds.y + countBounds.height,
+  ).toBe(true);
+  await expect(
+    listDeck.getByRole("button", { name: `Actions for ${longName}` }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
 });
 
 test("opens each deletable deck's actions by keyboard and keeps Unsorted non-deletable", async ({
@@ -642,6 +863,12 @@ test("starts and resumes a study queue restricted to one deck", async ({
   });
 
   await openDecks(page);
+  await expect(
+    page
+      .getByTestId("deck-travel-deck")
+      .getByRole("button", { name: "Resume" }),
+  ).toBeVisible();
+  await selectDeckView(page, "List");
   await expect(
     page
       .getByTestId("deck-travel-deck")

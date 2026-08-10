@@ -199,6 +199,67 @@ for (const visualCase of visualCases) {
   });
 }
 
+for (const deckViewCase of [
+  {
+    name: "deck-view-grid-desktop-light",
+    route: "/",
+    view: "Grid",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "deck-view-list-desktop-light",
+    route: "/",
+    view: "List",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "deck-view-grid-narrow-dark",
+    route: "/?decks=long-name",
+    view: "Grid",
+    theme: "dark",
+    viewport: "narrow",
+  },
+  {
+    name: "deck-view-list-narrow-dark",
+    route: "/?decks=long-name",
+    view: "List",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${deckViewCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: deckViewCase.route,
+      screen: "Decks",
+      theme: deckViewCase.theme,
+      viewport: deckViewCase.viewport,
+    });
+    if (deckViewCase.view === "List") {
+      await page
+        .getByRole("group", { name: "Deck view" })
+        .getByRole("button", { name: "List" })
+        .click();
+    }
+    await expect(
+      page.getByTestId(
+        deckViewCase.view === "Grid" ? "deck-grid" : "deck-list",
+      ),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${deckViewCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 for (const deckActionsCase of [
   {
     name: "deck-actions-menu-desktop-light",

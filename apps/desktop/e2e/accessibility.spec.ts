@@ -145,6 +145,33 @@ test("deck card actions and deletion confirmation are keyboard accessible", asyn
   await expect(actions).toBeFocused();
 });
 
+test("deck view controls expose keyboard-operable selected state", async ({
+  page,
+}) => {
+  await navigate(page, "Decks");
+  const viewControl = page.getByRole("group", { name: "Deck view" });
+  const grid = viewControl.getByRole("button", { name: "Grid" });
+  const list = viewControl.getByRole("button", { name: "List" });
+  await expect(grid).toHaveAttribute("aria-pressed", "true");
+  await list.focus();
+  await page.keyboard.press("Space");
+  await expect(list).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("deck-list")).toBeVisible();
+  await viewControl.evaluate(async (control) => {
+    await Promise.all(
+      control
+        .getAnimations({ subtree: true })
+        .map((animation) => animation.finished),
+    );
+  });
+  await expectNoAccessibilityViolations(page);
+
+  await grid.focus();
+  await page.keyboard.press("Enter");
+  await expect(grid).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("deck-grid")).toBeVisible();
+});
+
 for (const theme of ["light", "dark"] as const) {
   test(`loading, empty, error, and stale study states pass axe in ${theme}`, async ({
     page,
