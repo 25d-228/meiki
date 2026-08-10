@@ -217,7 +217,7 @@ test("two static lessons in one language share one track and advance with separa
         localStorage.getItem("meiki-typing-completed"),
       )) ?? "[]",
     ),
-  ).toEqual(["typing-korean-foundation", "typing-korean-fixture-second"]);
+  ).toEqual(["typing-korean-basic-consonants", "typing-korean-fixture-second"]);
 });
 
 for (const detected of [
@@ -273,7 +273,10 @@ test("manual platform override persists while Linux keeps non-prescriptive guida
 test("physical drills expose live, held, repeated, ordered, and completed key states", async ({
   page,
 }) => {
-  await openTyping(page);
+  await page.goto("/e2e/fixtures/typing-multiple-lessons.html");
+  await expect(
+    page.getByRole("heading", { name: "Typing", level: 1 }),
+  ).toBeVisible();
   const input = await startPractice(page);
 
   for (const modifier of [
