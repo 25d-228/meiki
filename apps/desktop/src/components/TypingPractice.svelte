@@ -388,9 +388,14 @@
 
   .practice-header {
     display: flex;
+    min-width: 0;
     gap: 1rem;
     align-items: start;
     justify-content: space-between;
+  }
+
+  .practice-header > div {
+    min-width: 0;
   }
 
   .practice-header h2 {
@@ -400,8 +405,9 @@
 
   .target {
     display: grid;
-    flex: 0 0 auto;
-    min-width: 6rem;
+    flex: 0 1 auto;
+    min-width: min(6rem, 100%);
+    max-width: 100%;
     gap: 0.25rem;
     padding: 0.75rem;
     border: 1px solid var(--border);
@@ -416,6 +422,8 @@
   }
 
   .target strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: var(--text-2xl);
     line-height: 1.2;
   }
@@ -423,6 +431,7 @@
   .practice-details {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
     gap: 0.75rem;
     margin: 0;
   }

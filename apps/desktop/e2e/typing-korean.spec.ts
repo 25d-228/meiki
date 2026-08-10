@@ -305,6 +305,37 @@ test("renders every Korean base and shifted mapping above its Latin physical key
   ).toBe(true);
 });
 
+test("the Korean target stays inside the practice header at the CI narrow viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 640, height: 720 });
+  await openKoreanLesson(page, 0);
+
+  const headerBounds = await page.locator(".practice-header").boundingBox();
+  const targetBounds = await page.locator(".target").boundingBox();
+  const targetTextBounds = await page.locator(".target strong").boundingBox();
+
+  expect(headerBounds).not.toBeNull();
+  expect(targetBounds).not.toBeNull();
+  expect(targetTextBounds).not.toBeNull();
+  if (!headerBounds || !targetBounds || !targetTextBounds) {
+    throw new Error("The Korean practice header must have measurable bounds.");
+  }
+  expect(targetBounds.x).toBeGreaterThanOrEqual(headerBounds.x);
+  expect(targetBounds.x + targetBounds.width).toBeLessThanOrEqual(
+    headerBounds.x + headerBounds.width,
+  );
+  expect(targetTextBounds.x).toBeGreaterThanOrEqual(targetBounds.x);
+  expect(targetTextBounds.x + targetTextBounds.width).toBeLessThanOrEqual(
+    targetBounds.x + targetBounds.width,
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});
+
 test("advances consonants, vowels, held Shift forms, and real compound-vowel sequences in order", async ({
   page,
 }) => {
