@@ -11,6 +11,25 @@ async function openStudy(page: Page, url: string): Promise<void> {
   await page.getByRole("button", { name: /^(Start|Resume) study$/ }).click();
 }
 
+async function chooseTheme(page: Page, theme: "light" | "dark"): Promise<void> {
+  await page.getByRole("button", { name: "Theme" }).click();
+  await page
+    .getByRole("option", { name: new RegExp(`^${theme}$`, "i") })
+    .click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+}
+
+async function revealAnswer(
+  page: Page,
+  fixture: string,
+  answer: string,
+): Promise<void> {
+  await openStudy(page, `/?fixture=${fixture}`);
+  await page.getByLabel("Your answer").fill(answer);
+  await page.getByLabel("Your answer").press("Enter");
+  await expect(page.getByText("Expected answer")).toBeVisible();
+}
+
 async function lastRequest(page: Page, command: string) {
   return page.evaluate((name) => {
     const requests = window.__MEIKI_TEST_REQUESTS__ ?? [];
@@ -508,6 +527,130 @@ test("preserves multilingual and multi-code-point input in command requests", as
   }
 });
 
+for (const theme of ["light", "dark"] as const) {
+  test(`revealed cloze uses the primary pair with 4.5:1 contrast in ${theme} mode`, async ({
+    page,
+  }) => {
+    await openStudy(page, "/?fixture=cjk");
+    await chooseTheme(page, theme);
+    await page.getByLabel("Your answer").fill("行きます");
+    await page.getByLabel("Your answer").press("Enter");
+
+    const appearance = await page
+      .locator("#study-prompt mark")
+      .evaluate((mark) => {
+        const sample = (color: string): number[] => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 1;
+          canvas.height = 1;
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Canvas color sampling is unavailable");
+          context.fillStyle = color;
+          context.fillRect(0, 0, 1, 1);
+          return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+        };
+        const luminance = (color: number[]): number => {
+          const [red, green, blue] = color.map((component) => {
+            const channel = component / 255;
+            return channel <= 0.04045
+              ? channel / 12.92
+              : ((channel + 0.055) / 1.055) ** 2.4;
+          });
+          return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+        };
+        const style = getComputedStyle(mark);
+        const rootStyle = getComputedStyle(document.documentElement);
+        const foreground = sample(style.color);
+        const background = sample(style.backgroundColor);
+        const foregroundLuminance = luminance(foreground);
+        const backgroundLuminance = luminance(background);
+        return {
+          background,
+          borderRadius: style.borderRadius,
+          contrast:
+            (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+            (Math.min(foregroundLuminance, backgroundLuminance) + 0.05),
+          fontWeight: Number(style.fontWeight),
+          foreground,
+          paddingInlineEnd: Number.parseFloat(style.paddingInlineEnd),
+          paddingInlineStart: Number.parseFloat(style.paddingInlineStart),
+          primary: sample(rootStyle.getPropertyValue("--primary")),
+          primaryForeground: sample(
+            rootStyle.getPropertyValue("--primary-foreground"),
+          ),
+        };
+      });
+
+    expect(appearance.background).toEqual(appearance.primary);
+    expect(appearance.foreground).toEqual(appearance.primaryForeground);
+    expect(appearance.contrast).toBeGreaterThanOrEqual(4.5);
+    expect(appearance.fontWeight).toBeGreaterThanOrEqual(700);
+    expect(appearance.borderRadius).toBe("0px");
+    expect(appearance.paddingInlineStart).toBeGreaterThan(0);
+    expect(appearance.paddingInlineStart).toBeLessThanOrEqual(8);
+    expect(appearance.paddingInlineEnd).toBeGreaterThan(0);
+    expect(appearance.paddingInlineEnd).toBeLessThanOrEqual(8);
+  });
+}
+
+for (const [language, fixture, answer] of [
+  ["Latin", "ltr", "la bibliothèque"],
+  ["Korean", "korean", "읽어요"],
+  ["Japanese", "cjk", "行きます"],
+] as const) {
+  test(`revealed cloze remains semantic for ${language} text`, async ({
+    page,
+  }) => {
+    await revealAnswer(page, fixture, answer);
+    const highlight = page.locator("#study-prompt mark");
+    await expect(highlight).toHaveText(answer);
+    await expect(highlight).toHaveJSProperty("tagName", "MARK");
+  });
+}
+
+test("mixed-direction revealed content remains isolated in source order", async ({
+  page,
+}) => {
+  await revealAnswer(page, "mixed", "三時");
+  const prompt = page.locator("#study-prompt");
+  await expect(prompt).toHaveAttribute("dir", "auto");
+  await expect(prompt).toHaveText("Meetingは الساعة 三時 に始まる");
+  await expect(prompt.locator("mark")).toHaveText("三時");
+  expect(
+    await prompt.evaluate((element) => getComputedStyle(element).unicodeBidi),
+  ).toBe("isolate");
+});
+
+test("long revealed answer wraps without clipping or horizontal overflow", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 720 });
+  const answer =
+    "this intentionally long highlighted answer includes 한국어, 日本語, and العربية while wrapping naturally across several lines";
+  await revealAnswer(page, "longanswer", answer);
+
+  const layout = await page.locator("#study-prompt mark").evaluate((mark) => {
+    const prompt = mark.parentElement;
+    if (!prompt) throw new Error("Revealed cloze has no prompt container");
+    const promptBounds = prompt.getBoundingClientRect();
+    const lines = [...mark.getClientRects()];
+    return {
+      lineCount: lines.length,
+      linesStayInsidePrompt: lines.every(
+        (line) =>
+          line.left >= promptBounds.left - 1 &&
+          line.right <= promptBounds.right + 1,
+      ),
+      promptFits: prompt.scrollWidth <= prompt.clientWidth,
+      viewportFits: document.documentElement.scrollWidth <= window.innerWidth,
+    };
+  });
+  expect(layout.lineCount).toBeGreaterThan(1);
+  expect(layout.linesStayInsidePrompt).toBe(true);
+  expect(layout.promptFits).toBe(true);
+  expect(layout.viewportFits).toBe(true);
+});
+
 test("renders difference semantics without altering raw input", async ({
   page,
 }) => {
@@ -518,6 +661,25 @@ test("renders difference semantics without altering raw input", async ({
   const difference = page.getByTestId("answer-difference");
   await expect(difference.locator("del")).toHaveText("行きます");
   await expect(difference.locator("ins")).toHaveText("図書館");
+  const differenceStyles = await difference.evaluate((element) => {
+    const deletion = element.querySelector("del");
+    const insertion = element.querySelector("ins");
+    if (!deletion || !insertion) {
+      throw new Error("Answer difference semantics are missing");
+    }
+    const deletionStyle = getComputedStyle(deletion);
+    const insertionStyle = getComputedStyle(insertion);
+    return {
+      deletionBackground: deletionStyle.backgroundColor,
+      deletionDecoration: deletionStyle.textDecorationLine,
+      insertionBackground: insertionStyle.backgroundColor,
+      insertionDecoration: insertionStyle.textDecorationLine,
+    };
+  });
+  expect(differenceStyles.deletionBackground).not.toBe("rgba(0, 0, 0, 0)");
+  expect(differenceStyles.deletionDecoration).toContain("line-through");
+  expect(differenceStyles.insertionBackground).not.toBe("rgba(0, 0, 0, 0)");
+  expect(differenceStyles.insertionDecoration).toBe("none");
   await expect(
     page.locator(".answer-comparison strong").nth(1),
   ).toHaveJSProperty("textContent", " 図書館 ");
