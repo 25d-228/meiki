@@ -17,6 +17,7 @@ use meiki_application::{
 use tauri::{Manager, State, ipc::Channel};
 
 mod commands;
+mod managed_media;
 
 macro_rules! desktop_commands {
     ($apply:ident) => {
@@ -394,6 +395,10 @@ fn save_authoring_draft(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol(managed_media::PROTOCOL, |context, request| {
+            let state = context.app_handle().state::<AppContext>();
+            managed_media::response(&state.collection_path, &request)
+        })
         .setup(|app| {
             let data_directory = std::env::var_os("MEIKI_DATA_DIR")
                 .map(PathBuf::from)

@@ -3,6 +3,16 @@ import { afterEach, test } from "node:test";
 
 import { mediaAssetSource } from "../src/lib/media.ts";
 
+const contentHash = `sha256:${"d".repeat(64)}`;
+
+function media(assetPath, mediaType = "audio/mpeg") {
+  return {
+    asset_path: assetPath,
+    content_hash: contentHash,
+    media_type: mediaType,
+  };
+}
+
 afterEach(() => {
   Reflect.deleteProperty(globalThis, "window");
 });
@@ -35,7 +45,7 @@ test("returns no source for missing, remote, and unsupported values", () => {
     "file:///tmp/prompt.wav",
     "javascript:alert(1)",
   ]) {
-    assert.equal(mediaAssetSource(source), undefined);
+    assert.equal(mediaAssetSource(media(source)), undefined);
   }
 });
 
@@ -43,36 +53,46 @@ test("accepts the asset protocol and bounded browser data fixtures", () => {
   useBrowserRuntime();
 
   assert.equal(
-    mediaAssetSource("asset://localhost/prompt.wav"),
+    mediaAssetSource(media("asset://localhost/prompt.wav")),
     "asset://localhost/prompt.wav",
   );
   assert.equal(
-    mediaAssetSource("data:audio/wav;base64,AAAA"),
+    mediaAssetSource(media("data:audio/wav;base64,AAAA", "audio/wav")),
     "data:audio/wav;base64,AAAA",
   );
 });
 
-test("converts managed POSIX and Windows paths only in Tauri", () => {
+test("uses the managed protocol for MP3 objects only in Tauri", () => {
   useTauriRuntime();
 
   assert.equal(
     mediaAssetSource(
-      "/app-data/collection.media/objects/sha256/3d/65d920040aab9d14d2da0b132b8f03c96a35f0a0946cb4464e0178dda12793",
+      media(
+        "/app-data/collection.media/objects/sha256/3d/65d920040aab9d14d2da0b132b8f03c96a35f0a0946cb4464e0178dda12793",
+      ),
     ),
-    "asset://localhost/%2Fapp-data%2Fcollection.media%2Fobjects%2Fsha256%2F3d%2F65d920040aab9d14d2da0b132b8f03c96a35f0a0946cb4464e0178dda12793",
+    `meiki-media://localhost/${"d".repeat(64)}`,
   );
   assert.equal(
-    mediaAssetSource("C:\\AppData\\Meiki\\media\\prompt.wav"),
+    mediaAssetSource(
+      media("C:\\AppData\\Meiki\\media\\prompt.wav", "audio/wav"),
+    ),
     "asset://localhost/C%3A%5CAppData%5CMeiki%5Cmedia%5Cprompt.wav",
   );
-  assert.equal(mediaAssetSource("data:audio/wav;base64,AAAA"), undefined);
+  assert.equal(
+    mediaAssetSource(media("data:audio/wav;base64,AAAA", "audio/wav")),
+    undefined,
+  );
 });
 
 test("keeps relative fixture paths usable outside Tauri", () => {
   useBrowserRuntime();
   assert.equal(
-    mediaAssetSource("/fixtures/prompt.wav"),
+    mediaAssetSource(media("/fixtures/prompt.wav", "audio/wav")),
     "/fixtures/prompt.wav",
   );
-  assert.equal(mediaAssetSource("media/prompt.wav"), "media/prompt.wav");
+  assert.equal(
+    mediaAssetSource(media("media/prompt.wav", "audio/wav")),
+    "media/prompt.wav",
+  );
 });

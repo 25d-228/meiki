@@ -998,7 +998,7 @@
                         mediaRoleLabel(media.role)}
                       role={media.role}
                       availability={media.availability}
-                      source={mediaAssetSource(media.asset_path)}
+                      source={mediaAssetSource(media)}
                       mediaType={media.media_type}
                       altText={media.alt_text}
                       width={media.width}

@@ -356,13 +356,21 @@ def main() -> int:
             parts = declaration.strip().split()
             if parts:
                 directives[parts[0]] = set(parts[1:])
-    managed_media_sources = {"'self'", "asset:", "http://asset.localhost"}
-    for directive in ("img-src", "media-src"):
-        if directives.get(directive) != managed_media_sources:
-            failures.append(
-                f"{tauri_config_path.relative_to(ROOT)}: {directive} must "
-                "allow only packaged content and the managed asset protocol"
-            )
+    managed_asset_sources = {"'self'", "asset:", "http://asset.localhost"}
+    if directives.get("img-src") != managed_asset_sources:
+        failures.append(
+            f"{tauri_config_path.relative_to(ROOT)}: img-src must "
+            "allow only packaged content and the managed asset protocol"
+        )
+    managed_audio_sources = managed_asset_sources | {
+        "meiki-media:",
+        "http://meiki-media.localhost",
+    }
+    if directives.get("media-src") != managed_audio_sources:
+        failures.append(
+            f"{tauri_config_path.relative_to(ROOT)}: media-src must "
+            "allow only packaged content and registered managed-media protocols"
+        )
 
     production_roots = [ROOT / "apps" / "desktop" / "src", ROOT / "crates"]
     for production_root in production_roots:

@@ -1,9 +1,17 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
+import type { StudyMediaDto } from "$lib/generated/StudyMediaDto";
 
 const SCHEME = /^([a-z][a-z\d+.-]*):/i;
 const WINDOWS_ABSOLUTE_PATH = /^[a-z]:[\\/]/i;
+const SHA256_CONTENT_HASH = /^sha256:([a-f\d]{64})$/;
+const managedMediaProtocol = "meiki-media";
 const promptAudioAutoplayKey = "meiki-autoplay-prompt-audio";
 const audioSeekTimeoutMs = 250;
+
+type MediaSource = Pick<
+  StudyMediaDto,
+  "asset_path" | "content_hash" | "media_type"
+>;
 
 function sourceScheme(path: string): string | undefined {
   if (WINDOWS_ABSOLUTE_PATH.test(path)) return undefined;
@@ -14,7 +22,8 @@ function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-export function mediaAssetSource(path: string | null): string | undefined {
+export function mediaAssetSource(media: MediaSource): string | undefined {
+  const path = media.asset_path;
   if (!path) return undefined;
   if (path.startsWith("//") || path.startsWith("\\\\")) return undefined;
 
@@ -26,7 +35,12 @@ export function mediaAssetSource(path: string | null): string | undefined {
   if (scheme === "data" && !isTauriRuntime()) return path;
   if (scheme) return undefined;
 
-  return isTauriRuntime() ? convertFileSrc(path) : path;
+  if (!isTauriRuntime()) return path;
+  const digest = SHA256_CONTENT_HASH.exec(media.content_hash)?.[1];
+  if (media.media_type === "audio/mpeg" && digest) {
+    return convertFileSrc(digest, managedMediaProtocol);
+  }
+  return convertFileSrc(path);
 }
 
 export async function restartAudio(audio: HTMLAudioElement): Promise<void> {
