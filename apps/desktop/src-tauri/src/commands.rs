@@ -4,8 +4,8 @@ use meiki_application::{
     BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
     BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
     DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
-    DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
-    ImportMediaRequest, ImportSchedulerParametersRequest, MakeClozeRequest,
+    DeleteDeckProgressDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest,
+    GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest, MakeClozeRequest,
     PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
     ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
     SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
@@ -195,8 +195,9 @@ pub(crate) fn rename_deck(
 pub(crate) fn delete_deck(
     service: &ApplicationService,
     request: &DeleteDeckRequest,
+    on_progress: impl FnMut(DeleteDeckProgressDto),
 ) -> CommandResult<DeleteDeckResultDto> {
-    map_error(service.delete_deck(request))
+    map_error(service.delete_deck(request, on_progress))
 }
 
 pub(crate) fn new_authoring_draft(

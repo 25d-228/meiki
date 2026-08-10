@@ -37,6 +37,7 @@ import type { DeckCardActionResultDto } from "./generated/DeckCardActionResultDt
 import type { DeckCardOverviewDto } from "./generated/DeckCardOverviewDto";
 import type { DeckCardRequest } from "./generated/DeckCardRequest";
 import type { DeleteDeckRequest } from "./generated/DeleteDeckRequest";
+import type { DeleteDeckProgressDto } from "./generated/DeleteDeckProgressDto";
 import type { DeleteDeckResultDto } from "./generated/DeleteDeckResultDto";
 import type { RenameDeckRequest } from "./generated/RenameDeckRequest";
 import type { BundlePreviewDto } from "./generated/BundlePreviewDto";
@@ -218,8 +219,20 @@ export const api = {
     return invoke("rename_deck", { request });
   },
 
-  deleteDeck(request: DeleteDeckRequest): Promise<DeleteDeckResultDto> {
-    return invoke("delete_deck", { request });
+  deleteDeck(
+    request: DeleteDeckRequest,
+    onProgress: (progress: DeleteDeckProgressDto) => void,
+  ): Promise<DeleteDeckResultDto> {
+    if (window.__MEIKI_TEST_INVOKE__) {
+      window.__MEIKI_TEST_DECK_DELETION_PROGRESS__ = onProgress;
+      return invoke<DeleteDeckResultDto>("delete_deck", { request }).finally(
+        () => {
+          delete window.__MEIKI_TEST_DECK_DELETION_PROGRESS__;
+        },
+      );
+    }
+    const progress = new Channel<DeleteDeckProgressDto>(onProgress);
+    return invoke("delete_deck", { request, onProgress: progress });
   },
 
   newAuthoringDraft(): Promise<AuthoringDraftDto> {

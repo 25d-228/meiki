@@ -966,7 +966,7 @@ fn bundle_removal_removes_only_stages_that_remain_associated() {
         .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
         .unwrap();
     storage
-        .delete_deck_and_rehome_notes(&bundle.decks[0].deck.id, None, 3_000)
+        .delete_deck_and_rehome_notes(&bundle.decks[0].deck.id, None, 3_000, |_, _| {})
         .unwrap();
 
     let preview = storage.installed_bundles().unwrap().remove(0);
@@ -1008,7 +1008,7 @@ fn deleting_an_imported_stage_purges_bundle_content_and_safely_trashes_personal_
         .unwrap();
 
     let first = storage
-        .delete_deck_and_rehome_notes(&bundle.decks[0].deck.id, None, 4_000)
+        .delete_deck_and_rehome_notes(&bundle.decks[0].deck.id, None, 4_000, |_, _| {})
         .unwrap();
     assert!(matches!(
         storage.get_source_note("source-mixed"),
@@ -1031,7 +1031,7 @@ fn deleting_an_imported_stage_purges_bundle_content_and_safely_trashes_personal_
     assert_eq!(storage.installed_bundles().unwrap()[0].deck_count, 1);
 
     let second = storage
-        .delete_deck_and_rehome_notes(&bundle.decks[1].deck.id, None, 5_000)
+        .delete_deck_and_rehome_notes(&bundle.decks[1].deck.id, None, 5_000, |_, _| {})
         .unwrap();
     assert!(storage.installed_bundles().unwrap().is_empty());
     assert!(matches!(
@@ -1187,18 +1187,24 @@ fn version_twelve_tracks_only_existing_bundle_sources_from_each_stage_timestamp(
             "DROP TRIGGER review_events_are_append_only_delete;
              DROP TRIGGER bundle_source_notes_leave_stage;
              DROP TABLE bundle_source_notes;
+             DROP INDEX semantic_segments_cloze;
+             DROP INDEX source_item_tags_tag;
+             DROP INDEX source_item_annotations_annotation;
+             DROP INDEX cloze_annotations_annotation;
+             DROP INDEX source_item_media_reference;
+             DROP INDEX cloze_media_reference;
              CREATE TRIGGER review_events_are_append_only_delete
              BEFORE DELETE ON review_events
              BEGIN
                  SELECT RAISE(ABORT, 'review events are append-only');
              END;
-             DELETE FROM schema_migrations WHERE version = 12;",
+             DELETE FROM schema_migrations WHERE version >= 12;",
         )
         .unwrap();
     drop(storage);
 
     let migrated = Storage::open(&path).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 12);
+    assert_eq!(migrated.schema_version().unwrap(), 13);
     let tracked = {
         let mut statement = migrated
             .connection
@@ -1212,6 +1218,34 @@ fn version_twelve_tracks_only_existing_bundle_sources_from_each_stage_timestamp(
     };
     assert_eq!(tracked, ["source-mixed", "source-mixed-2"]);
     assert!(!tracked.contains(&SAMPLE_SOURCE_ID.into()));
+}
+
+#[test]
+fn version_thirteen_indexes_reverse_references_used_by_deletion() {
+    let storage = Storage::open_in_memory().unwrap();
+    let mut statement = storage
+        .connection
+        .prepare(
+            "SELECT name
+             FROM sqlite_schema
+             WHERE type = 'index'
+               AND name IN (
+                   'semantic_segments_cloze',
+                   'source_item_tags_tag',
+                   'source_item_annotations_annotation',
+                   'cloze_annotations_annotation',
+                   'source_item_media_reference',
+                   'cloze_media_reference'
+               )
+             ORDER BY name",
+        )
+        .unwrap();
+    let indexes = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(indexes.len(), 6);
 }
 
 #[test]
@@ -1278,7 +1312,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     std::fs::write(&path, RELEASED_V0_1_SCHEMA).unwrap();
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 12);
+    assert_eq!(storage.schema_version().unwrap(), 13);
     assert_eq!(storage.get_deck(DEFAULT_DECK_ID).unwrap().name, "Default");
     assert_eq!(
         storage
@@ -1333,7 +1367,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
     drop(storage);
 
     let reopened = Storage::open(&path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 12);
+    assert_eq!(reopened.schema_version().unwrap(), 13);
     assert_eq!(
         reopened
             .connection
@@ -1347,7 +1381,7 @@ fn released_v0_1_schema_fixture_opens_and_migrates() {
 
     let restored_path = directory.path().join("released-v0.1-restored.db");
     let restored = Storage::restore_from_backup(&backup, &restored_path).unwrap();
-    assert_eq!(restored.schema_version().unwrap(), 12);
+    assert_eq!(restored.schema_version().unwrap(), 13);
     assert!(!restored.has_learning_material().unwrap());
     assert!(
         restored
@@ -1386,7 +1420,7 @@ fn newer_schema_fails_without_migration_or_backup_writes() {
         Storage::open(&path),
         Err(StorageError::UnsupportedSchema {
             found: 999,
-            supported: 12
+            supported: 13
         })
     ));
     let connection = Connection::open(&path).unwrap();
@@ -1518,7 +1552,7 @@ fn version_ten_migrates_legacy_policy_without_losing_user_choices() {
     drop(legacy);
 
     let migrated = Storage::open(&path).unwrap();
-    assert_eq!(migrated.schema_version().unwrap(), 12);
+    assert_eq!(migrated.schema_version().unwrap(), 13);
     assert_eq!(
         migrated
             .collection_scheduling_settings()
@@ -1762,11 +1796,15 @@ fn failed_deck_deletion_rolls_back_trash_and_rehome_writes() {
         )
         .unwrap();
 
+    let mut progress = Vec::new();
     assert!(
         storage
-            .delete_deck_and_rehome_notes("doomed-deck", None, 3_000)
+            .delete_deck_and_rehome_notes("doomed-deck", None, 3_000, |current, total| {
+                progress.push((current, total));
+            })
             .is_err()
     );
+    assert_eq!(progress, [(0, 1)]);
     assert_eq!(storage.get_deck("doomed-deck").unwrap().name, "Doomed");
     let note = storage
         .library_notes()
@@ -1992,7 +2030,7 @@ fn version_nine_migration_backs_up_and_repairs_only_from_recorded_snapshots() {
     drop(storage);
 
     let repaired = Storage::open(&path).unwrap();
-    assert_eq!(repaired.schema_version().unwrap(), 12);
+    assert_eq!(repaired.schema_version().unwrap(), 13);
     assert_eq!(repaired.projection_migration_repaired_cards().unwrap(), 1);
     assert_eq!(repaired.load_schedule(SAMPLE_CARD_ID).unwrap(), expected);
     assert_eq!(
@@ -2223,7 +2261,7 @@ fn version_one_collection_migrates_to_the_core_model() {
     }
 
     let mut storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 12);
+    assert_eq!(storage.schema_version().unwrap(), 13);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "v1.db.migration-v1-"),
         1
@@ -2300,7 +2338,7 @@ fn version_five_media_migrates_to_roles_and_technical_metadata() {
     drop(connection);
 
     let storage = Storage::open(&path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 12);
+    assert_eq!(storage.schema_version().unwrap(), 13);
     assert_eq!(
         migration_backup_schema_version(directory.path(), "legacy-media.db.migration-v5-"),
         5
@@ -2738,7 +2776,7 @@ fn release_budget_large_version_eight_migration() {
     let integrity = migrated.check_collection_schedule_integrity().unwrap();
     let after_bytes = std::fs::metadata(&path).unwrap().len();
 
-    assert_eq!(migrated.schema_version().unwrap(), 12);
+    assert_eq!(migrated.schema_version().unwrap(), 13);
     assert_eq!(
         integrity.checked_cards,
         usize::try_from(CARD_COUNT).unwrap()

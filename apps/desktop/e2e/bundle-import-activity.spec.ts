@@ -29,8 +29,21 @@ async function startBundleImport(page: Page): Promise<void> {
   const dialog = page.getByRole("dialog", { name: "Import bundle" });
   await expect(dialog.getByText("Japanese", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "Add bundle" }).click();
-  await expect(page.getByTestId("bundle-import-activity")).toContainText(
+  await expect(dialog).toContainText("Preparing decks");
+  await expect(dialog.getByRole("progressbar")).not.toHaveAttribute(
+    "aria-valuenow",
+  );
+  const activity = page.getByTestId("bundle-import-activity");
+  await expect(activity).toContainText(
     /Adding Japanese\s+Adding cards\s+1,240 \/ 9,700/,
+  );
+  await expect(activity.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuenow",
+    "1240",
+  );
+  await expect(dialog.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuemax",
+    "9700",
   );
 }
 

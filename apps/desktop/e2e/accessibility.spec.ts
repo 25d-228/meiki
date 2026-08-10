@@ -93,6 +93,35 @@ for (const theme of ["light", "dark"] as const) {
   });
 }
 
+test("deck deletion progress exposes an accessible determinate state", async ({
+  page,
+}) => {
+  await page.goto("/?deckDeletion=progress-visual");
+  await chooseTheme(page, "dark");
+  await navigate(page, "Decks");
+  await page
+    .getByTestId("deck-travel-deck")
+    .getByRole("button", { name: "Open" })
+    .click();
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Deleting “Travel phrases”",
+  });
+  await expect(dialog).toContainText("1,240 / 2,999");
+  await expect(dialog.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuenow",
+    "1240",
+  );
+  await expectNoAccessibilityViolations(page);
+  await page.evaluate(() =>
+    localStorage.setItem("meiki-e2e-finish-deck-deletion", "true"),
+  );
+});
+
 for (const theme of ["light", "dark"] as const) {
   test(`loading, empty, error, and stale study states pass axe in ${theme}`, async ({
     page,

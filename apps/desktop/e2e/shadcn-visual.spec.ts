@@ -253,6 +253,54 @@ for (const activityCase of [
   });
 }
 
+for (const deletionCase of [
+  {
+    name: "deck-deletion-progress-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "deck-deletion-progress-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${deletionCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/?deckDeletion=progress-visual",
+      screen: "Decks",
+      theme: deletionCase.theme,
+      viewport: deletionCase.viewport,
+    });
+    await page
+      .getByTestId("deck-travel-deck")
+      .getByRole("button", { name: "Open" })
+      .click();
+    await page.getByRole("button", { name: "Delete deck" }).click();
+    await page
+      .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+      .getByRole("button", { name: "Delete deck" })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: "Deleting “Travel phrases”",
+    });
+    await expect(dialog).toContainText("1,240 / 2,999");
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${deletionCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+    await page.evaluate(() =>
+      localStorage.setItem("meiki-e2e-finish-deck-deletion", "true"),
+    );
+  });
+}
+
 for (const revealCase of [
   {
     name: "study-reveal-desktop-light-cjk",

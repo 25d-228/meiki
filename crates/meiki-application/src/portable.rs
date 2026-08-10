@@ -270,11 +270,31 @@ impl ApplicationService {
         storage: &Storage,
         reason: &str,
     ) -> Result<PathBuf, ApplicationError> {
-        let backup =
-            storage.create_rolling_backup(&self.collection_path, reason, BACKUP_RETENTION)?;
+        let backup = self.create_database_recovery_backup(storage, reason)?;
         self.media_store().backup_to(&media_backup_path(&backup))?;
         prune_orphan_media_backups(&self.backup_directory())?;
         Ok(backup)
+    }
+
+    pub(crate) fn create_database_recovery_backup(
+        &self,
+        storage: &Storage,
+        reason: &str,
+    ) -> Result<PathBuf, ApplicationError> {
+        Ok(storage.create_rolling_backup(&self.collection_path, reason, BACKUP_RETENTION)?)
+    }
+
+    pub(crate) fn backup_recovery_media_objects(
+        &self,
+        database_backup: &Path,
+        content_hashes: &[String],
+    ) -> Result<(), ApplicationError> {
+        if !content_hashes.is_empty() {
+            self.media_store()
+                .backup_objects_to(content_hashes, &media_backup_path(database_backup))?;
+        }
+        prune_orphan_media_backups(&self.backup_directory())?;
+        Ok(())
     }
 }
 
@@ -2342,7 +2362,7 @@ mod tests {
             .set_deck_cards_deleted(&[bundle_card_id(3)], Some(440_000), 440_000)
             .unwrap();
         storage
-            .delete_deck_and_rehome_notes(&bundle_deck_id(4), None, 450_000)
+            .delete_deck_and_rehome_notes(&bundle_deck_id(4), None, 450_000, |_, _| {})
             .unwrap();
         drop(storage);
 
@@ -2613,7 +2633,7 @@ mod tests {
             .unwrap();
         Storage::open(&source_path)
             .unwrap()
-            .delete_deck_and_rehome_notes(&bundle_deck_id(2), None, 410_000)
+            .delete_deck_and_rehome_notes(&bundle_deck_id(2), None, 410_000, |_, _| {})
             .unwrap();
         let partial = source
             .export_bundle(&BundleExportRequest {
@@ -2755,7 +2775,7 @@ mod tests {
             .unwrap();
         Storage::open(&collection_path)
             .unwrap()
-            .delete_deck_and_rehome_notes(&bundle_deck_id(0), None, 500_000)
+            .delete_deck_and_rehome_notes(&bundle_deck_id(0), None, 500_000, |_, _| {})
             .unwrap();
 
         let error = service

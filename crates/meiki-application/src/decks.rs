@@ -9,6 +9,8 @@ use meiki_text::normalize_for_search;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+const DECK_MEDIA_PROGRESS_INTERVAL: usize = 100;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct DeckDto {
     pub id: String,
@@ -58,7 +60,28 @@ pub struct DeleteDeckRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct DeleteDeckResultDto {
     pub deleted_deck_id: String,
-    pub affected_cards: u32,
+    #[ts(type = "number")]
+    pub affected_cards: u64,
+    pub media_cleanup_warning: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum DeleteDeckPhaseDto {
+    Preparing,
+    RemovingCards,
+    CleaningAudio,
+    Finalizing,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct DeleteDeckProgressDto {
+    pub phase: DeleteDeckPhaseDto,
+    #[ts(type = "number | null")]
+    pub current: Option<u64>,
+    #[ts(type = "number | null")]
+    pub total: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -277,7 +300,13 @@ impl ApplicationService {
     pub fn delete_deck(
         &self,
         request: &DeleteDeckRequest,
+        mut on_progress: impl FnMut(DeleteDeckProgressDto),
     ) -> Result<DeleteDeckResultDto, ApplicationError> {
+        on_progress(DeleteDeckProgressDto {
+            phase: DeleteDeckPhaseDto::Preparing,
+            current: None,
+            total: None,
+        });
         if request.deck_id == DEFAULT_DECK_ID {
             return Err(ApplicationError::InvalidDeck(
                 "the default deck cannot be deleted".into(),
@@ -296,22 +325,88 @@ impl ApplicationService {
                 deck.name
             )));
         }
-        if storage
+        let recovery_backup = if storage
             .bundle_language_for_deck(&request.deck_id)?
             .is_some()
         {
-            self.create_recovery_backup(&storage, "pre-delete-bundle-stage")?;
-        }
+            Some(self.create_database_recovery_backup(&storage, "pre-delete-bundle-stage")?)
+        } else {
+            None
+        };
         let deletion = storage.delete_deck_and_rehome_notes(
             &request.deck_id,
             request.move_cards_to_deck_id.as_deref(),
             request.now_ms,
+            |current, total| {
+                on_progress(DeleteDeckProgressDto {
+                    phase: DeleteDeckPhaseDto::RemovingCards,
+                    current: Some(current),
+                    total: Some(total),
+                });
+            },
         )?;
-        self.remove_orphaned_media(&storage, &deletion.orphaned_media_hashes)?;
+        let media_cleanup_warning = self
+            .clean_deleted_deck_media(
+                &storage,
+                recovery_backup.as_deref(),
+                &deletion.orphaned_media_hashes,
+                &mut on_progress,
+            )
+            .err()
+            .map(|_| "Deck deleted, but some unused audio could not be cleaned up.".into());
+        on_progress(DeleteDeckProgressDto {
+            phase: DeleteDeckPhaseDto::Finalizing,
+            current: None,
+            total: None,
+        });
         Ok(DeleteDeckResultDto {
             deleted_deck_id: request.deck_id.clone(),
-            affected_cards: desktop_u32(deletion.active_card_count, "affected deck card count")?,
+            affected_cards: deletion.active_card_count,
+            media_cleanup_warning,
         })
+    }
+
+    fn clean_deleted_deck_media(
+        &self,
+        storage: &Storage,
+        recovery_backup: Option<&std::path::Path>,
+        content_hashes: &[String],
+        on_progress: &mut impl FnMut(DeleteDeckProgressDto),
+    ) -> Result<(), ApplicationError> {
+        let unreferenced = storage.unreferenced_media_hashes(content_hashes)?;
+        if unreferenced.is_empty() {
+            return Ok(());
+        }
+        let total = u64::try_from(unreferenced.len())
+            .map_err(|_| ApplicationError::NumericRange("deck media cleanup count"))?;
+        on_progress(DeleteDeckProgressDto {
+            phase: DeleteDeckPhaseDto::CleaningAudio,
+            current: Some(0),
+            total: Some(total),
+        });
+        if let Some(backup) = recovery_backup {
+            self.backup_recovery_media_objects(backup, &unreferenced)?;
+        }
+        for (index, content_hash) in unreferenced.iter().enumerate() {
+            match self.media_store().remove(content_hash) {
+                Ok(()) | Err(meiki_media::MediaError::MissingObject(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+            let completed = index + 1;
+            // Bounded updates keep the desktop channel responsive for large stages.
+            if completed % DECK_MEDIA_PROGRESS_INTERVAL == 0 || completed == unreferenced.len() {
+                on_progress(DeleteDeckProgressDto {
+                    phase: DeleteDeckPhaseDto::CleaningAudio,
+                    current: Some(
+                        u64::try_from(completed).map_err(|_| {
+                            ApplicationError::NumericRange("cleaned deck media count")
+                        })?,
+                    ),
+                    total: Some(total),
+                });
+            }
+        }
+        Ok(())
     }
 
     fn remove_orphaned_media(
@@ -378,21 +473,40 @@ fn ensure_unique_name(
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, time::Instant};
+
     use meiki_domain::{
-        Card, CardLifecycle, Cloze, Direction, MatchingPolicy, ReviewEvent, ScheduleState,
-        SegmentContent, SemanticSegment, SourceItem,
+        Card, CardLifecycle, Cloze, Deck, Direction, MatchingPolicy, MediaKind, MediaReference,
+        MediaRole, ReviewEvent, ScheduleState, SegmentContent, SemanticSegment, SourceItem,
+        StudySettingsOverride,
     };
-    use meiki_storage::{CardRepository, SourceNoteRepository, Storage, StoredSourceNote};
+    use meiki_storage::{
+        CardRepository, DeckRepository, PristineBundleImport, PristineDeckCard, PristineDeckImport,
+        PristineDeckNote, SourceNoteRepository, Storage, StoredSourceNote,
+    };
     use tempfile::tempdir;
 
     use super::{
         BundleRemovalProgressDto, BundleRemovalRequest, CreateDeckRequest, DeckSummaryDto,
-        DeleteDeckRequest, RenameDeckRequest,
+        DeleteDeckPhaseDto, DeleteDeckProgressDto, DeleteDeckRequest, RenameDeckRequest,
     };
     use crate::{
         ApplicationService, DeckCardActionDto, DeckCardActionRequest, DeckCardRequest,
         DeckCardTrashDto, GradeDto, GradeReviewRequest,
     };
+
+    fn seed_deck_deletion_media(service: &ApplicationService) -> (Vec<String>, Vec<String>) {
+        const IMPORTED_MEDIA_COUNT: usize = 3_000;
+        const UNRELATED_MEDIA_COUNT: usize = 9_700;
+        let hashes = service
+            .media_store()
+            .seed_wav_objects(u32::try_from(IMPORTED_MEDIA_COUNT + UNRELATED_MEDIA_COUNT).unwrap())
+            .unwrap();
+        (
+            hashes[..IMPORTED_MEDIA_COUNT].to_vec(),
+            hashes[IMPORTED_MEDIA_COUNT..].to_vec(),
+        )
+    }
 
     fn add_card(
         storage: &mut Storage,
@@ -472,6 +586,109 @@ mod tests {
             .unwrap();
     }
 
+    fn one_card_bundle(content_hash: String) -> PristineBundleImport {
+        let deck_id = "cleanup-stage";
+        let source_id = "cleanup-source";
+        let cloze_id = "cleanup-cloze";
+        let card_id = "cleanup-card";
+        let media = MediaReference {
+            id: "cleanup-media".into(),
+            content_hash,
+            kind: MediaKind::Audio,
+            role: MediaRole::PromptAudio,
+            media_type: "audio/wav".into(),
+            byte_size: 48,
+            original_file_name: Some("cleanup.wav".into()),
+            alt_text: None,
+            width: None,
+            height: None,
+            duration_ms: Some(0),
+            language_tag: Some("ko-KR".into()),
+            direction: Direction::Auto,
+            created_at_ms: 1_000,
+        };
+        let card = Card {
+            id: card_id.into(),
+            cloze_id: cloze_id.into(),
+            content_version: 0,
+            suspended: false,
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+        };
+        PristineBundleImport {
+            language_tag: "ko-KR".into(),
+            decks: vec![PristineDeckImport {
+                deck: Deck {
+                    id: deck_id.into(),
+                    name: "Korean 00".into(),
+                    description: None,
+                    language_tag: Some("ko-KR".into()),
+                    direction: Direction::Auto,
+                    matching_policy: MatchingPolicy::Strict,
+                    settings: StudySettingsOverride::default(),
+                    created_at_ms: 1_000,
+                    updated_at_ms: 1_000,
+                },
+                notes: vec![PristineDeckNote {
+                    note: StoredSourceNote {
+                        source_item: SourceItem {
+                            id: source_id.into(),
+                            deck_id: deck_id.into(),
+                            segments: vec![SemanticSegment {
+                                id: "cleanup-segment".into(),
+                                ordinal: 0,
+                                content: SegmentContent::Cloze {
+                                    cloze_id: cloze_id.into(),
+                                    text: "안녕하세요".into(),
+                                },
+                            }],
+                            language_tag: Some("ko-KR".into()),
+                            direction: Direction::Auto,
+                            tags: Vec::new(),
+                            annotations: Vec::new(),
+                            explanation: None,
+                            media: vec![media],
+                            created_at_ms: 1_000,
+                            updated_at_ms: 1_000,
+                        },
+                        clozes: vec![Cloze {
+                            id: cloze_id.into(),
+                            source_item_id: source_id.into(),
+                            answer: "안녕하세요".into(),
+                            accepted_answers: Vec::new(),
+                            hint: None,
+                            language_tag: Some("ko-KR".into()),
+                            direction: Direction::Auto,
+                            matching_policy: Some(MatchingPolicy::Strict),
+                            annotations: Vec::new(),
+                            explanation: None,
+                            media: Vec::new(),
+                            created_at_ms: 1_000,
+                            updated_at_ms: 1_000,
+                        }],
+                    },
+                    cards: vec![PristineDeckCard {
+                        initial_schedule: ScheduleState {
+                            card_id: card_id.into(),
+                            version: 0,
+                            lifecycle: CardLifecycle::Unseen,
+                            due_at_ms: 1_000,
+                            ideal_due_at_ms: 1_000,
+                            interval_milliseconds: 0,
+                            interval_seconds: 0,
+                            repetitions: 0,
+                            stability_milliseconds: 0,
+                            difficulty_millipoints: 0,
+                            last_reviewed_at_ms: None,
+                            last_review_event_id: None,
+                        },
+                        card,
+                    }],
+                }],
+            }],
+        }
+    }
+
     fn review_card(
         service: &ApplicationService,
         card_id: &str,
@@ -502,6 +719,15 @@ mod tests {
 
     fn deck_summary<'a>(summaries: &'a [DeckSummaryDto], deck_id: &str) -> &'a DeckSummaryDto {
         summaries.iter().find(|deck| deck.id == deck_id).unwrap()
+    }
+
+    fn phase_index(phase: DeleteDeckPhaseDto) -> u8 {
+        match phase {
+            DeleteDeckPhaseDto::Preparing => 0,
+            DeleteDeckPhaseDto::RemovingCards => 1,
+            DeleteDeckPhaseDto::CleaningAudio => 2,
+            DeleteDeckPhaseDto::Finalizing => 3,
+        }
     }
 
     #[test]
@@ -591,12 +817,15 @@ mod tests {
             review_card(&service, "active-card", "active-card-review", 1_750);
 
         let deleted = service
-            .delete_deck(&DeleteDeckRequest {
-                deck_id: created.id.clone(),
-                move_cards_to_deck_id: None,
-                confirmation: "Temporary".into(),
-                now_ms: 2_000,
-            })
+            .delete_deck(
+                &DeleteDeckRequest {
+                    deck_id: created.id.clone(),
+                    move_cards_to_deck_id: None,
+                    confirmation: "Temporary".into(),
+                    now_ms: 2_000,
+                },
+                |_| {},
+            )
             .unwrap();
         assert_eq!(deleted.affected_cards, 1);
         let storage = service.open_storage().unwrap();
@@ -678,12 +907,15 @@ mod tests {
         drop(storage);
 
         let deleted = service
-            .delete_deck(&DeleteDeckRequest {
-                deck_id: source.id,
-                move_cards_to_deck_id: Some(destination.id.clone()),
-                confirmation: "Source".into(),
-                now_ms: 2_000,
-            })
+            .delete_deck(
+                &DeleteDeckRequest {
+                    deck_id: source.id,
+                    move_cards_to_deck_id: Some(destination.id.clone()),
+                    confirmation: "Source".into(),
+                    now_ms: 2_000,
+                },
+                |_| {},
+            )
             .unwrap();
         assert_eq!(deleted.affected_cards, 1);
         let note = service
@@ -711,33 +943,42 @@ mod tests {
 
         assert!(
             service
-                .delete_deck(&DeleteDeckRequest {
-                    deck_id: empty.id.clone(),
-                    move_cards_to_deck_id: None,
-                    confirmation: "Wrong name".into(),
-                    now_ms: 2_000,
-                })
+                .delete_deck(
+                    &DeleteDeckRequest {
+                        deck_id: empty.id.clone(),
+                        move_cards_to_deck_id: None,
+                        confirmation: "Wrong name".into(),
+                        now_ms: 2_000,
+                    },
+                    |_| {},
+                )
                 .is_err()
         );
         let deleted = service
-            .delete_deck(&DeleteDeckRequest {
-                deck_id: empty.id,
-                move_cards_to_deck_id: None,
-                confirmation: "Temporary".into(),
-                now_ms: 2_000,
-            })
+            .delete_deck(
+                &DeleteDeckRequest {
+                    deck_id: empty.id,
+                    move_cards_to_deck_id: None,
+                    confirmation: "Temporary".into(),
+                    now_ms: 2_000,
+                },
+                |_| {},
+            )
             .unwrap();
         assert_eq!(deleted.affected_cards, 0);
         assert_eq!(service.list_decks().unwrap().len(), 1);
         assert!(service.list_decks().unwrap()[0].is_default);
         assert!(
             service
-                .delete_deck(&DeleteDeckRequest {
-                    deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
-                    move_cards_to_deck_id: None,
-                    confirmation: "Default".into(),
-                    now_ms: 3_000,
-                })
+                .delete_deck(
+                    &DeleteDeckRequest {
+                        deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+                        move_cards_to_deck_id: None,
+                        confirmation: "Default".into(),
+                        now_ms: 3_000,
+                    },
+                    |_| {},
+                )
                 .is_err()
         );
         assert!(
@@ -749,6 +990,50 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn media_backup_failure_after_commit_reports_that_the_deck_was_deleted() {
+        let directory = tempdir().unwrap();
+        let service = ApplicationService::new(directory.path().join("collection.db"));
+        let content_hash = service.media_store().seed_wav_objects(1).unwrap().remove(0);
+        let mut storage = service.open_storage().unwrap();
+        storage
+            .import_pristine_bundle(
+                &one_card_bundle(content_hash.clone()),
+                || {},
+                || Ok::<(), ()>(()),
+            )
+            .unwrap();
+        drop(storage);
+        let object = service.media_store().resolve(&content_hash).unwrap();
+        fs::remove_file(&object).unwrap();
+        fs::create_dir(&object).unwrap();
+
+        let mut progress = Vec::new();
+        let result = service
+            .delete_deck(
+                &DeleteDeckRequest {
+                    deck_id: "cleanup-stage".into(),
+                    move_cards_to_deck_id: None,
+                    confirmation: "Korean 00".into(),
+                    now_ms: 2_000,
+                },
+                |update| progress.push(update),
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.media_cleanup_warning.as_deref(),
+            Some("Deck deleted, but some unused audio could not be cleaned up.")
+        );
+        assert_eq!(
+            progress.last().unwrap().phase,
+            DeleteDeckPhaseDto::Finalizing
+        );
+        let storage = service.open_storage().unwrap();
+        assert!(storage.get_deck("cleanup-stage").is_err());
+        assert!(storage.get_source_note("cleanup-source").is_err());
     }
 
     #[test]
@@ -849,6 +1134,178 @@ mod tests {
         assert_eq!(unsorted.total_cards, 1);
         assert_eq!(unsorted.due_cards, 0);
         assert_eq!(unsorted.new_cards, 0);
+    }
+
+    #[test]
+    #[ignore = "release performance budget; run with scripts/performance"]
+    #[allow(clippy::too_many_lines)]
+    fn release_budget_deck_deletion_3000_cards_ignores_9700_unrelated_media_objects() {
+        const NOW_MS: i64 = 1_000_000_000;
+        let directory = tempdir().unwrap();
+        let collection_path = directory.path().join("deck-deletion.db");
+        let service = ApplicationService::new(&collection_path);
+        let (imported_media, unrelated_media) = seed_deck_deletion_media(&service);
+        let mut storage = service.open_storage().unwrap();
+        storage
+            .seed_deck_deletion_release_fixture(&imported_media, &unrelated_media, NOW_MS)
+            .unwrap();
+        let unrelated_note = storage
+            .get_source_note("performance-source-0000000")
+            .unwrap();
+        let unrelated_schedule = storage.load_schedule("performance-card-0000000").unwrap();
+        let unrelated_history = storage.review_events("performance-card-0000000").unwrap();
+        let personal_schedule = storage.load_schedule("performance-card-0006001").unwrap();
+        let personal_history = storage.review_events("performance-card-0006001").unwrap();
+        let unrelated_trash_updated_at = storage
+            .library_notes()
+            .unwrap()
+            .into_iter()
+            .find(|note| note.note.source_item.id == "performance-source-0019398")
+            .unwrap()
+            .deleted_at_ms;
+        drop(storage);
+
+        let corrupted_unrelated_path = service
+            .media_store()
+            .resolve(unrelated_media.last().unwrap())
+            .unwrap();
+        fs::write(&corrupted_unrelated_path, b"unrelated corruption").unwrap();
+
+        let mut progress = Vec::<DeleteDeckProgressDto>::new();
+        let mut progress_timings = Vec::new();
+        let started = Instant::now();
+        let result = service
+            .delete_deck(
+                &DeleteDeckRequest {
+                    deck_id: "performance-deck".into(),
+                    move_cards_to_deck_id: None,
+                    confirmation: "Korean 00".into(),
+                    now_ms: NOW_MS + 1,
+                },
+                |update| {
+                    progress_timings.push((update.clone(), started.elapsed()));
+                    progress.push(update);
+                },
+            )
+            .unwrap();
+        let elapsed = started.elapsed();
+        eprintln!("issue #86 optimized deck deletion: {elapsed:?}");
+
+        assert_eq!(result.affected_cards, 3_001);
+        assert_eq!(result.media_cleanup_warning, None);
+        assert!(
+            elapsed <= std::time::Duration::from_secs(5),
+            "3,000-card deck deletion exceeded 5 s: {elapsed:?}; progress timings: {progress_timings:?}"
+        );
+        assert_eq!(
+            progress.first(),
+            Some(&DeleteDeckProgressDto {
+                phase: DeleteDeckPhaseDto::Preparing,
+                current: None,
+                total: None,
+            })
+        );
+        assert_eq!(
+            progress.last().unwrap().phase,
+            DeleteDeckPhaseDto::Finalizing
+        );
+        assert!(progress.windows(2).all(|updates| {
+            phase_index(updates[0].phase) <= phase_index(updates[1].phase)
+                && (updates[0].phase != updates[1].phase
+                    || updates[0]
+                        .current
+                        .zip(updates[1].current)
+                        .is_none_or(|(previous, current)| previous <= current))
+        }));
+        let removing_cards = progress
+            .iter()
+            .filter(|update| update.phase == DeleteDeckPhaseDto::RemovingCards)
+            .collect::<Vec<_>>();
+        assert_eq!(removing_cards.first().unwrap().current, Some(0));
+        assert_eq!(removing_cards.last().unwrap().current, Some(3_001));
+        assert!(
+            removing_cards
+                .iter()
+                .all(|update| update.total == Some(3_001))
+        );
+        let cleaning_audio = progress
+            .iter()
+            .filter(|update| update.phase == DeleteDeckPhaseDto::CleaningAudio)
+            .collect::<Vec<_>>();
+        assert_eq!(cleaning_audio.first().unwrap().current, Some(0));
+        assert_eq!(cleaning_audio.last().unwrap().current, Some(2_999));
+        assert!(
+            cleaning_audio
+                .iter()
+                .all(|update| update.total == Some(2_999))
+        );
+
+        let storage = service.open_storage().unwrap();
+        assert!(storage.get_deck("performance-deck").is_err());
+        assert!(
+            storage
+                .get_source_note("performance-source-0000001")
+                .is_err()
+        );
+        assert!(storage.load_schedule("performance-card-0000001").is_err());
+        let personal = storage
+            .library_notes()
+            .unwrap()
+            .into_iter()
+            .find(|note| note.note.source_item.id == "performance-source-0006001")
+            .unwrap();
+        assert_eq!(
+            personal.note.source_item.deck_id,
+            meiki_storage::DEFAULT_DECK_ID
+        );
+        assert_eq!(personal.deleted_at_ms, Some(NOW_MS + 1));
+        assert_eq!(
+            storage.load_schedule("performance-card-0006001").unwrap(),
+            personal_schedule
+        );
+        assert_eq!(
+            storage.review_events("performance-card-0006001").unwrap(),
+            personal_history
+        );
+        assert_eq!(
+            storage
+                .get_source_note("performance-source-0000000")
+                .unwrap(),
+            unrelated_note
+        );
+        assert_eq!(
+            storage.load_schedule("performance-card-0000000").unwrap(),
+            unrelated_schedule
+        );
+        assert_eq!(
+            storage.review_events("performance-card-0000000").unwrap(),
+            unrelated_history
+        );
+        assert_eq!(
+            storage
+                .library_notes()
+                .unwrap()
+                .into_iter()
+                .find(|note| note.note.source_item.id == "performance-source-0019398")
+                .unwrap()
+                .deleted_at_ms,
+            unrelated_trash_updated_at
+        );
+        drop(storage);
+
+        assert!(service.media_store().resolve(&imported_media[0]).is_ok());
+        assert!(service.media_store().resolve(&imported_media[1]).is_err());
+        assert!(service.media_store().resolve(&unrelated_media[0]).is_ok());
+        assert!(corrupted_unrelated_path.is_file());
+        let recovery_media = fs::read_dir(directory.path().join("backups"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_dir())
+            .unwrap();
+        let recovered_hashes = meiki_media::MediaStore::new(recovery_media)
+            .verify_all()
+            .unwrap();
+        assert_eq!(recovered_hashes.len(), 2_999);
     }
 
     #[test]

@@ -41,7 +41,8 @@ const BUNDLE_ASSOCIATIONS_MIGRATION: &str =
     include_str!("../migrations/0011_bundle_associations.sql");
 const BUNDLE_SOURCE_NOTES_MIGRATION: &str =
     include_str!("../migrations/0012_bundle_source_notes.sql");
-const LATEST_SCHEMA_VERSION: u32 = 12;
+const DELETION_INDEXES_MIGRATION: &str = include_str!("../migrations/0013_deletion_indexes.sql");
+const LATEST_SCHEMA_VERSION: u32 = 13;
 
 pub const DEFAULT_DECK_ID: &str = "default-deck";
 pub const DEFAULT_SCHEDULER_PARAMETER_SET_ID: &str = "fsrs7-default-v1";
@@ -359,6 +360,9 @@ impl Storage {
         }
         if current < 12 {
             transaction.execute_batch(BUNDLE_SOURCE_NOTES_MIGRATION)?;
+        }
+        if current < 13 {
+            transaction.execute_batch(DELETION_INDEXES_MIGRATION)?;
         }
         transaction.commit()?;
         Ok(())
@@ -861,6 +865,138 @@ impl Storage {
                  SELECT RAISE(ABORT, 'bundle removal touched unrelated content');
              END;",
         )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Builds the 3,000-card bundle-stage deletion release fixture with
+    /// 9,700 unrelated cards and one personal card in the stage.
+    ///
+    /// Each imported and unrelated card receives the corresponding managed
+    /// media hash. The first imported hash is also referenced by unrelated
+    /// content to exercise reference-safe cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the fixture is invalid or cannot be
+    /// committed.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[allow(clippy::too_many_lines)]
+    pub fn seed_deck_deletion_release_fixture(
+        &mut self,
+        imported_media_hashes: &[String],
+        unrelated_media_hashes: &[String],
+        now_ms: i64,
+    ) -> Result<(), StorageError> {
+        const IMPORTED_CARD_COUNT: usize = 3_000;
+        const UNRELATED_CARD_COUNT: usize = 9_700;
+        const SEEDED_CARD_COUNT: u32 = 19_400;
+        const STAGE_DECK_ID: &str = "performance-deck";
+
+        if imported_media_hashes.len() != IMPORTED_CARD_COUNT
+            || unrelated_media_hashes.len() != UNRELATED_CARD_COUNT
+        {
+            return Err(StorageError::InvalidAggregate(
+                "the deck deletion fixture requires 3,000 imported and 9,700 unrelated media hashes"
+                    .into(),
+            ));
+        }
+        self.seed_large_performance_fixture(SEEDED_CARD_COUNT, now_ms)?;
+
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "UPDATE source_items
+             SET deck_id = ?1, updated_at_ms = ?2
+             WHERE deck_id = ?3
+               AND CAST(SUBSTR(id, 20) AS INTEGER) >= 6000",
+            params![DEFAULT_DECK_ID, now_ms, STAGE_DECK_ID],
+        )?;
+        transaction.execute(
+            "UPDATE decks
+             SET name = 'Korean 00', language_tag = 'ko-KR', updated_at_ms = ?1
+             WHERE id = ?2",
+            params![now_ms, STAGE_DECK_ID],
+        )?;
+        transaction.execute(
+            "INSERT INTO bundle_installations(language_tag, installed_at_ms)
+             VALUES ('ko-KR', ?1)",
+            [now_ms],
+        )?;
+        transaction.execute(
+            "INSERT INTO bundle_decks(language_tag, deck_id, ordinal)
+             VALUES ('ko-KR', ?1, 0)",
+            [STAGE_DECK_ID],
+        )?;
+        transaction.execute(
+            "INSERT INTO bundle_source_notes(source_item_id, language_tag, deck_id)
+             SELECT id, 'ko-KR', ?1
+             FROM source_items
+             WHERE deck_id = ?1",
+            [STAGE_DECK_ID],
+        )?;
+        transaction.execute(
+            "UPDATE source_items
+             SET deck_id = ?1, updated_at_ms = ?2
+             WHERE id = 'performance-source-0006001'",
+            params![STAGE_DECK_ID, now_ms],
+        )?;
+        transaction.execute(
+            "UPDATE source_items
+             SET deleted_at_ms = ?1, updated_at_ms = ?1
+             WHERE id = 'performance-source-0019398'",
+            [now_ms.saturating_sub(1)],
+        )?;
+
+        {
+            let mut insert_media = transaction.prepare(
+                "INSERT INTO media_references(
+                    id, content_hash, kind, media_type, original_file_name,
+                    alt_text, language_tag, direction, created_at_ms, role,
+                    byte_size, width, height, duration_ms
+                 ) VALUES (?1, ?2, 'audio', 'audio/wav', ?3, NULL, 'ko-KR',
+                           'auto', ?4, 'prompt_audio', 48, NULL, NULL, 0)",
+            )?;
+            let mut link_media = transaction.prepare(
+                "INSERT INTO source_item_media(
+                    source_item_id, media_reference_id, ordinal
+                 ) VALUES (?1, ?2, ?3)",
+            )?;
+
+            for (index, content_hash) in imported_media_hashes.iter().enumerate() {
+                let source_id = format!("performance-source-{:07}", index * 2 + 1);
+                let media_id = format!("deletion-imported-media-{index:05}");
+                insert_media.execute(params![
+                    media_id,
+                    content_hash,
+                    format!("imported-{index:05}.wav"),
+                    now_ms,
+                ])?;
+                link_media.execute(params![source_id, media_id, 0])?;
+            }
+            for (index, content_hash) in unrelated_media_hashes.iter().enumerate() {
+                let source_id = format!("performance-source-{:07}", index * 2);
+                let media_id = format!("deletion-unrelated-media-{index:05}");
+                insert_media.execute(params![
+                    media_id,
+                    content_hash,
+                    format!("unrelated-{index:05}.wav"),
+                    now_ms,
+                ])?;
+                link_media.execute(params![source_id, media_id, 0])?;
+            }
+            insert_media.execute(params![
+                "deletion-shared-media",
+                &imported_media_hashes[0],
+                "shared.wav",
+                now_ms,
+            ])?;
+            link_media.execute(params![
+                "performance-source-0000000",
+                "deletion-shared-media",
+                1,
+            ])?;
+        }
+
         transaction.commit()?;
         Ok(())
     }

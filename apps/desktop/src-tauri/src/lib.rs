@@ -6,8 +6,8 @@ use meiki_application::{
     BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
     BundleRemovalResultDto, CheckAnswerRequest, CreateDeckRequest, DeckCardActionRequest,
     DeckCardActionResultDto, DeckCardOverviewDto, DeckCardRequest, DeckDto, DeckSummaryDto,
-    DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest, GradeReviewResultDto,
-    ImportMediaRequest, ImportSchedulerParametersRequest, MakeClozeRequest,
+    DeleteDeckProgressDto, DeleteDeckRequest, DeleteDeckResultDto, GradeReviewRequest,
+    GradeReviewResultDto, ImportMediaRequest, ImportSchedulerParametersRequest, MakeClozeRequest,
     PortableExportResultDto, ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest,
     ReorderSegmentsRequest, RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto,
     SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto,
@@ -318,11 +318,19 @@ fn rename_deck(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn delete_deck(
+async fn delete_deck(
     request: DeleteDeckRequest,
+    on_progress: Channel<DeleteDeckProgressDto>,
     state: State<'_, AppContext>,
 ) -> Result<DeleteDeckResultDto, String> {
-    commands::delete_deck(&state.service(), &request)
+    let service = state.service();
+    tauri::async_runtime::spawn_blocking(move || {
+        commands::delete_deck(&service, &request, |progress| {
+            drop(on_progress.send(progress));
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
