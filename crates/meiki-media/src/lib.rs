@@ -75,6 +75,38 @@ impl MediaStore {
         &self.root
     }
 
+    /// Seeds distinct valid WAV objects without production import durability
+    /// overhead.
+    ///
+    /// This helper is available only to tests and explicit test-fixture
+    /// builds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an object path cannot be created or written.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn seed_wav_objects(&self, count: u32) -> Result<Vec<String>, MediaError> {
+        (0..count)
+            .map(|index| {
+                let bytes = fixture_wav(index);
+                let hash = content_hash(&bytes);
+                let path = self.object_path(&hash)?;
+                let parent = path.parent().ok_or_else(|| {
+                    media_io(
+                        "resolve fixture object parent",
+                        &path,
+                        io::Error::new(io::ErrorKind::InvalidInput, "object has no parent"),
+                    )
+                })?;
+                fs::create_dir_all(parent)
+                    .map_err(|error| media_io("create fixture directory", parent, error))?;
+                fs::write(&path, bytes)
+                    .map_err(|error| media_io("write fixture object", &path, error))?;
+                Ok(hash)
+            })
+            .collect()
+    }
+
     /// Imports a supported audio or image after inspecting its file signature.
     ///
     /// The object is written atomically and identical bytes reuse the existing
@@ -201,6 +233,26 @@ impl MediaStore {
         copy_store_atomically(self, &hashes, destination)
     }
 
+    /// Creates a hard-linked backup containing only the named objects.
+    ///
+    /// Managed objects are immutable, so linking the affected paths preserves
+    /// their exact bytes without reading or scanning unrelated content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the destination exists, a hash is invalid, an
+    /// object is missing, or the backup cannot be committed.
+    pub fn backup_objects_to(
+        &self,
+        hashes: &[String],
+        destination: &Path,
+    ) -> Result<(), MediaError> {
+        if destination.exists() {
+            return Err(MediaError::DestinationExists(destination.to_path_buf()));
+        }
+        link_store_atomically(self, hashes, destination)
+    }
+
     /// Restores a checksum-verified media backup into a new store path.
     ///
     /// # Errors
@@ -323,6 +375,41 @@ fn copy_store_atomically(
     Ok(())
 }
 
+fn link_store_atomically(
+    source: &MediaStore,
+    hashes: &[String],
+    destination: &Path,
+) -> Result<(), MediaError> {
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|error| media_io("create parent", parent, error))?;
+    let temporary = Builder::new()
+        .prefix(".meiki-media-")
+        .tempdir_in(parent)
+        .map_err(|error| media_io("create temporary backup", parent, error))?;
+    let temporary_store = MediaStore::new(temporary.path());
+    for hash in hashes {
+        let from = source.object_path(hash)?;
+        if !from.is_file() {
+            return Err(MediaError::MissingObject(hash.clone()));
+        }
+        let to = temporary_store.object_path(hash)?;
+        let to_parent = to.parent().ok_or_else(|| {
+            media_io(
+                "resolve backup object parent",
+                &to,
+                io::Error::new(io::ErrorKind::InvalidInput, "object has no parent"),
+            )
+        })?;
+        fs::create_dir_all(to_parent)
+            .map_err(|error| media_io("create backup directory", to_parent, error))?;
+        fs::hard_link(&from, &to).map_err(|error| media_io("link object", &to, error))?;
+    }
+    let temporary_path = temporary.keep();
+    fs::rename(&temporary_path, destination)
+        .map_err(|error| media_io("commit backup", destination, error))?;
+    Ok(())
+}
+
 fn copy_atomically(source: &Path, destination: &Path) -> Result<(), MediaError> {
     let parent = destination.parent().ok_or_else(|| {
         media_io(
@@ -419,6 +506,25 @@ fn validate_media_structure(media_type: &str, bytes: &[u8]) -> Result<(), MediaE
 fn content_hash(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("{HASH_PREFIX}{}", hex::encode(digest))
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+fn fixture_wav(index: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(48);
+    bytes.extend(b"RIFF");
+    bytes.extend(40_u32.to_le_bytes());
+    bytes.extend(b"WAVEfmt ");
+    bytes.extend(16_u32.to_le_bytes());
+    bytes.extend(1_u16.to_le_bytes());
+    bytes.extend(1_u16.to_le_bytes());
+    bytes.extend(8_000_u32.to_le_bytes());
+    bytes.extend(16_000_u32.to_le_bytes());
+    bytes.extend(2_u16.to_le_bytes());
+    bytes.extend(16_u16.to_le_bytes());
+    bytes.extend(b"data");
+    bytes.extend(4_u32.to_le_bytes());
+    bytes.extend(index.to_le_bytes());
+    bytes
 }
 
 fn hash_file(path: &Path) -> Result<String, MediaError> {
@@ -661,6 +767,24 @@ mod tests {
         existing.merge_from_backup(&backup).unwrap();
         existing.merge_from_backup(&backup).unwrap();
         assert_eq!(existing.verify_all().unwrap(), vec![imported.content_hash]);
+    }
+
+    #[test]
+    fn affected_object_backup_excludes_unrelated_media_and_survives_source_removal() {
+        let directory = tempdir().unwrap();
+        let store = MediaStore::new(directory.path().join("media"));
+        let hashes = store.seed_wav_objects(2).unwrap();
+        let backup = directory.path().join("affected-backup");
+
+        store.backup_objects_to(&hashes[..1], &backup).unwrap();
+        assert_eq!(
+            MediaStore::new(&backup).verify_all().unwrap(),
+            vec![hashes[0].clone()]
+        );
+        store.remove(&hashes[0]).unwrap();
+        assert!(store.resolve(&hashes[0]).is_err());
+        assert!(MediaStore::new(&backup).resolve(&hashes[0]).is_ok());
+        assert!(MediaStore::new(&backup).resolve(&hashes[1]).is_err());
     }
 
     #[test]

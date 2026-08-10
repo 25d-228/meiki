@@ -671,10 +671,12 @@ export const scenarioDtos = {
   deletedDeck: {
     deleted_deck_id: "listening-deck",
     affected_cards: 0,
+    media_cleanup_warning: null,
   },
   movedDeck: {
     deleted_deck_id: "travel-deck",
     affected_cards: 2,
+    media_cleanup_warning: null,
   },
   deckLifecycle: [
     decks,

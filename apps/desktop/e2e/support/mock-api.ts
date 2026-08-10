@@ -469,13 +469,65 @@ export async function installMockApi(page: Page): Promise<void> {
       if (command === "create_deck") return clone(dtos.createdDeck);
       if (command === "rename_deck") return clone(dtos.renamedDeck);
       if (command === "delete_deck") {
+        if (
+          params.get("deckDeletion") === "progress" ||
+          params.get("deckDeletion") === "progress-visual"
+        ) {
+          const report = async (
+            phase:
+              "preparing" | "removing_cards" | "cleaning_audio" | "finalizing",
+            current: number | null,
+            total: number | null,
+          ) => {
+            window.__MEIKI_TEST_DECK_DELETION_PROGRESS__?.({
+              phase,
+              current,
+              total,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 120));
+          };
+          await report("preparing", null, null);
+          await report("removing_cards", 0, 3_000);
+          await report("removing_cards", 3_000, 3_000);
+          await report("cleaning_audio", 0, 2_999);
+          if (params.get("deckDeletion") === "progress-visual") {
+            await report("cleaning_audio", 1_240, 2_999);
+            while (
+              localStorage.getItem("meiki-e2e-finish-deck-deletion") !== "true"
+            ) {
+              await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+          }
+          await report("cleaning_audio", 2_999, 2_999);
+          await report("finalizing", null, null);
+          return clone(dtos.movedDeck);
+        }
+        if (params.get("deckDeletion") === "precommit-failure") {
+          window.__MEIKI_TEST_DECK_DELETION_PROGRESS__?.({
+            phase: "removing_cards",
+            current: 0,
+            total: 2,
+          });
+          throw new Error("storage operation failed: raw fixture id");
+        }
+        if (params.get("deckDeletion") === "postcommit-failure") {
+          return {
+            ...clone(dtos.movedDeck),
+            media_cleanup_warning:
+              "Deck deleted, but some unused audio could not be cleaned up.",
+          };
+        }
         if (params.get("deckDeletion") === "focused-session") {
           focusedSessionDeckDeleted = true;
           return clone(dtos.movedDeck);
         }
         if (params.get("deckDeletion") === "only-deck") {
           deckDeletedToUnsorted = true;
-          return { deleted_deck_id: "travel-deck", affected_cards: 1 };
+          return {
+            deleted_deck_id: "travel-deck",
+            affected_cards: 1,
+            media_cleanup_warning: null,
+          };
         }
         return clone(
           (args as { request: { deck_id: string } }).request.deck_id ===

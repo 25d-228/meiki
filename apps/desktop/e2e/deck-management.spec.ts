@@ -172,6 +172,71 @@ test("deletes directly with one confirmation and moves remaining cards to Trash"
   ).toBeVisible();
 });
 
+test("keeps deletion responsive with semantic monotonic progress", async ({
+  page,
+}) => {
+  await page.goto("/?deckDeletion=progress");
+  await openTravelDeck(page);
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+
+  const dialog = page.getByRole("dialog", {
+    name: "Deleting “Travel phrases”",
+  });
+  const progressbar = dialog.getByRole("progressbar");
+  await expect(dialog).toContainText("Preparing");
+  await expect(progressbar).not.toHaveAttribute("aria-valuenow");
+  await expect(dialog).toContainText("Removing cards");
+  await expect(dialog).toContainText("0 / 3,000");
+  await expect(progressbar).toHaveAttribute("aria-valuemax", "3000");
+  await expect(dialog).toContainText("3,000 / 3,000");
+  await expect(dialog).toContainText("Cleaning audio");
+  await expect(dialog).toContainText("2,999 / 2,999");
+  await expect(dialog).toContainText("Finalizing");
+  await expect(progressbar).not.toHaveAttribute("aria-valuenow");
+  await expect(
+    page.getByRole("heading", { name: "Decks", level: 1 }),
+  ).toBeVisible();
+});
+
+test("distinguishes deletion failure before and after database commit", async ({
+  page,
+}) => {
+  await page.goto("/?deckDeletion=precommit-failure");
+  await openTravelDeck(page);
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+  const failed = page.getByRole("dialog", { name: "Deck was not deleted" });
+  await expect(failed).toContainText("Could not delete the deck. Try again.");
+  await expect(failed).not.toContainText("raw fixture id");
+  await failed.getByRole("button", { name: "Close" }).last().click();
+  await expect(
+    page.getByRole("heading", { name: "Travel phrases", level: 1 }),
+  ).toBeVisible();
+
+  await page.goto("/?deckDeletion=postcommit-failure");
+  await openTravelDeck(page);
+  await page.getByRole("button", { name: "Delete deck" }).click();
+  await page
+    .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+    .getByRole("button", { name: "Delete deck" })
+    .click();
+  const committed = page.getByRole("dialog", { name: "Deck deleted" });
+  await expect(committed).toContainText(
+    "Deck deleted, but some unused audio could not be cleaned up.",
+  );
+  await committed.getByRole("button", { name: "Close" }).last().click();
+  await expect(
+    page.getByRole("heading", { name: "Decks", level: 1 }),
+  ).toBeVisible();
+});
+
 test("warns that deleting a bundle stage permanently removes bundled cards", async ({
   page,
 }) => {

@@ -98,7 +98,7 @@ impact here.
 `npm run release:check` enforces one version across Cargo, npm, Tauri, and their
 lockfiles, contiguous database migrations, published archive versions, bundle
 metadata, icons, and current release documentation. Meiki v0.2.0 publishes
-database schema **12** and `.meiki` archive version **4**. The historical v0.1
+database schema **13** and `.meiki` archive version **4**. The historical v0.1
 release published schema 7 and archive version 1. The schema-7 migration fixture
 and archive-version 1 through 3 import coverage remain release inputs. Future
 releases must keep migration fixtures from every released database schema and

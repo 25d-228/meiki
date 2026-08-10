@@ -19,6 +19,7 @@ use crate::{
 };
 
 const MAXIMUM_RESPONSE_DURATION_SAMPLES: usize = 1_024;
+const MEDIA_HASH_QUERY_BATCH_SIZE: usize = 500;
 
 /// Persistence operations for mutable decks.
 ///
@@ -78,6 +79,10 @@ pub trait MediaRepository {
     fn delete_media_reference(&mut self, id: &str) -> Result<(), StorageError>;
     fn media_reference_usage(&self, id: &str) -> Result<u64, StorageError>;
     fn media_reference_count_for_hash(&self, content_hash: &str) -> Result<u64, StorageError>;
+    fn unreferenced_media_hashes(
+        &self,
+        content_hashes: &[String],
+    ) -> Result<Vec<String>, StorageError>;
 }
 
 /// Persistence operations for versioned scheduler parameter sets.
@@ -369,6 +374,13 @@ impl MediaRepository for Storage {
         )?;
         Ok(count)
     }
+
+    fn unreferenced_media_hashes(
+        &self,
+        content_hashes: &[String],
+    ) -> Result<Vec<String>, StorageError> {
+        query_unreferenced_media_hashes(&self.connection, content_hashes)
+    }
 }
 
 impl SchedulerParameterSetRepository for Storage {
@@ -564,6 +576,7 @@ impl Storage {
         deck_id: &str,
         destination_deck_id: Option<&str>,
         updated_at_ms: i64,
+        mut on_progress: impl FnMut(u64, u64),
     ) -> Result<DeckDeletion, StorageError> {
         let transaction = self.connection.transaction()?;
         ensure_entity_exists(&transaction, "decks", "deck", deck_id)?;
@@ -591,6 +604,7 @@ impl Storage {
             ));
         }
         ensure_entity_exists(&transaction, "decks", "destination deck", destination)?;
+        on_progress(0, active_card_count);
         let mut orphaned_media_hashes = Vec::new();
         if destination_deck_id.is_some() {
             transaction.execute(
@@ -624,6 +638,7 @@ impl Storage {
             )?;
         }
         transaction.commit()?;
+        on_progress(active_card_count, active_card_count);
         Ok(DeckDeletion {
             active_card_count,
             orphaned_media_hashes,
@@ -1308,7 +1323,6 @@ fn purge_bundle_source_notes(
         .collect::<Vec<_>>()
         .join(", ");
     let source_parameters = source_ids.iter().map(String::as_str).collect::<Vec<_>>();
-
     let tag_ids = query_ids(
         transaction,
         &format!(
@@ -1356,7 +1370,6 @@ fn purge_bundle_source_notes(
             )?
             .collect::<Result<Vec<_>, _>>()?
     };
-
     transaction.execute(
         &format!(
             "DELETE FROM review_events
@@ -1382,25 +1395,17 @@ fn purge_bundle_source_notes(
         &format!("DELETE FROM source_items WHERE id IN ({placeholders})"),
         params_from_iter(&source_parameters),
     )?;
-
     delete_unreferenced_tags(transaction, &tag_ids)?;
     delete_unreferenced_annotations(transaction, &annotation_ids)?;
     delete_unreferenced_media(transaction, &media)?;
-
-    let mut orphaned_hashes = HashSet::new();
-    for (_, content_hash) in media {
-        if transaction.query_row(
-            "SELECT COUNT(*) FROM media_references WHERE content_hash = ?1",
-            [&content_hash],
-            |row| row.get::<_, u64>(0),
-        )? == 0
-        {
-            orphaned_hashes.insert(content_hash);
-        }
-    }
-    let mut orphaned_hashes = orphaned_hashes.into_iter().collect::<Vec<_>>();
-    orphaned_hashes.sort();
-    Ok(orphaned_hashes)
+    let unreferenced = query_unreferenced_media_hashes(
+        transaction,
+        &media
+            .into_iter()
+            .map(|(_, content_hash)| content_hash)
+            .collect::<Vec<_>>(),
+    )?;
+    Ok(unreferenced)
 }
 
 fn query_ids(
@@ -1419,16 +1424,20 @@ fn delete_unreferenced_tags(
     transaction: &Transaction<'_>,
     tag_ids: &[String],
 ) -> Result<(), StorageError> {
-    for tag_id in tag_ids {
-        transaction.execute(
-            "DELETE FROM tags
-             WHERE id = ?1
-               AND NOT EXISTS (
-                   SELECT 1 FROM source_item_tags WHERE tag_id = ?1
-               )",
-            [tag_id],
-        )?;
+    if tag_ids.is_empty() {
+        return Ok(());
     }
+    let placeholders = sql_placeholders(tag_ids.len());
+    transaction.execute(
+        &format!(
+            "DELETE FROM tags
+             WHERE id IN ({placeholders})
+               AND NOT EXISTS (
+                   SELECT 1 FROM source_item_tags WHERE tag_id = tags.id
+               )"
+        ),
+        params_from_iter(tag_ids),
+    )?;
     Ok(())
 }
 
@@ -1436,19 +1445,25 @@ fn delete_unreferenced_annotations(
     transaction: &Transaction<'_>,
     annotation_ids: &[String],
 ) -> Result<(), StorageError> {
-    for annotation_id in annotation_ids {
-        transaction.execute(
+    if annotation_ids.is_empty() {
+        return Ok(());
+    }
+    let placeholders = sql_placeholders(annotation_ids.len());
+    transaction.execute(
+        &format!(
             "DELETE FROM annotations
-             WHERE id = ?1
+             WHERE id IN ({placeholders})
                AND NOT EXISTS (
-                   SELECT 1 FROM source_item_annotations WHERE annotation_id = ?1
+                   SELECT 1 FROM source_item_annotations
+                   WHERE annotation_id = annotations.id
                )
                AND NOT EXISTS (
-                   SELECT 1 FROM cloze_annotations WHERE annotation_id = ?1
-               )",
-            [annotation_id],
-        )?;
-    }
+                   SELECT 1 FROM cloze_annotations
+                   WHERE annotation_id = annotations.id
+               )"
+        ),
+        params_from_iter(annotation_ids),
+    )?;
     Ok(())
 }
 
@@ -1456,20 +1471,59 @@ fn delete_unreferenced_media(
     transaction: &Transaction<'_>,
     media: &[(String, String)],
 ) -> Result<(), StorageError> {
-    for (media_id, _) in media {
-        transaction.execute(
-            "DELETE FROM media_references
-             WHERE id = ?1
-               AND NOT EXISTS (
-                   SELECT 1 FROM source_item_media WHERE media_reference_id = ?1
-               )
-               AND NOT EXISTS (
-                   SELECT 1 FROM cloze_media WHERE media_reference_id = ?1
-               )",
-            [media_id],
-        )?;
+    if media.is_empty() {
+        return Ok(());
     }
+    let media_ids = media.iter().map(|(id, _)| id).collect::<Vec<_>>();
+    let placeholders = sql_placeholders(media_ids.len());
+    transaction.execute(
+        &format!(
+            "DELETE FROM media_references
+             WHERE id IN ({placeholders})
+               AND id NOT IN (
+                   SELECT media_reference_id FROM source_item_media
+               )
+               AND id NOT IN (
+                   SELECT media_reference_id FROM cloze_media
+               )"
+        ),
+        params_from_iter(media_ids),
+    )?;
     Ok(())
+}
+
+fn query_unreferenced_media_hashes(
+    connection: &Connection,
+    content_hashes: &[String],
+) -> Result<Vec<String>, StorageError> {
+    let mut unreferenced = HashSet::new();
+    for batch in content_hashes.chunks(MEDIA_HASH_QUERY_BATCH_SIZE) {
+        let values = std::iter::repeat_n("(?)", batch.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut statement = connection.prepare(&format!(
+            "WITH candidates(content_hash) AS (VALUES {values})
+             SELECT DISTINCT candidates.content_hash
+             FROM candidates
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM media_references
+                 WHERE media_references.content_hash = candidates.content_hash
+             )"
+        ))?;
+        let hashes = statement
+            .query_map(params_from_iter(batch), |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        unreferenced.extend(hashes);
+    }
+    let mut unreferenced = unreferenced.into_iter().collect::<Vec<_>>();
+    unreferenced.sort();
+    Ok(unreferenced)
+}
+
+fn sql_placeholders(count: usize) -> String {
+    std::iter::repeat_n("?", count)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn validate_pristine_bundle_import(

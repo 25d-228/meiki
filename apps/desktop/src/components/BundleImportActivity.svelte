@@ -8,6 +8,7 @@
   import type { BundleImportProgressDto } from "../lib/generated/BundleImportProgressDto";
   import type { BundleImportResultDto } from "../lib/generated/BundleImportResultDto";
   import type { BundlePreviewDto } from "../lib/generated/BundlePreviewDto";
+  import ProgressBar from "./ProgressBar.svelte";
 
   type BundleImportStatus =
     "choosing" | "previewing" | "ready" | "running" | "success" | "failure";
@@ -102,6 +103,15 @@
             <strong>Adding {activityLanguage(activity)}</strong>
             {#if activity.progress}
               <span>{progressLabel(activity.progress)}</span>
+              <ProgressBar
+                label={progressLabel(activity.progress)}
+                current={activity.progress.stage === "preparing_decks"
+                  ? null
+                  : activity.progress.current}
+                total={activity.progress.stage === "preparing_decks"
+                  ? null
+                  : activity.progress.total}
+              />
               {#if activity.progress.stage !== "preparing_decks"}
                 <span class="text-xs text-muted-foreground">
                   {activity.progress.current.toLocaleString()} / {activity.progress.total.toLocaleString()}
@@ -191,11 +201,16 @@
     {#if activity?.status === "running" && activity.progress}
       <div class="bundle-progress" role="status" aria-live="polite">
         <strong>{progressLabel(activity.progress)}</strong>
+        <ProgressBar
+          label={progressLabel(activity.progress)}
+          current={activity.progress.stage === "preparing_decks"
+            ? null
+            : activity.progress.current}
+          total={activity.progress.stage === "preparing_decks"
+            ? null
+            : activity.progress.total}
+        />
         {#if activity.progress.stage !== "preparing_decks"}
-          <progress
-            max={Math.max(1, activity.progress.total)}
-            value={activity.progress.current}
-          ></progress>
           <span
             >{activity.progress.current.toLocaleString()} / {activity.progress.total.toLocaleString()}</span
           >
@@ -273,10 +288,6 @@
   .bundle-decks li > span:not(.installed) {
     color: var(--foreground);
     font-weight: 700;
-  }
-
-  .bundle-progress progress {
-    width: 100%;
   }
 
   @media (max-width: 30rem) {

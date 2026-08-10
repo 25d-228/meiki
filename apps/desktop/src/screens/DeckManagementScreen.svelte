@@ -19,6 +19,8 @@
   import type { DeckCardTrashDto } from "../lib/generated/DeckCardTrashDto";
   import type { SchedulerSettingsDto } from "../lib/generated/SchedulerSettingsDto";
   import { localDayBounds } from "../lib/local-day";
+  import type { DeleteDeckProgressDto } from "../lib/generated/DeleteDeckProgressDto";
+  import ProgressBar from "../components/ProgressBar.svelte";
 
   type Props = {
     selectedDeckId: string;
@@ -64,6 +66,10 @@
   let moveBeforeDeleteDialogOpen = $state(false);
   let deleteCardCount = $state(0);
   let busyDeckAction = $state(false);
+  let deleteProgress = $state<DeleteDeckProgressDto | null>(null);
+  let deleteProgressDialogOpen = $state(false);
+  let deleteFailure = $state("");
+  let deleteCleanupWarning = $state("");
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
@@ -264,21 +270,46 @@
     busyDeckAction = true;
     error = "";
     notice = "";
+    deleteFailure = "";
+    deleteCleanupWarning = "";
+    deleteProgress = null;
+    deleteDialogOpen = false;
+    moveBeforeDeleteDialogOpen = false;
+    deleteProgressDialogOpen = true;
     try {
-      await api.deleteDeck({
-        deck_id: selectedDeckId,
-        move_cards_to_deck_id: moveCardsToDeckId,
-        confirmation: deckName,
-        now_ms: Date.now(),
-      });
-      deleteDialogOpen = false;
-      moveBeforeDeleteDialogOpen = false;
-      onDeleted();
-    } catch (reason) {
-      error = message(reason);
+      const result = await api.deleteDeck(
+        {
+          deck_id: selectedDeckId,
+          move_cards_to_deck_id: moveCardsToDeckId,
+          confirmation: deckName,
+          now_ms: Date.now(),
+        },
+        (progress) => (deleteProgress = progress),
+      );
+      if (result.media_cleanup_warning) {
+        deleteCleanupWarning = result.media_cleanup_warning;
+      } else {
+        deleteProgressDialogOpen = false;
+        onDeleted();
+      }
+    } catch {
+      deleteFailure = "Could not delete the deck. Try again.";
     } finally {
       busyDeckAction = false;
     }
+  }
+
+  function closeDeleteProgress(): void {
+    if (busyDeckAction) return;
+    deleteProgressDialogOpen = false;
+    if (deleteCleanupWarning) onDeleted();
+  }
+
+  function deleteProgressLabel(progress: DeleteDeckProgressDto): string {
+    if (progress.phase === "preparing") return "Preparing";
+    if (progress.phase === "removing_cards") return "Removing cards";
+    if (progress.phase === "cleaning_audio") return "Cleaning audio";
+    return "Finalizing";
   }
 
   function cardCountLabel(count: number): string {
@@ -629,6 +660,65 @@
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>
+
+<Dialog.Root
+  open={deleteProgressDialogOpen}
+  onOpenChange={(open) => {
+    if (!open) closeDeleteProgress();
+  }}
+>
+  <Dialog.Content
+    class="rounded-none sm:max-w-md"
+    showCloseButton={!busyDeckAction}
+  >
+    <Dialog.Header>
+      <Dialog.Title>
+        {deleteCleanupWarning
+          ? "Deck deleted"
+          : deleteFailure
+            ? "Deck was not deleted"
+            : `Deleting “${deckName}”`}
+      </Dialog.Title>
+      <Dialog.Description>
+        {deleteCleanupWarning
+          ? "The collection was updated, but audio cleanup needs attention."
+          : deleteFailure
+            ? "Your collection was left unchanged."
+            : "Keep Meiki open while this finishes."}
+      </Dialog.Description>
+    </Dialog.Header>
+
+    {#if deleteCleanupWarning}
+      <Alert.Root role="alert">
+        <Alert.Title>{deleteCleanupWarning}</Alert.Title>
+      </Alert.Root>
+    {:else if deleteFailure}
+      <Alert.Root variant="destructive" role="alert">
+        <Alert.Title>{deleteFailure}</Alert.Title>
+      </Alert.Root>
+    {:else if deleteProgress}
+      <div class="grid gap-2" role="status" aria-live="polite">
+        <strong>{deleteProgressLabel(deleteProgress)}</strong>
+        <ProgressBar
+          label={deleteProgressLabel(deleteProgress)}
+          current={deleteProgress.current}
+          total={deleteProgress.total}
+        />
+        {#if deleteProgress.current !== null && deleteProgress.total !== null}
+          <span class="text-sm text-muted-foreground">
+            {deleteProgress.current.toLocaleString()} / {deleteProgress.total.toLocaleString()}
+          </span>
+        {/if}
+      </div>
+    {/if}
+
+    {#if !busyDeckAction}
+      <Dialog.Footer>
+        <Button onclick={closeDeleteProgress}>Close</Button>
+      </Dialog.Footer>
+    {/if}
+  </Dialog.Content>
+</Dialog.Root>
 
 <Dialog.Root bind:open={moveBeforeDeleteDialogOpen}>
   <Dialog.Content>
