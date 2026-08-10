@@ -1,174 +1,9 @@
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use meiki_application::ApplicationService;
 
-use tauri::http::{
-    Method, Request, Response, StatusCode,
-    header::{
-        ACCEPT_RANGES, ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, ALLOW,
-        CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE,
-    },
-};
-
-pub(crate) const PROTOCOL: &str = "meiki-media";
-
-const AUDIO_MPEG: &str = "audio/mpeg";
-const BYTE_RANGE_UNIT: &str = "bytes";
-const SHA256_DIGEST_LENGTH: usize = 64;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ByteRange {
-    start: u64,
-    end: u64,
-}
-
-pub(crate) fn response(collection_path: &Path, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
-    if request.method() != Method::GET && request.method() != Method::HEAD {
-        return Response::builder()
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .header(ALLOW, "GET, HEAD")
-            .body(Vec::new())
-            .expect("static managed-media response headers are valid");
-    }
-
-    let Some(digest) = request_digest(request.uri().path()) else {
-        return empty_response(StatusCode::NOT_FOUND);
-    };
-    let object_path = collection_path
-        .with_extension("media")
-        .join("objects")
-        .join("sha256")
-        .join(&digest[..2])
-        .join(&digest[2..]);
-    let Ok(mut object) = File::open(object_path) else {
-        return empty_response(StatusCode::NOT_FOUND);
-    };
-    let Ok(object_length) = object.metadata().map(|metadata| metadata.len()) else {
-        return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
-    };
-
-    let requested_range = match request.headers().get(RANGE) {
-        Some(value) => match value
-            .to_str()
-            .ok()
-            .and_then(|value| parse_range(value, object_length))
-        {
-            Some(range) => Some(range),
-            None => return range_not_satisfiable(object_length),
-        },
-        None => None,
-    };
-    let (status, content_length, content_range) =
-        requested_range.map_or((StatusCode::OK, object_length, None), |range| {
-            (
-                StatusCode::PARTIAL_CONTENT,
-                range.end - range.start + 1,
-                Some(format!(
-                    "{BYTE_RANGE_UNIT} {}-{}/{object_length}",
-                    range.start, range.end
-                )),
-            )
-        });
-
-    let body = if request.method() == Method::HEAD {
-        Vec::new()
-    } else {
-        match read_body(&mut object, requested_range, content_length) {
-            Ok(body) => body,
-            Err(()) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
-        }
-    };
-
-    let mut response = Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, AUDIO_MPEG)
-        .header(ACCEPT_RANGES, BYTE_RANGE_UNIT)
-        .header(CONTENT_LENGTH, content_length)
-        .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(
-            ACCESS_CONTROL_EXPOSE_HEADERS,
-            "accept-ranges, content-length, content-range",
-        );
-    if let Some(content_range) = content_range {
-        response = response.header(CONTENT_RANGE, content_range);
-    }
-    response
-        .body(body)
-        .expect("static managed-media response headers are valid")
-}
-
-fn request_digest(path: &str) -> Option<&str> {
-    let digest = path.strip_prefix('/')?;
-    (digest.len() == SHA256_DIGEST_LENGTH
-        && digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
-    .then_some(digest)
-}
-
-fn parse_range(value: &str, object_length: u64) -> Option<ByteRange> {
-    let range = value.strip_prefix("bytes=")?;
-    if object_length == 0 || range.contains(',') {
-        return None;
-    }
-    let (start, end) = range.split_once('-')?;
-    if start.is_empty() {
-        let suffix_length = end.parse::<u64>().ok()?;
-        if suffix_length == 0 {
-            return None;
-        }
-        return Some(ByteRange {
-            start: object_length.saturating_sub(suffix_length),
-            end: object_length - 1,
-        });
-    }
-
-    let start = start.parse::<u64>().ok()?;
-    if start >= object_length {
-        return None;
-    }
-    let end = if end.is_empty() {
-        object_length - 1
-    } else {
-        end.parse::<u64>().ok()?.min(object_length - 1)
-    };
-    (start <= end).then_some(ByteRange { start, end })
-}
-
-fn read_body(
-    object: &mut File,
-    requested_range: Option<ByteRange>,
-    content_length: u64,
-) -> Result<Vec<u8>, ()> {
-    if let Some(range) = requested_range {
-        object.seek(SeekFrom::Start(range.start)).map_err(|_| ())?;
-    }
-    let length = usize::try_from(content_length).map_err(|_| ())?;
-    let mut body = vec![0; length];
-    object.read_exact(&mut body).map_err(|_| ())?;
-    Ok(body)
-}
-
-fn range_not_satisfiable(object_length: u64) -> Response<Vec<u8>> {
-    Response::builder()
-        .status(StatusCode::RANGE_NOT_SATISFIABLE)
-        .header(CONTENT_TYPE, AUDIO_MPEG)
-        .header(ACCEPT_RANGES, BYTE_RANGE_UNIT)
-        .header(
-            CONTENT_RANGE,
-            format!("{BYTE_RANGE_UNIT} */{object_length}"),
-        )
-        .header(CONTENT_LENGTH, 0)
-        .body(Vec::new())
-        .expect("static managed-media response headers are valid")
-}
-
-fn empty_response(status: StatusCode) -> Response<Vec<u8>> {
-    Response::builder()
-        .status(status)
-        .header(CONTENT_LENGTH, 0)
-        .body(Vec::new())
-        .expect("static managed-media response headers are valid")
+pub(crate) fn read(service: &ApplicationService, content_hash: &str) -> Result<Vec<u8>, String> {
+    service
+        .read_managed_audio(content_hash)
+        .map_err(|_| "Audio transport failed.".to_owned())
 }
 
 #[cfg(test)]
@@ -176,10 +11,9 @@ mod tests {
     use meiki_application::{
         ApplicationService, DirectionDto, ImportMediaRequest, MediaAvailabilityDto, MediaRoleDto,
     };
-    use tauri::http::{Request, StatusCode, header};
     use tempfile::tempdir;
 
-    use super::{AUDIO_MPEG, BYTE_RANGE_UNIT, PROTOCOL, response};
+    use super::read;
 
     const REAL_MP3: &[u8] = &[
         0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x54, 0x49, 0x54, 0x32, 0x00,
@@ -232,7 +66,7 @@ mod tests {
     ];
 
     #[test]
-    fn real_mp3_import_is_served_from_an_extensionless_managed_path_with_mime_and_ranges() {
+    fn reads_verified_real_mp3_bytes_from_an_existing_collection() {
         let directory = tempdir().unwrap();
         let source_path = directory.path().join("sentence.mp3");
         std::fs::write(&source_path, REAL_MP3).unwrap();
@@ -245,75 +79,19 @@ mod tests {
                 direction: DirectionDto::Auto,
             })
             .unwrap();
-
         assert_eq!(media.availability, MediaAvailabilityDto::Ready);
-        assert_eq!(media.media_type, AUDIO_MPEG);
-        let managed_path = media.asset_path.as_ref().unwrap();
-        assert!(std::path::Path::new(managed_path).extension().is_none());
-        assert_eq!(std::fs::read(managed_path).unwrap(), REAL_MP3);
-        let digest = media.content_hash.strip_prefix("sha256:").unwrap();
+        assert_eq!(media.media_type, "audio/mpeg");
 
-        let full_request = Request::builder()
-            .uri(format!("{PROTOCOL}://localhost/{digest}"))
-            .body(Vec::new())
-            .unwrap();
-        let full_response = response(&collection_path, &full_request);
-        assert_eq!(full_response.status(), StatusCode::OK);
-        assert_eq!(full_response.headers()[header::CONTENT_TYPE], AUDIO_MPEG);
-        assert_eq!(
-            full_response.headers()[header::ACCEPT_RANGES],
-            BYTE_RANGE_UNIT
-        );
-        assert_eq!(full_response.body(), REAL_MP3);
-
-        let range_request = Request::builder()
-            .uri(format!("{PROTOCOL}://localhost/{digest}"))
-            .header(header::RANGE, "bytes=16-63")
-            .body(Vec::new())
-            .unwrap();
-        let range_response = response(&collection_path, &range_request);
-        assert_eq!(range_response.status(), StatusCode::PARTIAL_CONTENT);
-        assert_eq!(
-            range_response.headers()[header::CONTENT_RANGE],
-            format!("bytes 16-63/{}", REAL_MP3.len())
-        );
-        assert_eq!(range_response.body(), &REAL_MP3[16..64]);
+        let reopened = ApplicationService::new(&collection_path);
+        assert_eq!(read(&reopened, &media.content_hash).unwrap(), REAL_MP3);
     }
 
     #[test]
-    fn invalid_or_unsatisfiable_managed_media_requests_fail_without_file_access() {
+    fn transport_failures_do_not_expose_managed_paths_or_hashes() {
         let directory = tempdir().unwrap();
-        let collection_path = directory.path().join("collection.db");
-        let invalid_request = Request::builder()
-            .uri(format!("{PROTOCOL}://localhost/not-a-content-hash"))
-            .body(Vec::new())
-            .unwrap();
-        assert_eq!(
-            response(&collection_path, &invalid_request).status(),
-            StatusCode::NOT_FOUND
-        );
-
-        let source_path = directory.path().join("sentence.mp3");
-        std::fs::write(&source_path, REAL_MP3).unwrap();
-        let media = ApplicationService::new(&collection_path)
-            .import_media(&ImportMediaRequest {
-                path: source_path.to_string_lossy().into_owned(),
-                role: MediaRoleDto::AnswerAudio,
-                language_tag: None,
-                direction: DirectionDto::Auto,
-            })
-            .unwrap();
-        let digest = media.content_hash.strip_prefix("sha256:").unwrap();
-        let range_request = Request::builder()
-            .uri(format!("{PROTOCOL}://localhost/{digest}"))
-            .header(header::RANGE, format!("bytes={}-", REAL_MP3.len()))
-            .body(Vec::new())
-            .unwrap();
-        let range_response = response(&collection_path, &range_request);
-        assert_eq!(range_response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
-        assert_eq!(
-            range_response.headers()[header::CONTENT_RANGE],
-            format!("bytes */{}", REAL_MP3.len())
-        );
+        let service = ApplicationService::new(directory.path().join("collection.db"));
+        let error = read(&service, &format!("sha256:{}", "d".repeat(64))).unwrap_err();
+        assert_eq!(error, "Audio transport failed.");
+        assert!(!error.contains("sha256"));
     }
 }

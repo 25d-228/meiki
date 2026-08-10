@@ -1263,6 +1263,16 @@ mod tests {
             PathBuf::from(managed_path)
         );
         assert_eq!(service.media_store().verify_all().unwrap().len(), 1);
+
+        let reopened = ApplicationService::new(&collection_path);
+        let persisted = reopened.get_study_card(&bundle_card_id(0)).unwrap();
+        assert_eq!(persisted.prompt_media[0].content_hash, prompt.content_hash);
+        assert_eq!(
+            reopened
+                .read_managed_audio(&persisted.prompt_media[0].content_hash)
+                .unwrap(),
+            REAL_MP3
+        );
     }
 
     #[test]

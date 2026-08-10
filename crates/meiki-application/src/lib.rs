@@ -562,6 +562,24 @@ impl ApplicationService {
         Ok(self.study_media_dto(&media))
     }
 
+    /// Reads one checksum-verified object for the desktop managed-media transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the hash is invalid or the managed object is
+    /// missing, corrupt, or unreadable.
+    pub fn read_managed_audio(&self, content_hash: &str) -> Result<Vec<u8>, ApplicationError> {
+        let path = self.media_store().resolve(content_hash)?;
+        fs::read(&path).map_err(|source| {
+            MediaError::Io {
+                operation: "read",
+                path,
+                source,
+            }
+            .into()
+        })
+    }
+
     /// Restores a study card from the collection.
     ///
     /// # Errors

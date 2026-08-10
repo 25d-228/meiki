@@ -20,7 +20,6 @@
   import {
     mediaAssetSource,
     readPromptAudioAutoplay,
-    restartAudio,
     writePromptAudioAutoplay,
   } from "../lib/media";
   import { messages } from "../lib/messages";
@@ -94,9 +93,16 @@
   let studyElement = $state<HTMLElement | undefined>();
   let promptStartedAt = $state(0);
   let autoplayPromptAudio = $state(true);
+  let promptAudioAutoplayPending = $state(false);
   let queueSession = $state<StudyQueueSession | null>(null);
   let studyAvailability = $state<StudyAvailabilityDto | null>(null);
   let nextDueAt = $state<string | null>(null);
+  const firstReadyPromptAudioId = $derived(
+    card?.prompt_media.find(
+      (media) =>
+        media.role === "prompt_audio" && media.availability === "ready",
+    )?.id,
+  );
 
   onMount(() => {
     autoplayPromptAudio = readPromptAudioAutoplay();
@@ -182,6 +188,7 @@
   }
 
   async function restoreOrLoad(): Promise<void> {
+    promptAudioAutoplayPending = false;
     const stored = sessionStorage.getItem(studySessionKey);
     sessionStorage.removeItem(studySessionKey);
     if (!stored) {
@@ -269,10 +276,10 @@
       if (!card) {
         throw new Error("The study queue changed while it was loading.");
       }
+      promptAudioAutoplayPending = true;
       view = "prompt";
       promptStartedAt = performance.now();
       await focusAnswer();
-      await autoplayFirstPromptAudio();
     } catch (error) {
       fail(error, "prompt", "load");
     }
@@ -283,19 +290,22 @@
     answerInput?.focus();
   }
 
-  async function autoplayFirstPromptAudio(): Promise<void> {
+  async function autoplayFirstPromptAudio(
+    playAudio: () => Promise<void>,
+  ): Promise<void> {
     if (!autoplayPromptAudio) return;
-    await tick();
-    const audio = studyElement?.querySelector<HTMLAudioElement>(
-      '[data-media-role="prompt_audio"][data-state="ready"] audio',
-    );
-    if (!audio) return;
     try {
-      await audio.play();
+      await playAudio();
     } catch {
       audioNotice =
         "Prompt audio could not start automatically. Use Play to hear it.";
     }
+  }
+
+  function promptAudioReady(playAudio: () => Promise<void>): void {
+    if (!promptAudioAutoplayPending) return;
+    promptAudioAutoplayPending = false;
+    void autoplayFirstPromptAudio(playAudio);
   }
 
   function togglePromptAudioAutoplay(): void {
@@ -481,17 +491,15 @@
 
   function replayAudio(): void {
     const role = view === "revealed" ? "answer_audio" : "prompt_audio";
-    const audio = studyElement?.querySelector<HTMLAudioElement>(
-      `[data-media-role="${role}"] audio`,
+    const replay = studyElement?.querySelector<HTMLButtonElement>(
+      `[data-media-role="${role}"] button[aria-label="Replay audio"]`,
     );
-    if (!audio) {
+    if (!replay) {
       audioNotice = "No playable audio is attached to this side of the card.";
       return;
     }
     audioNotice = "";
-    void restartAudio(audio).catch(() => {
-      audioNotice = "Audio could not play. Try again.";
-    });
+    replay.click();
   }
 
   async function retry(): Promise<void> {
@@ -788,11 +796,15 @@
               role={media.role}
               availability={media.availability}
               source={mediaAssetSource(media)}
+              contentHash={media.content_hash}
               mediaType={media.media_type}
               altText={media.alt_text}
               width={media.width}
               height={media.height}
               durationMs={media.duration_ms}
+              onAudioReady={media.id === firstReadyPromptAudioId
+                ? promptAudioReady
+                : undefined}
             />
           {/each}
           <form
@@ -915,6 +927,7 @@
                     role={media.role}
                     availability={media.availability}
                     source={mediaAssetSource(media)}
+                    contentHash={media.content_hash}
                     mediaType={media.media_type}
                     altText={media.alt_text}
                     width={media.width}

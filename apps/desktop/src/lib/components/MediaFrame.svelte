@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { usesManagedAudioTransport } from "$lib/media";
   import AudioControl from "./AudioControl.svelte";
 
   type Props = {
@@ -7,12 +8,14 @@
     role?: "prompt_audio" | "answer_audio" | "reveal_image";
     availability?: "ready" | "missing" | "corrupt" | "unsupported";
     source?: string;
+    contentHash?: string;
     mediaType?: string;
     altText?: string | null;
     width?: number | null;
     height?: number | null;
     durationMs?: number | null;
     state?: "empty" | "loading" | "ready" | "error";
+    onAudioReady?: (play: () => Promise<void>) => void;
   };
 
   let {
@@ -21,17 +24,22 @@
     role,
     availability,
     source,
+    contentHash,
     mediaType,
     altText,
     width,
     height,
     durationMs,
     state = "empty",
+    onAudioReady,
   }: Props = $props();
 
   const resolvedState = $derived(
     availability
-      ? availability === "ready" && source
+      ? availability === "ready" &&
+        (source ||
+          (kind === "audio" &&
+            usesManagedAudioTransport(contentHash, mediaType)))
         ? "ready"
         : "error"
       : state,
@@ -55,14 +63,21 @@
   data-kind={kind}
   data-media-role={role}
 >
-  {#if resolvedState === "ready" && source}
+  {#if resolvedState === "ready"}
     {#if kind === "audio"}
       <div class="media-heading">
         <strong>{label}</strong>
         <span>{mediaType}</span>
       </div>
-      <AudioControl {source} label={altText ?? label} {durationMs} />
-    {:else}
+      <AudioControl
+        {source}
+        {contentHash}
+        {mediaType}
+        label={altText ?? label}
+        {durationMs}
+        onReady={onAudioReady}
+      />
+    {:else if source}
       <figure>
         <img
           src={source}

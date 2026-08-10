@@ -999,6 +999,7 @@
                       role={media.role}
                       availability={media.availability}
                       source={mediaAssetSource(media)}
+                      contentHash={media.content_hash}
                       mediaType={media.media_type}
                       altText={media.alt_text}
                       width={media.width}

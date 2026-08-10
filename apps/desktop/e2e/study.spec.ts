@@ -229,7 +229,7 @@ test("keeps manual audio controls usable when autoplay is blocked", async ({
   await expect(page.getByRole("button", { name: "Pause audio" })).toBeVisible();
 });
 
-test("loads and plays a real MP3 through the browser media engine", async ({
+test("decodes non-silent managed MP3 bytes and cleans up prompt and reveal URLs", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -237,11 +237,58 @@ test("loads and plays a real MP3 through the browser media engine", async ({
   });
   await openStudy(page, "/?media=real-mp3");
   const audio = page.locator("audio");
+  await expect(audio).toHaveAttribute("src", /^blob:/);
+  expect((await lastRequest(page, "read_managed_audio"))?.args).toEqual({
+    contentHash:
+      "sha256:4732a7cfa0f5dc2a3c8ded1378d2fa4cef6b315dfd0e29ab5479b90a6db13157",
+  });
+  const decoded = await audio.evaluate(async (element) => {
+    const bytes = await (await fetch(element.src)).arrayBuffer();
+    const digest = Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+    )
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    const context = new AudioContext();
+    const buffer = await context.decodeAudioData(bytes.slice(0));
+    let peak = 0;
+    let squaredSamples = 0;
+    let sampleCount = 0;
+    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+      for (const sample of buffer.getChannelData(channel)) {
+        peak = Math.max(peak, Math.abs(sample));
+        squaredSamples += sample * sample;
+        sampleCount += 1;
+      }
+    }
+    await context.close();
+    return {
+      byteLength: bytes.byteLength,
+      digest,
+      duration: buffer.duration,
+      peak,
+      rms: Math.sqrt(squaredSamples / sampleCount),
+    };
+  });
+  expect(decoded.byteLength).toBe(2_445);
+  expect(decoded.digest).toBe(
+    "4732a7cfa0f5dc2a3c8ded1378d2fa4cef6b315dfd0e29ab5479b90a6db13157",
+  );
+  expect(decoded.duration).toBeGreaterThan(0);
+  expect(decoded.peak).toBeGreaterThan(0.05);
+  expect(decoded.rms).toBeGreaterThan(0.01);
+
   await audio.evaluate((element) => {
     element.dataset.playEvents = "0";
+    element.dataset.seekEvents = "0";
     element.addEventListener("play", () => {
       element.dataset.playEvents = String(
         Number(element.dataset.playEvents ?? "0") + 1,
+      );
+    });
+    element.addEventListener("seeking", () => {
+      element.dataset.seekEvents = String(
+        Number(element.dataset.seekEvents ?? "0") + 1,
       );
     });
   });
@@ -257,6 +304,7 @@ test("loads and plays a real MP3 through the browser media engine", async ({
   await expect
     .poll(() => audio.evaluate((element) => element.ended))
     .toBe(true);
+  await expect(audio).toHaveAttribute("data-seek-events", "0");
   await page.getByRole("button", { name: "Play audio", exact: true }).click();
   await expect.poll(() => audio.getAttribute("data-play-events")).toBe("2");
   await expect
@@ -265,6 +313,59 @@ test("loads and plays a real MP3 through the browser media engine", async ({
   await page.getByRole("button", { name: "Replay audio" }).click();
   await expect.poll(() => audio.getAttribute("data-play-events")).toBe("3");
   expect(await mediaPlayCount(page)).toBe(0);
+
+  const promptUrl = await audio.getAttribute("src");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  const revealAudio = page.locator("audio");
+  await expect(revealAudio).toHaveAttribute("src", /^blob:/);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (url) => window.__MEIKI_TEST_REVOKED_OBJECT_URLS__?.includes(url ?? ""),
+        promptUrl,
+      ),
+    )
+    .toBe(true);
+  await revealAudio.evaluate((element) => {
+    element.dataset.playEvents = "0";
+    element.addEventListener("play", () => {
+      element.dataset.playEvents = String(
+        Number(element.dataset.playEvents ?? "0") + 1,
+      );
+    });
+  });
+  await expect(revealAudio).toHaveJSProperty("paused", true);
+  await expect(revealAudio).toHaveJSProperty("currentTime", 0);
+  await expect(revealAudio).toHaveAttribute("data-play-events", "0");
+  await page.getByRole("button", { name: "Play audio", exact: true }).click();
+  await expect
+    .poll(() => revealAudio.evaluate((element) => element.currentTime))
+    .toBeGreaterThan(0);
+  await expect(revealAudio).toHaveAttribute("data-play-events", "1");
+  await expect
+    .poll(() => revealAudio.evaluate((element) => element.ended))
+    .toBe(true);
+  const revealUrl = await revealAudio.getAttribute("src");
+  await page.keyboard.press("3");
+  await expect(
+    page.getByRole("heading", { name: "Review saved" }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (url) => window.__MEIKI_TEST_REVOKED_OBJECT_URLS__?.includes(url ?? ""),
+        revealUrl,
+      ),
+    )
+    .toBe(true);
+  const managedReads = await page.evaluate(() =>
+    (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+      (request) => request.command === "read_managed_audio",
+    ),
+  );
+  expect(managedReads).toHaveLength(2);
+  expect(managedReads[0]?.args).toEqual(managedReads[1]?.args);
 });
 
 test("restarts audio at the decoder boundary and reports playback failures", async ({
@@ -301,14 +402,44 @@ test("restarts audio at the decoder boundary and reports playback failures", asy
   await audio.dispatchEvent("seeked");
   await expect.poll(() => mediaPlayCount(page)).toBe(1);
 
-  await audio.dispatchEvent("error");
+  await audio.evaluate((element) => {
+    Object.defineProperty(element, "error", {
+      configurable: true,
+      get: () => ({ code: MediaError.MEDIA_ERR_ABORTED }),
+    });
+    element.dispatchEvent(new Event("error"));
+  });
   await expect(page.getByRole("alert")).toHaveText("Audio could not load.");
+  await audio.evaluate((element) => {
+    Object.defineProperty(element, "error", {
+      configurable: true,
+      get: () => ({ code: MediaError.MEDIA_ERR_DECODE }),
+    });
+    element.dispatchEvent(new Event("error"));
+  });
+  await expect(page.getByRole("alert")).toHaveText(
+    "Audio could not be decoded.",
+  );
 
   await openStudy(page, "/?media=playback-error");
   await page.getByRole("button", { name: "Play audio", exact: true }).click();
   await expect(page.getByRole("alert")).toHaveText(
     "Audio could not play. Try again.",
   );
+  await expect(page.getByLabel("Your answer")).toBeEnabled();
+});
+
+test("reports native managed-audio transport failures without blocking study", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("meiki-autoplay-prompt-audio", "false");
+  });
+  await openStudy(page, "/?media=transport-error");
+  await expect(page.getByRole("alert")).toHaveText("Audio transport failed.");
+  await expect(
+    page.getByRole("button", { name: "Play audio", exact: true }),
+  ).toBeDisabled();
   await expect(page.getByLabel("Your answer")).toBeEnabled();
 });
 

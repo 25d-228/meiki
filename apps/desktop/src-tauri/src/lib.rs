@@ -50,6 +50,7 @@ macro_rules! desktop_commands {
             delete_deck,
             new_authoring_draft,
             import_media,
+            read_managed_audio,
             make_cloze,
             remove_cloze,
             reorder_segments,
@@ -350,6 +351,20 @@ fn import_media(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+async fn read_managed_audio(
+    content_hash: String,
+    state: State<'_, AppContext>,
+) -> Result<tauri::ipc::Response, String> {
+    let service = state.service();
+    tauri::async_runtime::spawn_blocking(move || {
+        managed_media::read(&service, &content_hash).map(tauri::ipc::Response::new)
+    })
+    .await
+    .map_err(|_| "Audio transport failed.".to_owned())?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 fn make_cloze(
     request: MakeClozeRequest,
     state: State<'_, AppContext>,
@@ -403,10 +418,6 @@ fn save_authoring_draft(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .register_uri_scheme_protocol(managed_media::PROTOCOL, |context, request| {
-            let state = context.app_handle().state::<AppContext>();
-            managed_media::response(&state.collection_path, &request)
-        })
         .setup(|app| {
             let data_directory = std::env::var_os("MEIKI_DATA_DIR")
                 .map(PathBuf::from)
@@ -462,6 +473,7 @@ mod tests {
         "delete_deck",
         "new_authoring_draft",
         "import_media",
+        "read_managed_audio",
         "make_cloze",
         "remove_cloze",
         "reorder_segments",

@@ -5,18 +5,26 @@
 
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Slider from "$lib/components/ui/slider/index.js";
-  import { restartAudio } from "$lib/media";
+  import {
+    managedAudioBlobSource,
+    restartAudio,
+    usesManagedAudioTransport,
+  } from "$lib/media";
 
   type Props = {
-    source: string;
+    source?: string;
+    contentHash?: string;
+    mediaType?: string;
     label: string;
     durationMs?: number | null;
+    onReady?: (play: () => Promise<void>) => void;
   };
 
   const audioEndToleranceSeconds = 0.05;
-
-  let { source, label, durationMs }: Props = $props();
+  let { source, contentHash, mediaType, label, durationMs, onReady }: Props =
+    $props();
   let audioElement = $state<HTMLAudioElement | null>(null);
+  let resolvedSource = $state<string | undefined>();
   let playing = $state(false);
   let elapsedSeconds = $state(0);
   let metadataDurationSeconds = $state<number | null>(null);
@@ -25,6 +33,50 @@
       (durationMs && durationMs > 0 ? durationMs / 1_000 : 0),
   );
   let playbackError = $state("");
+
+  $effect(() => {
+    const directSource = source;
+    const hash = contentHash;
+    const type = mediaType;
+    let disposed = false;
+    let objectUrl: string | undefined;
+
+    playing = false;
+    elapsedSeconds = 0;
+    metadataDurationSeconds = null;
+    playbackError = "";
+    resolvedSource = directSource;
+
+    if (directSource) return;
+    if (!hash || !type || !usesManagedAudioTransport(hash, type)) {
+      playbackError = "Audio format is unsupported.";
+      return;
+    }
+
+    void managedAudioBlobSource(hash, type)
+      .then((url) => {
+        if (disposed) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        objectUrl = url;
+        resolvedSource = url;
+      })
+      .catch(() => {
+        if (!disposed) playbackError = "Audio transport failed.";
+      });
+
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  });
+
+  $effect(() => {
+    const element = audioElement;
+    if (!element) return;
+    onReady?.(() => play(false, true));
+  });
 
   function syncDuration(): void {
     if (!audioElement || !Number.isFinite(audioElement.duration)) return;
@@ -36,11 +88,15 @@
     elapsedSeconds = Math.max(0, audioElement.currentTime);
   }
 
-  async function play(restart = false): Promise<void> {
+  async function play(
+    restart = false,
+    propagateFailure = false,
+  ): Promise<void> {
     const element = audioElement;
     if (!element) return;
     playbackError = "";
     try {
+      let playback: Promise<void>;
       if (
         restart ||
         element.ended ||
@@ -48,13 +104,15 @@
           element.duration - element.currentTime <= audioEndToleranceSeconds)
       ) {
         elapsedSeconds = 0;
-        await restartAudio(element);
+        playback = restartAudio(element);
       } else {
-        await element.play();
+        playback = element.play();
       }
-    } catch {
+      await playback;
+    } catch (error) {
       playing = false;
       playbackError = "Audio could not play. Try again.";
+      if (propagateFailure) throw error;
     }
   }
 
@@ -73,7 +131,16 @@
 
   function reportLoadFailure(): void {
     playing = false;
-    playbackError = "Audio could not load.";
+    const code = audioElement?.error?.code;
+    if (code === MediaError.MEDIA_ERR_NETWORK) {
+      playbackError = "Audio transport failed.";
+    } else if (code === MediaError.MEDIA_ERR_DECODE) {
+      playbackError = "Audio could not be decoded.";
+    } else if (code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+      playbackError = "Audio format is unsupported.";
+    } else {
+      playbackError = "Audio could not load.";
+    }
   }
 
   function seek(value: number): void {
@@ -99,6 +166,7 @@
       size="icon-sm"
       aria-label={playing ? "Pause audio" : "Play audio"}
       title={playing ? "Pause" : "Play"}
+      disabled={!resolvedSource}
       onclick={togglePlayback}
     >
       {#if playing}
@@ -112,6 +180,7 @@
       size="icon-sm"
       aria-label="Replay audio"
       title="Replay"
+      disabled={!resolvedSource}
       onclick={replay}
     >
       <RiRestartLine aria-hidden="true" />
@@ -127,27 +196,29 @@
       disabled={totalSeconds <= 0}
       aria-label={`Seek ${label}`}
       aria-valuetext={`${formatTime(elapsedSeconds)} of ${formatTime(totalSeconds)}`}
-      onValueChange={seek}
+      onValueCommit={seek}
     />
   </div>
   <span class="audio-time" aria-label="Elapsed and total time">
     {formatTime(elapsedSeconds)} / {formatTime(totalSeconds)}
   </span>
-  <audio
-    bind:this={audioElement}
-    src={source}
-    preload="metadata"
-    aria-label={label}
-    onloadedmetadata={syncDuration}
-    ondurationchange={syncDuration}
-    ontimeupdate={syncElapsed}
-    onplay={() => (playing = true)}
-    onpause={() => (playing = false)}
-    onended={() => (playing = false)}
-    onerror={reportLoadFailure}
-  >
-    Your browser cannot play this audio.
-  </audio>
+  {#if resolvedSource}
+    <audio
+      bind:this={audioElement}
+      src={resolvedSource}
+      preload="metadata"
+      aria-label={label}
+      onloadedmetadata={syncDuration}
+      ondurationchange={syncDuration}
+      ontimeupdate={syncElapsed}
+      onplay={() => (playing = true)}
+      onpause={() => (playing = false)}
+      onended={() => (playing = false)}
+      onerror={reportLoadFailure}
+    >
+      Your browser cannot play this audio.
+    </audio>
+  {/if}
   {#if playbackError}
     <p class="audio-error" role="alert">{playbackError}</p>
   {/if}

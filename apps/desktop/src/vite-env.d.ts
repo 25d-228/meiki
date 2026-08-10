@@ -25,6 +25,8 @@ declare global {
       command: string;
       args: Record<string, unknown>;
     }>;
+    __MEIKI_TEST_CREATED_OBJECT_URLS__?: string[];
+    __MEIKI_TEST_REVOKED_OBJECT_URLS__?: string[];
   }
 }
 
