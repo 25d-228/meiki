@@ -39,6 +39,8 @@ import type { DeckCardRequest } from "./generated/DeckCardRequest";
 import type { DeleteDeckRequest } from "./generated/DeleteDeckRequest";
 import type { DeleteDeckProgressDto } from "./generated/DeleteDeckProgressDto";
 import type { DeleteDeckResultDto } from "./generated/DeleteDeckResultDto";
+import type { DeleteDecksRequest } from "./generated/DeleteDecksRequest";
+import type { DeleteDecksResultDto } from "./generated/DeleteDecksResultDto";
 import type { RenameDeckRequest } from "./generated/RenameDeckRequest";
 import type { BundlePreviewDto } from "./generated/BundlePreviewDto";
 import type { BundleImportRequest } from "./generated/BundleImportRequest";
@@ -233,6 +235,22 @@ export const api = {
     }
     const progress = new Channel<DeleteDeckProgressDto>(onProgress);
     return invoke("delete_deck", { request, onProgress: progress });
+  },
+
+  deleteDecks(
+    request: DeleteDecksRequest,
+    onProgress: (progress: DeleteDeckProgressDto) => void,
+  ): Promise<DeleteDecksResultDto> {
+    if (window.__MEIKI_TEST_INVOKE__) {
+      window.__MEIKI_TEST_DECKS_DELETION_PROGRESS__ = onProgress;
+      return invoke<DeleteDecksResultDto>("delete_decks", { request }).finally(
+        () => {
+          delete window.__MEIKI_TEST_DECKS_DELETION_PROGRESS__;
+        },
+      );
+    }
+    const progress = new Channel<DeleteDeckProgressDto>(onProgress);
+    return invoke("delete_decks", { request, onProgress: progress });
   },
 
   newAuthoringDraft(): Promise<AuthoringDraftDto> {

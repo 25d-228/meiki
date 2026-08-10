@@ -494,6 +494,13 @@ export async function installMockApi(page: Page): Promise<void> {
             ),
           );
         }
+        if (params.get("decks") === "batch") {
+          return clone(
+            dtos.batchDeckSummaries.filter(
+              (deck) => !deletedDeckIds.has(deck.id),
+            ),
+          );
+        }
         if (
           (bundleImported || params.get("bundleRemoval") === "installed") &&
           !bundleRemoved
@@ -558,6 +565,56 @@ export async function installMockApi(page: Page): Promise<void> {
       }
       if (command === "create_deck") return clone(dtos.createdDeck);
       if (command === "rename_deck") return clone(dtos.renamedDeck);
+      if (command === "delete_decks") {
+        const deckIds = (args as { request: { deck_ids: string[] } }).request
+          .deck_ids;
+        const affectedCards = dtos.batchDeckSummaries
+          .filter((deck) => deckIds.includes(deck.id))
+          .reduce((total, deck) => total + deck.total_cards, 0);
+        if (params.get("batchDeletion") === "precommit-failure") {
+          window.__MEIKI_TEST_DECKS_DELETION_PROGRESS__?.({
+            phase: "removing_cards",
+            current: 0,
+            total: affectedCards,
+          });
+          throw new Error("storage operation failed: raw fixture id");
+        }
+        if (params.get("batchDeletion") === "progress") {
+          const report = async (
+            phase:
+              "preparing" | "removing_cards" | "cleaning_audio" | "finalizing",
+            current: number | null,
+            total: number | null,
+          ) => {
+            window.__MEIKI_TEST_DECKS_DELETION_PROGRESS__?.({
+              phase,
+              current,
+              total,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 120));
+          };
+          await report("preparing", null, null);
+          await report("removing_cards", 0, affectedCards);
+          await report("removing_cards", affectedCards, affectedCards);
+          await report("cleaning_audio", 0, 300);
+          await report("cleaning_audio", 300, 300);
+          await report("finalizing", null, null);
+        }
+        deckIds.forEach((deckId) => deletedDeckIds.add(deckId));
+        if (params.get("batchDeletion") === "postcommit-failure") {
+          return {
+            deleted_deck_ids: clone(deckIds),
+            affected_cards: affectedCards,
+            media_cleanup_warning:
+              "Decks deleted, but some unused audio could not be cleaned up.",
+          };
+        }
+        return {
+          deleted_deck_ids: clone(deckIds),
+          affected_cards: affectedCards,
+          media_cleanup_warning: null,
+        };
+      }
       if (command === "delete_deck") {
         const deletedDeckId = (args as { request: { deck_id: string } }).request
           .deck_id;
@@ -824,6 +881,9 @@ export async function installMockApi(page: Page): Promise<void> {
         };
       }
       if (command === "list_installed_bundles") {
+        if (params.get("decks") === "batch") {
+          return [{ language_tag: "ja-JP", decks: 2, cards: 1_300 }];
+        }
         if (
           (bundleImported || params.get("bundleRemoval") === "installed") &&
           !bundleRemoved

@@ -11,7 +11,7 @@ use rusqlite::{
 
 use crate::{
     BundleRemoval, DEFAULT_DECK_ID, DEFAULT_SCHEDULER_PARAMETER_SET_ID, DeckCardCounts,
-    DeckDeletion, InstalledBundle, PristineBundleImport, PristineBundleImportError,
+    DeckDeletion, DecksDeletion, InstalledBundle, PristineBundleImport, PristineBundleImportError,
     PristineBundleImportPlan, PristineDeckImport, SchedulingWorkload, Storage, StorageError,
     StoredDeckCard, StoredDeckCardPage, StoredDeckCardSearch, StoredLibraryCard, StoredLibraryNote,
     StoredSourceNote, StoredStudyCard, direction_from_database, direction_to_database,
@@ -640,6 +640,119 @@ impl Storage {
         transaction.commit()?;
         on_progress(active_card_count, active_card_count);
         Ok(DeckDeletion {
+            active_card_count,
+            orphaned_media_hashes,
+        })
+    }
+
+    /// Deletes an explicit set of non-default decks in one transaction,
+    /// permanently removing bundle content and moving all remaining notes to Trash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] before writing when the set is empty, contains
+    /// duplicates or the default deck, or names a deck that no longer exists.
+    pub fn delete_decks_and_rehome_notes(
+        &mut self,
+        deck_ids: &[String],
+        updated_at_ms: i64,
+        mut on_progress: impl FnMut(u64, u64),
+    ) -> Result<DecksDeletion, StorageError> {
+        if deck_ids.is_empty() {
+            return Err(StorageError::InvalidAggregate(
+                "batch deck deletion requires at least one deck".into(),
+            ));
+        }
+        let unique_deck_ids = deck_ids.iter().collect::<HashSet<_>>();
+        if unique_deck_ids.len() != deck_ids.len() {
+            return Err(StorageError::InvalidAggregate(
+                "batch deck deletion cannot contain duplicate deck ids".into(),
+            ));
+        }
+        if deck_ids.iter().any(|deck_id| deck_id == DEFAULT_DECK_ID) {
+            return Err(StorageError::InvalidAggregate(
+                "the default deck cannot be deleted".into(),
+            ));
+        }
+
+        let transaction = self.connection.transaction()?;
+        let BatchDeletionPlan {
+            decks: deck_metadata,
+            active_card_count,
+        } = validate_batch_deletion_decks(&transaction, deck_ids)?;
+        on_progress(0, active_card_count);
+
+        let mut orphaned_media_hashes = HashSet::new();
+        let mut affected_bundle_languages = HashSet::new();
+        let mut processed_cards = 0_u64;
+        for deck_batch in deck_ids.chunks(QUERY_BATCH_SIZE) {
+            let bundle_source_ids = bundle_source_note_ids_for_stages(&transaction, deck_batch)?;
+            for source_batch in bundle_source_ids.chunks(QUERY_BATCH_SIZE) {
+                orphaned_media_hashes
+                    .extend(purge_bundle_source_notes(&transaction, source_batch)?);
+            }
+
+            let placeholders = sql_placeholders(deck_batch.len());
+            let mut update_parameters = vec![
+                Value::Text(DEFAULT_DECK_ID.into()),
+                Value::Integer(updated_at_ms),
+            ];
+            update_parameters.extend(deck_batch.iter().cloned().map(Value::Text));
+            transaction.execute(
+                &format!(
+                    "UPDATE source_items
+                     SET deck_id = ?1,
+                         deleted_at_ms = COALESCE(deleted_at_ms, ?2),
+                         updated_at_ms = ?2
+                     WHERE deck_id IN ({placeholders})"
+                ),
+                params_from_iter(&update_parameters),
+            )?;
+            let changed = transaction.execute(
+                &format!("DELETE FROM decks WHERE id IN ({placeholders})"),
+                params_from_iter(deck_batch),
+            )?;
+            if changed != deck_batch.len() {
+                return Err(StorageError::InvalidAggregate(
+                    "the selected decks changed during deletion".into(),
+                ));
+            }
+
+            for deck_id in deck_batch {
+                let deck = &deck_metadata[deck_id];
+                if let Some(language_tag) = &deck.bundle_language {
+                    affected_bundle_languages.insert(language_tag.clone());
+                }
+                processed_cards = processed_cards
+                    .checked_add(deck.active_cards)
+                    .ok_or(StorageError::NumericRange("deleted batch card count"))?;
+            }
+            on_progress(processed_cards, active_card_count);
+        }
+
+        let mut affected_bundle_languages =
+            affected_bundle_languages.into_iter().collect::<Vec<_>>();
+        affected_bundle_languages.sort();
+        for language_batch in affected_bundle_languages.chunks(QUERY_BATCH_SIZE) {
+            let placeholders = sql_placeholders(language_batch.len());
+            transaction.execute(
+                &format!(
+                    "DELETE FROM bundle_installations
+                     WHERE language_tag IN ({placeholders})
+                       AND NOT EXISTS (
+                           SELECT 1 FROM bundle_decks
+                           WHERE bundle_decks.language_tag = bundle_installations.language_tag
+                       )"
+                ),
+                params_from_iter(language_batch),
+            )?;
+        }
+
+        transaction.commit()?;
+        let mut orphaned_media_hashes = orphaned_media_hashes.into_iter().collect::<Vec<_>>();
+        orphaned_media_hashes.sort();
+        Ok(DecksDeletion {
+            deck_ids: deck_ids.to_vec(),
             active_card_count,
             orphaned_media_hashes,
         })
@@ -1310,6 +1423,95 @@ fn bundle_source_note_ids_for_stage(
         .query_map([deck_id], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(StorageError::from)
+}
+
+struct BatchDeletionDeck {
+    bundle_language: Option<String>,
+    active_cards: u64,
+}
+
+struct BatchDeletionPlan {
+    decks: HashMap<String, BatchDeletionDeck>,
+    active_card_count: u64,
+}
+
+fn validate_batch_deletion_decks(
+    connection: &Connection,
+    deck_ids: &[String],
+) -> Result<BatchDeletionPlan, StorageError> {
+    let mut decks = HashMap::<String, BatchDeletionDeck>::new();
+    for batch in deck_ids.chunks(QUERY_BATCH_SIZE) {
+        let mut statement = connection.prepare(&format!(
+            "SELECT decks.id, bundle_decks.language_tag, COUNT(cards.id)
+             FROM decks
+             LEFT JOIN bundle_decks ON bundle_decks.deck_id = decks.id
+             LEFT JOIN source_items
+               ON source_items.deck_id = decks.id
+              AND source_items.deleted_at_ms IS NULL
+             LEFT JOIN clozes ON clozes.source_item_id = source_items.id
+             LEFT JOIN cards ON cards.cloze_id = clozes.id
+             WHERE decks.id IN ({})
+             GROUP BY decks.id, bundle_decks.language_tag",
+            sql_placeholders(batch.len())
+        ))?;
+        let rows = statement
+            .query_map(params_from_iter(batch), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, u64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (deck_id, language_tag, active_cards) in rows {
+            decks.insert(
+                deck_id,
+                BatchDeletionDeck {
+                    bundle_language: language_tag,
+                    active_cards,
+                },
+            );
+        }
+    }
+    for deck_id in deck_ids {
+        if !decks.contains_key(deck_id) {
+            return Err(entity_not_found("deck", deck_id));
+        }
+    }
+    let active_card_count = decks.values().try_fold(0_u64, |total, deck| {
+        total
+            .checked_add(deck.active_cards)
+            .ok_or(StorageError::NumericRange("batch deck card count"))
+    })?;
+    Ok(BatchDeletionPlan {
+        decks,
+        active_card_count,
+    })
+}
+
+fn bundle_source_note_ids_for_stages(
+    connection: &Connection,
+    deck_ids: &[String],
+) -> Result<Vec<String>, StorageError> {
+    let mut source_ids = Vec::new();
+    for batch in deck_ids.chunks(QUERY_BATCH_SIZE) {
+        let mut statement = connection.prepare(&format!(
+            "SELECT bundle_source_notes.source_item_id
+             FROM bundle_source_notes
+             JOIN source_items
+               ON source_items.id = bundle_source_notes.source_item_id
+             WHERE bundle_source_notes.deck_id IN ({})
+               AND source_items.deck_id = bundle_source_notes.deck_id
+             ORDER BY bundle_source_notes.source_item_id",
+            sql_placeholders(batch.len())
+        ))?;
+        source_ids.extend(
+            statement
+                .query_map(params_from_iter(batch), |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    Ok(source_ids)
 }
 
 fn purge_bundle_source_notes(

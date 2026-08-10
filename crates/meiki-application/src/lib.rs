@@ -49,7 +49,8 @@ pub use deck_cards::{
 pub use decks::{
     BundleRemovalPreviewDto, BundleRemovalProgressDto, BundleRemovalRequest,
     BundleRemovalResultDto, CreateDeckRequest, DeckDto, DeckSummaryDto, DeleteDeckPhaseDto,
-    DeleteDeckProgressDto, DeleteDeckRequest, DeleteDeckResultDto, RenameDeckRequest,
+    DeleteDeckProgressDto, DeleteDeckRequest, DeleteDeckResultDto, DeleteDecksRequest,
+    DeleteDecksResultDto, RenameDeckRequest,
 };
 pub use portable::{
     BundleDeckInstallStatusDto, BundleDeckPreviewDto, BundleExportRequest, BundleImportProgressDto,
@@ -1761,6 +1762,8 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     DeleteDeckPhaseDto::export_all_to(output)?;
     DeleteDeckProgressDto::export_all_to(output)?;
     DeleteDeckResultDto::export_all_to(output)?;
+    DeleteDecksRequest::export_all_to(output)?;
+    DeleteDecksResultDto::export_all_to(output)?;
     BundleRemovalPreviewDto::export_all_to(output)?;
     BundleRemovalRequest::export_all_to(output)?;
     BundleRemovalProgressDto::export_all_to(output)?;

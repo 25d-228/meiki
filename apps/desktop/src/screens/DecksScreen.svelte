@@ -1,12 +1,15 @@
 <script lang="ts">
   import { DropdownMenu } from "bits-ui";
   import RiDeleteBin6Line from "remixicon-svelte/icons/delete-bin-6-line";
+  import RiCheckboxBlankLine from "remixicon-svelte/icons/checkbox-blank-line";
+  import RiCheckboxLine from "remixicon-svelte/icons/checkbox-line";
   import RiGridLine from "remixicon-svelte/icons/grid-line";
   import RiListUnordered from "remixicon-svelte/icons/list-unordered";
   import RiMore2Line from "remixicon-svelte/icons/more-2-line";
   import { onMount } from "svelte";
   import { SvelteDate } from "svelte/reactivity";
 
+  import DeckBatchDeletionFlow from "../components/DeckBatchDeletionFlow.svelte";
   import DeckDeletionFlow from "../components/DeckDeletionFlow.svelte";
   import { api } from "../lib/api";
   import * as Alert from "$lib/components/ui/alert/index.js";
@@ -18,6 +21,7 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import type { DeckSummaryDto } from "../lib/generated/DeckSummaryDto";
   import type { DeleteDeckResultDto } from "../lib/generated/DeleteDeckResultDto";
+  import type { DeleteDecksResultDto } from "../lib/generated/DeleteDecksResultDto";
   import type { BundleRemovalPreviewDto } from "../lib/generated/BundleRemovalPreviewDto";
   import type { BundleRemovalProgressDto } from "../lib/generated/BundleRemovalProgressDto";
   import { localDayBounds } from "../lib/local-day";
@@ -77,6 +81,11 @@
   let deleteTarget = $state<DeckSummaryDto | null>(null);
   let deleteFlowOpen = $state(false);
   let deckView = $state<DeckView>("grid");
+  let selectionMode = $state(false);
+  let selectedDeckIds = $state<string[]>([]);
+  let batchDeleteDeckIds = $state<string[]>([]);
+  let batchDeleteTargets = $state<DeckSummaryDto[]>([]);
+  let batchDeleteFlowOpen = $state(false);
   let loadedBundleImportRefresh = $state<number | null>(null);
 
   onMount(() => {
@@ -161,6 +170,32 @@
     localStorage.setItem(deckViewPreferenceKey, view);
   }
 
+  function enterSelectionMode(): void {
+    selectedDeckIds = [];
+    selectionMode = true;
+  }
+
+  function clearSelection(): void {
+    selectedDeckIds = [];
+    selectionMode = false;
+  }
+
+  function toggleDeckSelection(deckId: string): void {
+    if (deckId === defaultDeckId) return;
+    selectedDeckIds = selectedDeckIds.includes(deckId)
+      ? selectedDeckIds.filter((selectedDeckId) => selectedDeckId !== deckId)
+      : [...selectedDeckIds, deckId];
+  }
+
+  function confirmBatchDeletion(): void {
+    if (selectedDeckIds.length === 0) return;
+    batchDeleteDeckIds = [...selectedDeckIds];
+    batchDeleteTargets = decks.filter((deck) =>
+      selectedDeckIds.includes(deck.id),
+    );
+    batchDeleteFlowOpen = true;
+  }
+
   async function handleDeckDeletionCommitted(
     result: DeleteDeckResultDto,
   ): Promise<void> {
@@ -173,6 +208,10 @@
     if (localStorage.getItem(selectedTodayDeckKey) === result.deleted_deck_id) {
       localStorage.setItem(selectedTodayDeckKey, allDecksId);
     }
+    clearSelection();
+    batchDeleteFlowOpen = false;
+    batchDeleteDeckIds = [];
+    batchDeleteTargets = [];
     await loadDecks();
   }
 
@@ -181,6 +220,30 @@
       deleteTarget?.id === result.deleted_deck_id ? deleteTarget.name : "deck";
     deleteTarget = null;
     notice = `Deleted ${deletedName}.`;
+  }
+
+  async function handleBatchDeletionCommitted(
+    result: DeleteDecksResultDto,
+  ): Promise<void> {
+    const deletedDeckIds = new Set(result.deleted_deck_ids);
+    const savedQueue = readStudyQueue();
+    if (savedQueue && deletedDeckIds.has(savedQueue.deckId)) {
+      clearStudyQueue();
+      clearStudySession();
+      activeQueue = null;
+    }
+    const selectedTodayDeck = localStorage.getItem(selectedTodayDeckKey);
+    if (selectedTodayDeck && deletedDeckIds.has(selectedTodayDeck)) {
+      localStorage.setItem(selectedTodayDeckKey, allDecksId);
+    }
+    clearSelection();
+    await loadDecks();
+  }
+
+  function finishBatchDeletion(result: DeleteDecksResultDto): void {
+    notice = `Deleted ${result.deleted_deck_ids.length.toLocaleString()} ${result.deleted_deck_ids.length === 1 ? "deck" : "decks"}.`;
+    batchDeleteDeckIds = [];
+    batchDeleteTargets = [];
   }
 
   function confirmBundleRemoval(bundle: BundleRemovalPreviewDto): void {
@@ -378,6 +441,24 @@
   </DropdownMenu.Root>
 {/snippet}
 
+{#snippet deckSelectionControl(deck: DeckSummaryDto)}
+  {@const selected = selectedDeckIds.includes(deck.id)}
+  <Button
+    size="icon-sm"
+    variant={selected ? "default" : "outline"}
+    role="checkbox"
+    aria-checked={selected}
+    aria-label={`Select ${deck.name}`}
+    onclick={() => toggleDeckSelection(deck.id)}
+  >
+    {#if selected}
+      <RiCheckboxLine aria-hidden="true" />
+    {:else}
+      <RiCheckboxBlankLine aria-hidden="true" />
+    {/if}
+  </Button>
+{/snippet}
+
 <section class="screen decks-screen" aria-labelledby="decks-title">
   <header class="screen-header">
     <div>
@@ -434,25 +515,55 @@
     </p>
   {/if}
 
-  <div class="deck-view-toolbar" role="group" aria-label="Deck view">
-    <Button
-      size="sm"
-      variant={deckView === "grid" ? "default" : "outline"}
-      aria-pressed={deckView === "grid"}
-      onclick={() => selectDeckView("grid")}
-    >
-      <RiGridLine data-icon="inline-start" aria-hidden="true" />
-      Grid
-    </Button>
-    <Button
-      size="sm"
-      variant={deckView === "list" ? "default" : "outline"}
-      aria-pressed={deckView === "list"}
-      onclick={() => selectDeckView("list")}
-    >
-      <RiListUnordered data-icon="inline-start" aria-hidden="true" />
-      List
-    </Button>
+  <div class="deck-toolbar">
+    <div class="deck-view-toolbar" role="group" aria-label="Deck view">
+      <Button
+        size="sm"
+        variant={deckView === "grid" ? "default" : "outline"}
+        aria-pressed={deckView === "grid"}
+        onclick={() => selectDeckView("grid")}
+      >
+        <RiGridLine data-icon="inline-start" aria-hidden="true" />
+        Grid
+      </Button>
+      <Button
+        size="sm"
+        variant={deckView === "list" ? "default" : "outline"}
+        aria-pressed={deckView === "list"}
+        onclick={() => selectDeckView("list")}
+      >
+        <RiListUnordered data-icon="inline-start" aria-hidden="true" />
+        List
+      </Button>
+    </div>
+    {#if selectionMode}
+      <div class="deck-selection-toolbar" aria-label="Deck selection actions">
+        <span
+          role="status"
+          aria-live="polite"
+          data-testid="deck-selection-count"
+        >
+          {selectedDeckIds.length.toLocaleString()}
+          {selectedDeckIds.length === 1 ? "deck" : "decks"} selected
+        </span>
+        <Button
+          size="sm"
+          variant="destructive"
+          disabled={selectedDeckIds.length === 0}
+          onclick={confirmBatchDeletion}>Delete selected</Button
+        >
+        <Button size="sm" variant="outline" onclick={clearSelection}
+          >Clear selection</Button
+        >
+      </div>
+    {:else}
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={!decks.some((deck) => deck.id !== defaultDeckId)}
+        onclick={enterSelectionMode}>Select</Button
+      >
+    {/if}
   </div>
 
   {#if deckView === "grid"}
@@ -463,7 +574,12 @@
         </Card.Root>
       {:else}
         {#each decks as deck (deck.id)}
-          <Card.Root class="gap-5 p-5" data-testid={`deck-${deck.id}`}>
+          <Card.Root
+            class={selectionMode && selectedDeckIds.includes(deck.id)
+              ? "gap-5 p-5 ring-2 ring-primary"
+              : "gap-5 p-5"}
+            data-testid={`deck-${deck.id}`}
+          >
             <Card.Header class="p-0">
               <Card.Title class="[overflow-wrap:anywhere]" data-deck-name
                 >{deck.name}</Card.Title
@@ -474,7 +590,12 @@
               </Card.Description>
               {#if deck.id !== defaultDeckId}
                 <Card.Action>
-                  {@render deckActionsMenu(deck)}
+                  <div class="deck-card-actions">
+                    {#if selectionMode}
+                      {@render deckSelectionControl(deck)}
+                    {/if}
+                    {@render deckActionsMenu(deck)}
+                  </div>
                 </Card.Action>
               {/if}
             </Card.Header>
@@ -494,12 +615,19 @@
         </Card.Root>
       {:else}
         {#each decks as deck (deck.id)}
-          <article class="deck-list-row" data-testid={`deck-${deck.id}`}>
+          <article
+            class="deck-list-row"
+            data-selected={selectionMode && selectedDeckIds.includes(deck.id)}
+            data-testid={`deck-${deck.id}`}
+          >
             <h2 class="deck-list-name" data-deck-name>{deck.name}</h2>
             {@render deckCounts(deck)}
             <div class="deck-list-actions">
               {@render deckNavigationActions(deck)}
               {#if deck.id !== defaultDeckId}
+                {#if selectionMode}
+                  {@render deckSelectionControl(deck)}
+                {/if}
                 {@render deckActionsMenu(deck)}
               {/if}
             </div>
@@ -539,6 +667,16 @@
     ]}
     onCommitted={handleDeckDeletionCommitted}
     onFinished={finishDeckDeletion}
+  />
+{/if}
+
+{#if batchDeleteTargets.length > 0}
+  <DeckBatchDeletionFlow
+    bind:open={batchDeleteFlowOpen}
+    deckIds={batchDeleteDeckIds}
+    decks={batchDeleteTargets}
+    onCommitted={handleBatchDeletionCommitted}
+    onFinished={finishBatchDeletion}
   />
 {/if}
 
@@ -724,12 +862,32 @@
     gap: 1rem;
   }
 
-  .deck-view-toolbar {
+  .deck-toolbar,
+  .deck-view-toolbar,
+  .deck-selection-toolbar,
+  .deck-card-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
-    justify-content: flex-end;
+    align-items: center;
+  }
+
+  .deck-toolbar {
+    justify-content: space-between;
     margin-bottom: 1rem;
+  }
+
+  .deck-selection-toolbar {
+    justify-content: flex-end;
+  }
+
+  .deck-selection-toolbar span {
+    color: var(--muted-foreground);
+    font-size: 0.875rem;
+  }
+
+  .deck-card-actions {
+    justify-content: flex-end;
   }
 
   .deck-list {
@@ -747,6 +905,10 @@
     padding: 0.875rem;
     border: 1px solid var(--border);
     background: var(--card);
+  }
+
+  .deck-list-row[data-selected="true"] {
+    box-shadow: 0 0 0 2px var(--primary);
   }
 
   .deck-list-name {
@@ -833,8 +995,14 @@
   }
 
   @media (max-width: 760px) {
-    .deck-view-toolbar {
+    .deck-toolbar,
+    .deck-selection-toolbar {
       justify-content: flex-start;
+    }
+
+    .deck-toolbar {
+      align-items: flex-start;
+      flex-direction: column;
     }
 
     .deck-list-row {

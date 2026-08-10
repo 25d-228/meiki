@@ -172,6 +172,64 @@ test("deck view controls expose keyboard-operable selected state", async ({
   await expect(page.getByTestId("deck-grid")).toBeVisible();
 });
 
+test("deck selection and one batch confirmation are keyboard accessible", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await navigate(page, "Decks");
+  const enterSelection = page.getByRole("button", {
+    name: "Select",
+    exact: true,
+  });
+  await enterSelection.focus();
+  await page.keyboard.press("Enter");
+  const travel = page.getByRole("checkbox", {
+    name: "Select Travel phrases",
+  });
+  await travel.focus();
+  await page.keyboard.press("Space");
+  await expect(travel).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByTestId("deck-selection-count")).toContainText(
+    "1 deck selected",
+  );
+  await page.evaluate(async () => {
+    await Promise.allSettled(
+      document.getAnimations().map((animation) => animation.finished),
+    );
+  });
+  await expectNoAccessibilityViolations(page);
+
+  const list = page
+    .getByRole("group", { name: "Deck view" })
+    .getByRole("button", { name: "List" });
+  await list.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("checkbox", { name: "Select Travel phrases" }),
+  ).toHaveAttribute("aria-checked", "true");
+  const deleteSelected = page.getByRole("button", {
+    name: "Delete selected",
+  });
+  await deleteSelected.focus();
+  await page.keyboard.press("Enter");
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete 1 selected deck?",
+  });
+  await expect(confirmation).toBeVisible();
+  await page.evaluate(async () => {
+    await Promise.allSettled(
+      document.getAnimations().map((animation) => animation.finished),
+    );
+  });
+  await expectNoAccessibilityViolations(page);
+  const confirm = confirmation.getByRole("button", {
+    name: "Delete selected",
+  });
+  await confirm.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Deleted 1 deck.")).toBeVisible();
+});
+
 for (const theme of ["light", "dark"] as const) {
   test(`loading, empty, error, and stale study states pass axe in ${theme}`, async ({
     page,

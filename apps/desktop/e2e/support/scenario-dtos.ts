@@ -680,6 +680,33 @@ export const scenarioDtos = {
     due_cards: 0,
     new_cards: deck.cards,
   })),
+  batchDeckSummaries: [
+    ...deckSummaries,
+    {
+      id: "listening-deck",
+      name: "Listening practice",
+      is_bundle_stage: false,
+      total_cards: 4,
+      due_cards: 2,
+      new_cards: 1,
+    },
+    {
+      id: "archive-deck",
+      name: "Archived phrases",
+      is_bundle_stage: false,
+      total_cards: 1,
+      due_cards: 0,
+      new_cards: 0,
+    },
+    ...bundleDecks.slice(0, 2).map((deck) => ({
+      id: deck.id,
+      name: deck.name,
+      is_bundle_stage: true,
+      total_cards: deck.cards,
+      due_cards: 0,
+      new_cards: deck.cards,
+    })),
+  ],
   createdDeck: {
     ...decks[1],
     id: "listening-deck",
