@@ -199,6 +199,44 @@ for (const visualCase of visualCases) {
   });
 }
 
+for (const deckActionsCase of [
+  {
+    name: "deck-actions-menu-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "deck-actions-menu-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${deckActionsCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/",
+      screen: "Decks",
+      theme: deckActionsCase.theme,
+      viewport: deckActionsCase.viewport,
+    });
+    await page
+      .getByRole("button", { name: "Actions for Travel phrases" })
+      .click();
+    await expect(
+      page.getByRole("menuitem", { name: "Delete deck" }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${deckActionsCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 for (const activityCase of [
   {
     name: "bundle-import-activity-desktop-light",

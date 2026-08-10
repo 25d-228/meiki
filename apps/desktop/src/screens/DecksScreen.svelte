@@ -1,7 +1,11 @@
 <script lang="ts">
+  import { DropdownMenu } from "bits-ui";
+  import RiDeleteBin6Line from "remixicon-svelte/icons/delete-bin-6-line";
+  import RiMore2Line from "remixicon-svelte/icons/more-2-line";
   import { onMount } from "svelte";
   import { SvelteDate } from "svelte/reactivity";
 
+  import DeckDeletionFlow from "../components/DeckDeletionFlow.svelte";
   import { api } from "../lib/api";
   import * as Alert from "$lib/components/ui/alert/index.js";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
@@ -11,6 +15,7 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import type { DeckSummaryDto } from "../lib/generated/DeckSummaryDto";
+  import type { DeleteDeckResultDto } from "../lib/generated/DeleteDeckResultDto";
   import type { BundleRemovalPreviewDto } from "../lib/generated/BundleRemovalPreviewDto";
   import type { BundleRemovalProgressDto } from "../lib/generated/BundleRemovalProgressDto";
   import { localDayBounds } from "../lib/local-day";
@@ -34,6 +39,7 @@
 
   const selectedTodayDeckKey = "meiki-today-deck";
   const allDecksId = "__all_decks__";
+  const defaultDeckId = "default-deck";
 
   let {
     onStudy,
@@ -63,6 +69,8 @@
   let error = $state("");
   let notice = $state("");
   let retryStudyDeck = $state<DeckSummaryDto | null>(null);
+  let deleteTarget = $state<DeckSummaryDto | null>(null);
+  let deleteFlowOpen = $state(false);
   let loadedBundleImportRefresh = $state<number | null>(null);
 
   onMount(() => {
@@ -131,6 +139,34 @@
     } finally {
       creating = false;
     }
+  }
+
+  function openDeleteDeck(deck: DeckSummaryDto): void {
+    if (deck.id === defaultDeckId) return;
+    deleteTarget = deck;
+    deleteFlowOpen = true;
+  }
+
+  async function handleDeckDeletionCommitted(
+    result: DeleteDeckResultDto,
+  ): Promise<void> {
+    const savedQueue = readStudyQueue();
+    if (savedQueue?.deckId === result.deleted_deck_id) {
+      clearStudyQueue();
+      clearStudySession();
+      activeQueue = null;
+    }
+    if (localStorage.getItem(selectedTodayDeckKey) === result.deleted_deck_id) {
+      localStorage.setItem(selectedTodayDeckKey, allDecksId);
+    }
+    await loadDecks();
+  }
+
+  function finishDeckDeletion(result: DeleteDeckResultDto): void {
+    const deletedName =
+      deleteTarget?.id === result.deleted_deck_id ? deleteTarget.name : "deck";
+    deleteTarget = null;
+    notice = `Deleted ${deletedName}.`;
   }
 
   function confirmBundleRemoval(bundle: BundleRemovalPreviewDto): void {
@@ -328,6 +364,40 @@
               {deck.total_cards}
               {deck.total_cards === 1 ? "card" : "cards"}
             </Card.Description>
+            {#if deck.id !== defaultDeckId}
+              <Card.Action>
+                <DropdownMenu.Root>
+                  <DropdownMenu.Trigger>
+                    {#snippet child({ props })}
+                      <Button
+                        {...props}
+                        size="icon-sm"
+                        variant="ghost"
+                        aria-label={`Actions for ${deck.name}`}
+                      >
+                        <RiMore2Line aria-hidden="true" />
+                      </Button>
+                    {/snippet}
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      align="end"
+                      sideOffset={4}
+                      class="z-50 min-w-36 rounded-none bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10"
+                    >
+                      <DropdownMenu.Item
+                        textValue="Delete deck"
+                        class="flex cursor-default items-center gap-2 rounded-none px-2 py-1.5 text-sm text-destructive outline-none select-none data-highlighted:bg-destructive/10"
+                        onSelect={() => openDeleteDeck(deck)}
+                      >
+                        <RiDeleteBin6Line class="size-4" aria-hidden="true" />
+                        Delete deck
+                      </DropdownMenu.Item>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Root>
+              </Card.Action>
+            {/if}
           </Card.Header>
           <dl class="deck-counts">
             <div>
@@ -376,6 +446,27 @@
     </div>
   {/if}
 </section>
+
+{#if deleteTarget}
+  <DeckDeletionFlow
+    bind:open={deleteFlowOpen}
+    deckId={deleteTarget.id}
+    deckName={deleteTarget.name}
+    isBundleStage={deleteTarget.is_bundle_stage}
+    cardCount={deleteTarget.total_cards}
+    destinationDecks={[
+      ...(deleteTarget.id !== defaultDeckId &&
+      !decks.some((deck) => deck.id === defaultDeckId)
+        ? [{ id: defaultDeckId, name: "Unsorted" }]
+        : []),
+      ...decks
+        .filter((deck) => deck.id !== deleteTarget?.id)
+        .map(({ id, name }) => ({ id, name })),
+    ]}
+    onCommitted={handleDeckDeletionCommitted}
+    onFinished={finishDeckDeletion}
+  />
+{/if}
 
 <Dialog.Root bind:open={newDeckDialogOpen}>
   <Dialog.Content>

@@ -15,6 +15,7 @@ export async function installMockApi(page: Page): Promise<void> {
       "An exceptionally long language display name for wrapping";
     const calls: Record<string, number> = {};
     const committedReviewEventIds = new Set<string>();
+    const deletedDeckIds = new Set<string>();
     const removedDeckCardIds = new Set<string>();
     let deckDeletedToUnsorted = false;
     let deletedDeckCardRestored = false;
@@ -199,6 +200,9 @@ export async function installMockApi(page: Page): Promise<void> {
             (deck) => deck.id !== "travel-deck",
           );
         }
+        availableDecks = availableDecks.filter(
+          (deck) => !deletedDeckIds.has(deck.id),
+        );
         const selectedDeck = availableDecks.find(
           (deck) => deck.id === requestedDeckId,
         );
@@ -483,13 +487,17 @@ export async function installMockApi(page: Page): Promise<void> {
               ? { ...deck, total_cards: 0, due_cards: 0, new_cards: 0 }
               : deck,
           );
-          return clone(summaries);
+          return clone(
+            summaries.filter((deck) => !deletedDeckIds.has(deck.id)),
+          );
         }
         if (params.get("deckDeletion") === "focused-session") {
           return clone(
             focusedSessionDeckDeleted
               ? dtos.deckSummaries.filter((deck) => deck.id === "default-deck")
-              : dtos.deckSummaries,
+              : dtos.deckSummaries.filter(
+                  (deck) => !deletedDeckIds.has(deck.id),
+                ),
           );
         }
         if (params.get("deckDeletion") === "only-deck") {
@@ -511,18 +519,29 @@ export async function installMockApi(page: Page): Promise<void> {
             calls[command] - 1,
             dtos.deckSummaryLifecycle.length - 1,
           );
-          return clone(dtos.deckSummaryLifecycle[index]);
+          return clone(
+            dtos.deckSummaryLifecycle[index].filter(
+              (deck) => !deletedDeckIds.has(deck.id),
+            ),
+          );
         }
         if (params.get("decks") === "empty-default") {
           return clone(
-            dtos.deckSummaries.filter((deck) => deck.id !== "default-deck"),
+            dtos.deckSummaries.filter(
+              (deck) =>
+                deck.id !== "default-deck" && !deletedDeckIds.has(deck.id),
+            ),
           );
         }
-        return clone(dtos.deckSummaries);
+        return clone(
+          dtos.deckSummaries.filter((deck) => !deletedDeckIds.has(deck.id)),
+        );
       }
       if (command === "create_deck") return clone(dtos.createdDeck);
       if (command === "rename_deck") return clone(dtos.renamedDeck);
       if (command === "delete_deck") {
+        const deletedDeckId = (args as { request: { deck_id: string } }).request
+          .deck_id;
         if (
           params.get("deckDeletion") === "progress" ||
           params.get("deckDeletion") === "progress-visual"
@@ -554,7 +573,8 @@ export async function installMockApi(page: Page): Promise<void> {
           }
           await report("cleaning_audio", 2_999, 2_999);
           await report("finalizing", null, null);
-          return clone(dtos.movedDeck);
+          deletedDeckIds.add(deletedDeckId);
+          return { ...clone(dtos.movedDeck), deleted_deck_id: deletedDeckId };
         }
         if (params.get("deckDeletion") === "precommit-failure") {
           window.__MEIKI_TEST_DECK_DELETION_PROGRESS__?.({
@@ -565,30 +585,35 @@ export async function installMockApi(page: Page): Promise<void> {
           throw new Error("storage operation failed: raw fixture id");
         }
         if (params.get("deckDeletion") === "postcommit-failure") {
+          deletedDeckIds.add(deletedDeckId);
           return {
             ...clone(dtos.movedDeck),
+            deleted_deck_id: deletedDeckId,
             media_cleanup_warning:
               "Deck deleted, but some unused audio could not be cleaned up.",
           };
         }
         if (params.get("deckDeletion") === "focused-session") {
           focusedSessionDeckDeleted = true;
-          return clone(dtos.movedDeck);
+          deletedDeckIds.add(deletedDeckId);
+          return { ...clone(dtos.movedDeck), deleted_deck_id: deletedDeckId };
         }
         if (params.get("deckDeletion") === "only-deck") {
           deckDeletedToUnsorted = true;
+          deletedDeckIds.add(deletedDeckId);
           return {
             deleted_deck_id: "travel-deck",
             affected_cards: 1,
             media_cleanup_warning: null,
           };
         }
-        return clone(
-          (args as { request: { deck_id: string } }).request.deck_id ===
-            "travel-deck"
-            ? dtos.movedDeck
-            : dtos.deletedDeck,
-        );
+        deletedDeckIds.add(deletedDeckId);
+        return {
+          ...clone(
+            deletedDeckId === "travel-deck" ? dtos.movedDeck : dtos.deletedDeck,
+          ),
+          deleted_deck_id: deletedDeckId,
+        };
       }
 
       if (command === "get_deck_cards") {

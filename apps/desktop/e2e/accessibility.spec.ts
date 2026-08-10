@@ -122,6 +122,29 @@ test("deck deletion progress exposes an accessible determinate state", async ({
   );
 });
 
+test("deck card actions and deletion confirmation are keyboard accessible", async ({
+  page,
+}) => {
+  await chooseTheme(page, "dark");
+  await navigate(page, "Decks");
+  const actions = page.getByRole("button", {
+    name: "Actions for Travel phrases",
+  });
+  await actions.focus();
+  await page.keyboard.press("Enter");
+  const deleteAction = page.getByRole("menuitem", { name: "Delete deck" });
+  await expect(deleteAction).toBeFocused();
+  await expectNoAccessibilityViolations(page);
+
+  await page.keyboard.press("Enter");
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Delete “Travel phrases”?",
+  });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Cancel" }).click();
+  await expect(actions).toBeFocused();
+});
+
 for (const theme of ["light", "dark"] as const) {
   test(`loading, empty, error, and stale study states pass axe in ${theme}`, async ({
     page,

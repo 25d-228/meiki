@@ -4,7 +4,6 @@
 
   import { api } from "../lib/api";
   import * as Alert from "$lib/components/ui/alert/index.js";
-  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
@@ -19,8 +18,7 @@
   import type { DeckCardTrashDto } from "../lib/generated/DeckCardTrashDto";
   import type { SchedulerSettingsDto } from "../lib/generated/SchedulerSettingsDto";
   import { localDayBounds } from "../lib/local-day";
-  import type { DeleteDeckProgressDto } from "../lib/generated/DeleteDeckProgressDto";
-  import ProgressBar from "../components/ProgressBar.svelte";
+  import DeckDeletionFlow from "../components/DeckDeletionFlow.svelte";
 
   type Props = {
     selectedDeckId: string;
@@ -62,14 +60,9 @@
   let deckSettings = $state<SchedulerSettingsDto | null>(null);
   let useTimeOverride = $state(false);
   let timeOverrideMinutes = $state(30);
-  let deleteDialogOpen = $state(false);
-  let moveBeforeDeleteDialogOpen = $state(false);
+  let deleteFlowOpen = $state(false);
   let deleteCardCount = $state(0);
   let busyDeckAction = $state(false);
-  let deleteProgress = $state<DeleteDeckProgressDto | null>(null);
-  let deleteProgressDialogOpen = $state(false);
-  let deleteFailure = $state("");
-  let deleteCleanupWarning = $state("");
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
@@ -255,65 +248,12 @@
       const summaries = await api.listDeckSummaries(Date.now());
       deleteCardCount =
         summaries.find((deck) => deck.id === selectedDeckId)?.total_cards ?? 0;
-      destinationDeckId =
-        overview?.decks.find((deck) => deck.id !== selectedDeckId)?.id ?? "";
-      deleteDialogOpen = true;
+      deleteFlowOpen = true;
     } catch (reason) {
       error = message(reason);
     } finally {
       busyDeckAction = false;
     }
-  }
-
-  async function deleteDeck(moveCardsToDeckId: string | null): Promise<void> {
-    if (busyDeckAction) return;
-    busyDeckAction = true;
-    error = "";
-    notice = "";
-    deleteFailure = "";
-    deleteCleanupWarning = "";
-    deleteProgress = null;
-    deleteDialogOpen = false;
-    moveBeforeDeleteDialogOpen = false;
-    deleteProgressDialogOpen = true;
-    try {
-      const result = await api.deleteDeck(
-        {
-          deck_id: selectedDeckId,
-          move_cards_to_deck_id: moveCardsToDeckId,
-          confirmation: deckName,
-          now_ms: Date.now(),
-        },
-        (progress) => (deleteProgress = progress),
-      );
-      if (result.media_cleanup_warning) {
-        deleteCleanupWarning = result.media_cleanup_warning;
-      } else {
-        deleteProgressDialogOpen = false;
-        onDeleted();
-      }
-    } catch {
-      deleteFailure = "Could not delete the deck. Try again.";
-    } finally {
-      busyDeckAction = false;
-    }
-  }
-
-  function closeDeleteProgress(): void {
-    if (busyDeckAction) return;
-    deleteProgressDialogOpen = false;
-    if (deleteCleanupWarning) onDeleted();
-  }
-
-  function deleteProgressLabel(progress: DeleteDeckProgressDto): string {
-    if (progress.phase === "preparing") return "Preparing";
-    if (progress.phase === "removing_cards") return "Removing cards";
-    if (progress.phase === "cleaning_audio") return "Cleaning audio";
-    return "Finalizing";
-  }
-
-  function cardCountLabel(count: number): string {
-    return `${count} ${count === 1 ? "card" : "cards"}`;
   }
 
   function statusLabel(status: DeckCardStatusDto): string {
@@ -629,132 +569,17 @@
   </Dialog.Content>
 </Dialog.Root>
 
-<AlertDialog.Root bind:open={deleteDialogOpen}>
-  <AlertDialog.Content>
-    <AlertDialog.Header>
-      <AlertDialog.Title>Delete “{deckName}”?</AlertDialog.Title>
-      <AlertDialog.Description>
-        {#if isBundleStage}
-          Bundled cards in this deck will be permanently removed. Personal cards
-          will be moved to Trash.
-        {:else}
-          Its {cardCountLabel(deleteCardCount)} will be moved to Trash.
-        {/if}
-      </AlertDialog.Description>
-    </AlertDialog.Header>
-    <AlertDialog.Footer>
-      <AlertDialog.Cancel disabled={busyDeckAction}>Cancel</AlertDialog.Cancel>
-      <Button
-        variant="outline"
-        disabled={busyDeckAction || !destinationDeckId}
-        onclick={() => {
-          deleteDialogOpen = false;
-          moveBeforeDeleteDialogOpen = true;
-        }}>Move cards instead</Button
-      >
-      <AlertDialog.Action
-        class="bg-destructive/10 text-destructive hover:bg-destructive/20"
-        disabled={busyDeckAction}
-        onclick={() => void deleteDeck(null)}>Delete deck</AlertDialog.Action
-      >
-    </AlertDialog.Footer>
-  </AlertDialog.Content>
-</AlertDialog.Root>
-
-<Dialog.Root
-  open={deleteProgressDialogOpen}
-  onOpenChange={(open) => {
-    if (!open) closeDeleteProgress();
-  }}
->
-  <Dialog.Content
-    class="rounded-none sm:max-w-md"
-    showCloseButton={!busyDeckAction}
-  >
-    <Dialog.Header>
-      <Dialog.Title>
-        {deleteCleanupWarning
-          ? "Deck deleted"
-          : deleteFailure
-            ? "Deck was not deleted"
-            : `Deleting “${deckName}”`}
-      </Dialog.Title>
-      <Dialog.Description>
-        {deleteCleanupWarning
-          ? "The collection was updated, but audio cleanup needs attention."
-          : deleteFailure
-            ? "Your collection was left unchanged."
-            : "Keep Meiki open while this finishes."}
-      </Dialog.Description>
-    </Dialog.Header>
-
-    {#if deleteCleanupWarning}
-      <Alert.Root role="alert">
-        <Alert.Title>{deleteCleanupWarning}</Alert.Title>
-      </Alert.Root>
-    {:else if deleteFailure}
-      <Alert.Root variant="destructive" role="alert">
-        <Alert.Title>{deleteFailure}</Alert.Title>
-      </Alert.Root>
-    {:else if deleteProgress}
-      <div class="grid gap-2" role="status" aria-live="polite">
-        <strong>{deleteProgressLabel(deleteProgress)}</strong>
-        <ProgressBar
-          label={deleteProgressLabel(deleteProgress)}
-          current={deleteProgress.current}
-          total={deleteProgress.total}
-        />
-        {#if deleteProgress.current !== null && deleteProgress.total !== null}
-          <span class="text-sm text-muted-foreground">
-            {deleteProgress.current.toLocaleString()} / {deleteProgress.total.toLocaleString()}
-          </span>
-        {/if}
-      </div>
-    {/if}
-
-    {#if !busyDeckAction}
-      <Dialog.Footer>
-        <Button onclick={closeDeleteProgress}>Close</Button>
-      </Dialog.Footer>
-    {/if}
-  </Dialog.Content>
-</Dialog.Root>
-
-<Dialog.Root bind:open={moveBeforeDeleteDialogOpen}>
-  <Dialog.Content>
-    <Dialog.Header>
-      <Dialog.Title>Move cards instead</Dialog.Title>
-      <Dialog.Description>
-        Move active cards to another deck, then delete “{deckName}”.
-      </Dialog.Description>
-    </Dialog.Header>
-    <div class="grid gap-2">
-      <Label for="delete-destination-deck">Destination deck</Label>
-      <select
-        id="delete-destination-deck"
-        class="w-full"
-        bind:value={destinationDeckId}
-      >
-        {#each overview?.decks.filter((deck) => deck.id !== selectedDeckId) ?? [] as deck (deck.id)}
-          <option value={deck.id}>{deck.name}</option>
-        {/each}
-      </select>
-    </div>
-    <Dialog.Footer>
-      <Button
-        variant="outline"
-        disabled={busyDeckAction}
-        onclick={() => (moveBeforeDeleteDialogOpen = false)}>Cancel</Button
-      >
-      <Button
-        variant="destructive"
-        disabled={busyDeckAction || !destinationDeckId}
-        onclick={() => void deleteDeck(destinationDeckId)}
-        >Move cards and delete</Button
-      >
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
+<DeckDeletionFlow
+  bind:open={deleteFlowOpen}
+  deckId={selectedDeckId}
+  {deckName}
+  {isBundleStage}
+  cardCount={deleteCardCount}
+  destinationDecks={overview?.decks.filter(
+    (deck) => deck.id !== selectedDeckId,
+  ) ?? []}
+  onFinished={() => onDeleted()}
+/>
 
 <Dialog.Root
   open={Boolean(movingCard)}
