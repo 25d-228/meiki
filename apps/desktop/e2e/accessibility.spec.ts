@@ -4,7 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { installMockApi } from "./support/mock-api";
 
 type Theme = "light" | "dark";
-type Screen = "Today" | "Decks" | "Add" | "Settings";
+type Screen = "Today" | "Decks" | "Add" | "Typing" | "Settings";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
@@ -68,7 +68,13 @@ async function expectNoAccessibilityViolations(page: Page): Promise<void> {
 }
 
 for (const theme of ["light", "dark"] as const) {
-  for (const screen of ["Today", "Decks", "Add", "Settings"] as const) {
+  for (const screen of [
+    "Today",
+    "Decks",
+    "Add",
+    "Typing",
+    "Settings",
+  ] as const) {
     test(`${screen} in ${theme} has no automated WCAG A/AA violations`, async ({
       page,
     }) => {

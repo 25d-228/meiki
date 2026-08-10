@@ -1,0 +1,452 @@
+import AxeBuilder from "@axe-core/playwright";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+
+import { installMockApi } from "./support/mock-api";
+
+const trackNames = [
+  "Korean — 2-set Hangul",
+  "Japanese — Romaji input",
+  "French — Dead-key accents",
+  "Spanish — Dead-key accents",
+] as const;
+
+test.beforeEach(async ({ page }) => {
+  await installMockApi(page);
+});
+
+async function openTyping(page: Page, route = "/"): Promise<void> {
+  await page.goto(route);
+  const openNavigation = page.getByRole("button", { name: "Open navigation" });
+  if (await openNavigation.isVisible()) await openNavigation.click();
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Typing", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Typing", level: 1 }),
+  ).toBeVisible();
+}
+
+async function startPractice(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: "Start practice" }).click();
+  const input = page.getByLabel("Practice input");
+  await expect(input).toBeVisible();
+  return input;
+}
+
+async function dispatchKey(
+  input: Locator,
+  type: "keydown" | "keyup",
+  init: {
+    code: string;
+    key: string;
+    repeat?: boolean;
+    isComposing?: boolean;
+  },
+): Promise<void> {
+  await input.evaluate(
+    (element, event) =>
+      element.dispatchEvent(
+        new KeyboardEvent(event.type, {
+          bubbles: true,
+          code: event.code,
+          key: event.key,
+          repeat: event.repeat,
+          isComposing: event.isComposing,
+        }),
+      ),
+    { type, ...init },
+  );
+}
+
+async function dispatchComposition(
+  input: Locator,
+  type: "compositionstart" | "compositionupdate" | "compositionend",
+  data: string,
+): Promise<void> {
+  await input.evaluate(
+    (element, event) =>
+      element.dispatchEvent(
+        new CompositionEvent(event.type, { bubbles: true, data: event.data }),
+      ),
+    { type, data },
+  );
+}
+
+async function setRuntimePlatform(page: Page, platform: string): Promise<void> {
+  await page.addInitScript((runtimePlatform) => {
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      get: () => runtimePlatform,
+    });
+    Object.defineProperty(navigator, "userAgentData", {
+      configurable: true,
+      get: () => ({ platform: runtimePlatform }),
+    });
+  }, platform);
+}
+
+test("desktop and mobile navigation keep Typing between Add and Settings and preserve the editor guard", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.goto("/");
+  const desktopNavigation = page
+    .locator("aside")
+    .getByRole("navigation", { name: "Primary navigation" });
+  await expect(desktopNavigation.getByRole("button")).toHaveText([
+    "Today",
+    "Decks",
+    "Add",
+    "Typing",
+    "Settings",
+  ]);
+
+  await desktopNavigation.getByRole("button", { name: "Add" }).click();
+  const source = page.locator(".segment-text");
+  await source.fill("Unsaved typing guard");
+  const typingNavigation = desktopNavigation.getByRole("button", {
+    name: "Typing",
+  });
+  await typingNavigation.click();
+  const discard = page.getByRole("alertdialog", {
+    name: "Discard unsaved changes?",
+  });
+  await expect(discard).toBeVisible();
+  await discard.getByRole("button", { name: "Keep editing" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Add / Edit card", level: 1 }),
+  ).toBeVisible();
+  await expect(typingNavigation).toBeFocused();
+  await typingNavigation.click();
+  await discard.getByRole("button", { name: "Discard changes" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Typing", level: 1 }),
+  ).toBeVisible();
+  await expect(page.locator("main")).toBeFocused();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  const mobileNavigation = page.getByRole("navigation", {
+    name: "Primary navigation",
+  });
+  await expect(mobileNavigation.getByRole("button")).toHaveText([
+    "Today",
+    "Decks",
+    "Add",
+    "Typing",
+    "Settings",
+  ]);
+});
+
+test("the empty collection offers exactly four static local tracks without network or backend work", async ({
+  page,
+}) => {
+  await page.goto("/?collection=empty");
+  await page.evaluate(() => {
+    window.__MEIKI_TEST_REQUESTS__ = [];
+  });
+  const runtimeRequests: string[] = [];
+  page.on("request", (request) => {
+    if (["fetch", "xhr"].includes(request.resourceType())) {
+      runtimeRequests.push(request.url());
+    }
+  });
+  const openNavigation = page.getByRole("button", { name: "Open navigation" });
+  if (await openNavigation.isVisible()) await openNavigation.click();
+  await page
+    .getByRole("navigation", { name: "Primary navigation" })
+    .getByRole("button", { name: "Typing" })
+    .click();
+
+  const languageChoices = page.getByRole("group", { name: "Language" });
+  await expect(languageChoices.getByRole("button")).toHaveCount(4);
+  for (const name of trackNames) {
+    await expect(languageChoices.getByRole("button", { name })).toBeVisible();
+  }
+  await expect(page.getByText(/Chinese/i)).toHaveCount(0);
+  await expect(page.locator("main")).toContainText(
+    "does not require a deck or bundle",
+  );
+  await startPractice(page);
+  expect(runtimeRequests).toEqual([]);
+  expect(
+    await page.evaluate(() => window.__MEIKI_TEST_REQUESTS__ ?? []),
+  ).toEqual([]);
+});
+
+for (const detected of [
+  { runtime: "MacIntel", label: "macOS", stored: "macos" },
+  { runtime: "Win32", label: "Windows", stored: "windows" },
+] as const) {
+  test(`reliably detects ${detected.label} instructions`, async ({ page }) => {
+    await setRuntimePlatform(page, detected.runtime);
+    await openTyping(page);
+
+    await expect(
+      page.getByRole("button", { name: detected.label, exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      page.getByText(`${detected.label} was detected.`),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(() => localStorage.getItem("meiki-typing-platform")),
+    ).toBe(detected.stored);
+  });
+}
+
+test("manual platform override persists while Linux keeps non-prescriptive guidance and available exercises", async ({
+  page,
+}) => {
+  await setRuntimePlatform(page, "Linux x86_64");
+  await openTyping(page);
+
+  const guidance = page.getByTestId("typing-linux-guidance");
+  await expect(guidance).toContainText("varies on Linux");
+  await expect(guidance).toContainText("desktop environment");
+  await expect(guidance).not.toContainText(/Ctrl|Alt\+|Super/);
+  await expect(
+    page.getByRole("button", { name: "Start practice" }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "macOS", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "macOS", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-typing-platform")),
+  ).toBe("macos");
+
+  await page.reload();
+  await openTyping(page);
+  await expect(
+    page.getByRole("button", { name: "macOS", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(guidance).toBeVisible();
+  await expect(page.getByText(/Hold Option while pressing E/)).toHaveCount(0);
+});
+
+test("physical drills expose live, held, repeated, ordered, and completed key states", async ({
+  page,
+}) => {
+  await openTyping(page);
+  const input = await startPractice(page);
+
+  for (const modifier of [
+    { code: "ShiftLeft", key: "Shift" },
+    { code: "AltRight", key: "AltGraph" },
+    { code: "AltLeft", key: "Alt" },
+  ]) {
+    const keycap = page.getByTestId(`typing-key-${modifier.code}`);
+    await dispatchKey(input, "keydown", modifier);
+    await expect(keycap).toHaveAttribute("data-pressed", "true");
+    await expect(keycap).toHaveAttribute("data-held", "true");
+    await dispatchKey(input, "keyup", modifier);
+    await expect(keycap).toHaveAttribute("data-pressed", "false");
+    await page.getByRole("button", { name: "Retry" }).click();
+  }
+
+  const wrongKey = page.getByTestId("typing-key-KeyF");
+  await dispatchKey(input, "keydown", { code: "KeyF", key: "f" });
+  await expect(wrongKey).toHaveAttribute("data-incorrect", "true");
+  await expect(page.locator("#typing-live-status")).toContainText(
+    "Pressed F. Expected D. Try again.",
+  );
+  await dispatchKey(input, "keyup", { code: "KeyF", key: "f" });
+
+  const d = page.getByTestId("typing-key-KeyD");
+  await dispatchKey(input, "keydown", { code: "KeyD", key: "d" });
+  await expect(d).toHaveAttribute("data-pressed", "true");
+  await expect(d).toHaveAttribute("data-correct", "true");
+  await expect(page.getByTestId("typing-key-KeyK")).toHaveAttribute(
+    "data-expected",
+    "true",
+  );
+  await dispatchKey(input, "keydown", {
+    code: "KeyD",
+    key: "d",
+    repeat: true,
+  });
+  await expect(page.getByTestId("typing-physical-trail")).toHaveText("F → D");
+  await dispatchKey(input, "keyup", { code: "KeyD", key: "d" });
+
+  const k = page.getByTestId("typing-key-KeyK");
+  await dispatchKey(input, "keydown", { code: "KeyK", key: "k" });
+  await expect(k).toHaveAttribute("data-pressed", "true");
+  await expect(page.locator("#typing-live-status")).toContainText(
+    "Correct — 아",
+  );
+  await dispatchKey(input, "keyup", { code: "KeyK", key: "k" });
+  await expect(d).toHaveAttribute("data-completed", "true");
+  await expect(k).toHaveAttribute("data-completed", "true");
+  await expect(page.getByTestId("typing-physical-trail")).toHaveText(
+    "F → D → K",
+  );
+  await expect(page.getByRole("button", { name: "Next" })).toBeEnabled();
+});
+
+test("IME composition stays separate and its committing Enter never submits prematurely", async ({
+  page,
+}) => {
+  await openTyping(page);
+  await page.getByRole("button", { name: "Japanese — Romaji input" }).click();
+  const input = await startPractice(page);
+
+  await dispatchComposition(input, "compositionstart", "");
+  await dispatchComposition(input, "compositionupdate", "あ");
+  await expect(page.getByTestId("typing-composition")).toHaveText("あ");
+  await expect(page.getByTestId("typing-committed-output")).toHaveText("None");
+  await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
+  await expect(page.locator("#typing-live-status")).not.toContainText(
+    /Not yet|Try again/,
+  );
+
+  await dispatchKey(input, "keydown", {
+    code: "Enter",
+    key: "Enter",
+    isComposing: true,
+  });
+  await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
+  await input.evaluate((element) => {
+    (element as HTMLInputElement).value = "あ";
+  });
+  await dispatchComposition(input, "compositionend", "あ");
+  await dispatchKey(input, "keyup", { code: "Enter", key: "Enter" });
+  await expect(page.getByTestId("typing-composition")).toHaveText("None");
+  await expect(page.getByTestId("typing-committed-output")).toHaveText("あ");
+  await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
+
+  await input.press("Enter");
+  await expect(page.locator("#typing-live-status")).toContainText(
+    "Correct — あ",
+  );
+  await expect(page.getByRole("button", { name: "Next" })).toBeEnabled();
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-typing-language")),
+  ).toBe("japanese");
+  expect(
+    JSON.parse(
+      (await page.evaluate(() =>
+        localStorage.getItem("meiki-typing-completed"),
+      )) ?? "[]",
+    ),
+  ).toContain("typing-japanese-foundation");
+
+  await page.reload();
+  await openTyping(page);
+  await expect(
+    page.getByRole("button", { name: "Japanese — Romaji input" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("Completed", { exact: true })).toBeVisible();
+});
+
+test("committed-text comparison treats a decomposed accent as one matching grapheme", async ({
+  page,
+}) => {
+  await openTyping(page);
+  await page.getByRole("button", { name: "French — Dead-key accents" }).click();
+  const input = await startPractice(page);
+  await input.fill("e\u0301");
+  await input.press("Enter");
+
+  await expect(page.getByTestId("typing-committed-output")).toHaveText(
+    "e\u0301",
+  );
+  await expect(page.locator("#typing-live-status")).toContainText(
+    "Correct — é",
+  );
+});
+
+test("the presentation-only keyboard keeps required staggered rows and no narrow overflow", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 760 });
+  await openTyping(page);
+  await startPractice(page);
+  const keyboard = page.getByTestId("typing-keyboard");
+  await expect(keyboard.locator("[data-keyboard-row]")).toHaveCount(5);
+  for (const code of [
+    "Digit1",
+    "KeyQ",
+    "KeyA",
+    "KeyZ",
+    "Quote",
+    "ShiftLeft",
+    "AltRight",
+    "AltLeft",
+    "CapsLock",
+    "Space",
+    "Enter",
+    "Backspace",
+  ]) {
+    await expect(page.getByTestId(`typing-key-${code}`)).toBeVisible();
+  }
+  await expect(keyboard.locator("button")).toHaveCount(0);
+  await expect(keyboard.locator("[tabindex]")).toHaveCount(0);
+  await expect(page.getByTestId("typing-key-KeyD")).toContainText("D");
+  await expect(page.getByTestId("typing-key-KeyD")).toContainText("ㅇ");
+  const [numberX, qwertyX] = await Promise.all([
+    page
+      .getByTestId("typing-key-Digit1")
+      .evaluate((element) => element.getBoundingClientRect().x),
+    page
+      .getByTestId("typing-key-KeyQ")
+      .evaluate((element) => element.getBoundingClientRect().x),
+  ]);
+  expect(qwertyX).toBeGreaterThan(numberX);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+
+  await page.getByRole("button", { name: "Retry" }).click();
+  await page.getByRole("button", { name: "Japanese — Romaji input" }).click();
+  await startPractice(page);
+  await expect(
+    page.getByTestId("typing-keyboard").locator(".target-legend"),
+  ).toHaveCount(0);
+});
+
+test("keyboard-only Retry and Next retain live semantics and pass accessibility checks", async ({
+  page,
+}) => {
+  await openTyping(page);
+  const start = page.getByRole("button", { name: "Start practice" });
+  await start.focus();
+  await page.keyboard.press("Enter");
+  const input = page.getByLabel("Practice input");
+  await input.focus();
+  await page.keyboard.press("d");
+  await page.keyboard.press("k");
+  await expect(page.locator("#typing-live-status")).toContainText(
+    "Correct — 아",
+  );
+
+  const retry = page.getByRole("button", { name: "Retry" });
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("typing-physical-trail")).toHaveText(
+    "None yet",
+  );
+  await input.focus();
+  await page.keyboard.press("d");
+  await page.keyboard.press("k");
+  const next = page.getByRole("button", { name: "Next" });
+  await next.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("button", { name: "Japanese — Romaji input" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.getByRole("heading", {
+      name: "Commit the first Japanese vowel",
+      level: 2,
+    }),
+  ).toBeVisible();
+
+  const accessibility = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+});
