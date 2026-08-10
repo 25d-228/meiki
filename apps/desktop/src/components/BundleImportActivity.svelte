@@ -93,7 +93,7 @@
         onclick={() => (dialogOpen = true)}
         aria-label={`Open ${activityLanguage(activity)} import details`}
       >
-        <span class="grid min-w-0 gap-1">
+        <span class="grid w-full min-w-0 gap-1 break-words">
           {#if activity.status === "success"}
             <strong>{successMessage(activity)}</strong>
           {:else if activity.status === "failure"}

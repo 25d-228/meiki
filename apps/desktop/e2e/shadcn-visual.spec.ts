@@ -202,12 +202,40 @@ for (const visualCase of visualCases) {
 for (const activityCase of [
   {
     name: "bundle-import-activity-desktop-light",
+    route: "/?bundleImport=activity",
+    state: "determinate",
     screen: "Settings",
     theme: "light",
     viewport: "desktop",
   },
   {
     name: "bundle-import-activity-narrow-dark",
+    route: "/?bundleImport=activity",
+    state: "determinate",
+    screen: "Add",
+    theme: "dark",
+    viewport: "narrow",
+  },
+  {
+    name: "bundle-import-activity-preparing-desktop-light",
+    route: "/?bundleImport=activity&bundleProgress=preparing",
+    state: "preparing",
+    screen: "Settings",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "bundle-import-activity-terminal-desktop-light",
+    route: "/?bundleImport=activity",
+    state: "terminal",
+    screen: "Today",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "bundle-import-activity-long-language-narrow-dark",
+    route: "/?bundleImport=activity&bundleLanguage=long",
+    state: "long-language",
     screen: "Add",
     theme: "dark",
     viewport: "narrow",
@@ -215,7 +243,7 @@ for (const activityCase of [
 ] as const) {
   test(`visual regression: ${activityCase.name}`, async ({ page }) => {
     await prepare(page, {
-      route: "/?bundleImport=activity",
+      route: activityCase.route,
       screen: "Decks",
       theme: activityCase.theme,
       viewport: activityCase.viewport,
@@ -224,8 +252,24 @@ for (const activityCase of [
     const dialog = page.getByRole("dialog", { name: "Import bundle" });
     await dialog.getByRole("button", { name: "Add bundle" }).click();
     const activity = page.getByTestId("bundle-import-activity");
-    await expect(activity).toContainText("1,240 / 9,700");
-    await dialog.getByRole("button", { name: "Close" }).last().click();
+    if (activityCase.state === "preparing") {
+      await expect(activity).toContainText("Preparing decks");
+    } else {
+      await expect(activity).toContainText("1,240 / 9,700");
+    }
+    if (activityCase.state === "terminal") {
+      await page.evaluate(() =>
+        localStorage.setItem("meiki-e2e-finish-bundle-import", "success"),
+      );
+      await expect(
+        activity.getByRole("button", {
+          name: "Dismiss bundle import status",
+        }),
+      ).toBeVisible();
+      await expect(dialog).toBeHidden();
+    } else {
+      await dialog.getByRole("button", { name: "Close" }).last().click();
+    }
     await navigatePrimary(page, activityCase.screen);
     const activityBounds = await activity.boundingBox();
     const primaryActionBounds = await page
@@ -245,10 +289,16 @@ for (const activityCase of [
         () => document.documentElement.scrollWidth <= window.innerWidth,
       ),
     ).toBe(true);
-    await expect(page).toHaveScreenshot(`${activityCase.name}.png`, {
+    const snapshotName =
+      process.platform === "linux" &&
+      (activityCase.state === "terminal" ||
+        activityCase.state === "long-language")
+        ? `${activityCase.name}-linux.png`
+        : `${activityCase.name}.png`;
+    await expect(activity).toHaveScreenshot(snapshotName, {
       animations: "disabled",
       caret: "hide",
-      maxDiffPixelRatio: 0.12,
+      maxDiffPixelRatio: 0.03,
     });
   });
 }
