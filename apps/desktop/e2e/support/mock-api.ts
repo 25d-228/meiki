@@ -11,6 +11,8 @@ export async function installMockApi(page: Page): Promise<void> {
       "sha256:4732a7cfa0f5dc2a3c8ded1378d2fa4cef6b315dfd0e29ab5479b90a6db13157";
     const realMp3Path =
       "/existing-collection/objects/sha256/47/32a7cfa0f5dc2a3c8ded1378d2fa4cef6b315dfd0e29ab5479b90a6db13157";
+    const longBundleLanguage =
+      "An exceptionally long language display name for wrapping";
     const calls: Record<string, number> = {};
     const committedReviewEventIds = new Set<string>();
     const removedDeckCardIds = new Set<string>();
@@ -710,6 +712,10 @@ export async function installMockApi(page: Page): Promise<void> {
               : 0;
         return clone({
           ...dtos.bundlePreview,
+          language_tag:
+            params.get("bundleLanguage") === "long"
+              ? longBundleLanguage
+              : dtos.bundlePreview.language_tag,
           decks: dtos.bundlePreview.decks.map((deck, index) => ({
             ...deck,
             status: index < installedDecks ? "installed" : "will_add",
@@ -730,7 +736,11 @@ export async function installMockApi(page: Page): Promise<void> {
           await new Promise((resolve) => setTimeout(resolve, 100));
         };
         await report("preparing_decks", 0, 6);
-        if (bundleImportMode === "activity") {
+        if (params.get("bundleProgress") === "preparing") {
+          while (!localStorage.getItem("meiki-e2e-finish-bundle-import")) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        } else if (bundleImportMode === "activity") {
           await report("adding_cards", 1_240, 9_700);
           await report("adding_cards", 620, 9_700);
           localStorage.setItem("meiki-e2e-bundle-regression-sent", "true");
