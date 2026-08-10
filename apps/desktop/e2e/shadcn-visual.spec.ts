@@ -289,7 +289,13 @@ for (const activityCase of [
         () => document.documentElement.scrollWidth <= window.innerWidth,
       ),
     ).toBe(true);
-    await expect(activity).toHaveScreenshot(`${activityCase.name}.png`, {
+    const snapshotName =
+      process.platform === "linux" &&
+      (activityCase.state === "terminal" ||
+        activityCase.state === "long-language")
+        ? `${activityCase.name}-linux.png`
+        : `${activityCase.name}.png`;
+    await expect(activity).toHaveScreenshot(snapshotName, {
       animations: "disabled",
       caret: "hide",
       maxDiffPixelRatio: 0.03,
