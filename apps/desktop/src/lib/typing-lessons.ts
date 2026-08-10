@@ -7,6 +7,11 @@ export type TypingTrack = {
   selectionLabel: string;
 };
 
+export type TypingKeyLegend = {
+  shifted?: string;
+  base?: string;
+};
+
 export type TypingLesson = {
   id: string;
   language: TypingLanguage;
@@ -18,7 +23,7 @@ export type TypingLesson = {
   sharedPhysicalCodes: string[];
   platformPhysicalCodes: Record<InstructionPlatform, string[]>;
   hint: string;
-  keyLegends: Record<string, string>;
+  keyLegends: Record<string, TypingKeyLegend>;
   instructions: Record<InstructionPlatform, string>;
 };
 
@@ -41,7 +46,11 @@ export const typingLessons: TypingLesson[] = [
     sharedPhysicalCodes: ["KeyD", "KeyK"],
     platformPhysicalCodes: { windows: [], macos: [] },
     hint: "Press the D position for ㅇ, then the K position for ㅏ.",
-    keyLegends: { KeyD: "ㅇ", KeyK: "ㅏ" },
+    keyLegends: {
+      KeyQ: { shifted: "ㅃ", base: "ㅂ" },
+      KeyD: { base: "ㅇ" },
+      KeyK: { base: "ㅏ" },
+    },
     instructions: {
       windows:
         "Add the Korean Microsoft IME and choose its 2-set Hangul layout in Windows language settings.",

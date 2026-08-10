@@ -114,40 +114,22 @@
     if (!pressedCodes.includes(code)) pressedCodes = [...pressedCodes, code];
   }
 
-  function handleKeyDown(event: KeyboardEvent): void {
-    if (!acceptsPhysicalCode(event.code)) return;
-    setPressed(event.code);
-    if (event.repeat) return;
-
-    if (lesson.mode === "physical" && !event.isComposing) {
-      event.preventDefault();
-    }
-
-    if (event.code === "Enter" && lesson.mode === "committed") {
-      if (event.isComposing || composing) {
-        physicalTrail = [...physicalTrail, event.code];
-        liveStatus = "Composition is active. Enter will only commit it.";
-        return;
-      }
-      event.preventDefault();
-      evaluateCommittedText();
-      return;
-    }
-
-    physicalTrail = [...physicalTrail, event.code];
-    if (event.isComposing || composing) {
-      liveStatus = `Composing. Pressed ${codeLabel(event.code)}.`;
-      return;
-    }
-
+  function updatePhysicalSequence(
+    code: string,
+    compositionActive: boolean,
+  ): void {
     if (!expectedCode) {
-      liveStatus = `Pressed ${codeLabel(event.code)}.`;
+      feedback = "";
+      liveStatus = compositionActive
+        ? `Composing. Pressed ${codeLabel(code)}. No answer has been checked.`
+        : `Pressed ${codeLabel(code)}.`;
       return;
     }
-    if (event.code !== expectedCode) {
-      incorrectCode = event.code;
-      result = "incorrect";
-      feedback = `Pressed ${codeLabel(event.code)}. Expected ${codeLabel(expectedCode)}. Try again.`;
+    if (code !== expectedCode) {
+      incorrectCode = code;
+      result =
+        lesson.mode === "committed" && compositionActive ? "idle" : "incorrect";
+      feedback = `Pressed ${codeLabel(code)}. Expected ${codeLabel(expectedCode)}. Try again.${compositionActive ? " Composition remains unchecked." : ""}`;
       liveStatus = feedback;
       return;
     }
@@ -160,14 +142,41 @@
         markCorrect();
       } else {
         result = "idle";
-        feedback = "Physical sequence complete. Commit the target text.";
+        feedback = `Physical sequence complete. Commit the target text.${compositionActive ? " Composition remains unchecked." : ""}`;
         liveStatus = feedback;
       }
       return;
     }
     result = "idle";
-    feedback = `Correct position. Next: ${codeLabel(expectedCodes[expectedIndex])}.`;
+    feedback = `Correct position. Next: ${codeLabel(expectedCodes[expectedIndex])}.${compositionActive ? " Composition remains unchecked." : ""}`;
     liveStatus = feedback;
+  }
+
+  function handleKeyDown(event: KeyboardEvent): void {
+    if (!acceptsPhysicalCode(event.code)) return;
+    setPressed(event.code);
+    if (event.repeat) return;
+
+    const compositionActive = event.isComposing || composing;
+    if (lesson.mode === "physical" && !compositionActive) {
+      event.preventDefault();
+    }
+
+    physicalTrail = [...physicalTrail, event.code];
+    if (event.code === "Enter" && lesson.mode === "committed") {
+      if (compositionActive) {
+        updatePhysicalSequence(event.code, true);
+        const physicalStatus = feedback || liveStatus;
+        feedback = "";
+        liveStatus = `${physicalStatus} Enter will only commit the active composition.`;
+        return;
+      }
+      event.preventDefault();
+      evaluateCommittedText();
+      return;
+    }
+
+    updatePhysicalSequence(event.code, compositionActive);
   }
 
   function handleKeyUp(event: KeyboardEvent): void {
@@ -197,6 +206,7 @@
     compositionText = "";
     inputValue = (event.currentTarget as HTMLInputElement).value;
     committedOutput = inputValue;
+    feedback = "";
     liveStatus = committedOutput
       ? `Committed ${committedOutput}. Press Enter to check.`
       : "Composition ended without committed text.";
@@ -241,6 +251,7 @@
   }
 
   function markCorrect(): void {
+    incorrectCode = null;
     result = "correct";
     feedback = `Correct — ${lesson.target}`;
     liveStatus = feedback;

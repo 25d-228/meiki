@@ -365,6 +365,83 @@ test("a repeated physical code stays expected after its earlier ordinal is compl
   );
 });
 
+test("IME composition advances the ordinal physical sequence but defers completion", async ({
+  page,
+}) => {
+  await setRuntimePlatform(page, "MacIntel");
+  await openTyping(page);
+  await page.getByRole("button", { name: "French — Dead-key accents" }).click();
+  const input = await startPractice(page);
+  const feedback = page.locator("#typing-live-status");
+  const next = page.getByRole("button", { name: "Next" });
+
+  await dispatchComposition(input, "compositionstart", "");
+  await dispatchComposition(input, "compositionupdate", "e");
+  await dispatchKey(input, "keydown", {
+    code: "KeyF",
+    key: "f",
+    isComposing: true,
+  });
+  await expect(feedback).toContainText("Expected Option");
+  await expect(feedback).not.toHaveClass(/incorrect-feedback/);
+  await expect(page.getByTestId("typing-composition")).toHaveText("e");
+  await expect(next).toBeDisabled();
+  await dispatchKey(input, "keyup", { code: "KeyF", key: "f" });
+
+  await dispatchKey(input, "keydown", {
+    code: "AltLeft",
+    key: "Alt",
+    isComposing: true,
+  });
+  await expect(page.getByTestId("typing-physical-trail")).toHaveText(
+    "F → Option",
+  );
+  await expect(page.getByTestId("typing-key-KeyE")).toHaveAttribute(
+    "data-expected",
+    "true",
+  );
+  await expect(feedback).toHaveText(
+    "Correct position. Next: E. Composition remains unchecked.",
+  );
+  await expect(next).toBeDisabled();
+  await dispatchKey(input, "keyup", { code: "AltLeft", key: "Alt" });
+
+  await dispatchKey(input, "keydown", {
+    code: "KeyE",
+    key: "e",
+    isComposing: true,
+  });
+  await expect(page.getByTestId("typing-key-KeyE")).toHaveAttribute(
+    "data-expected",
+    "true",
+  );
+  await expect(feedback).toHaveText(
+    "Correct position. Next: E. Composition remains unchecked.",
+  );
+  await dispatchKey(input, "keyup", { code: "KeyE", key: "e" });
+  await dispatchKey(input, "keydown", {
+    code: "KeyE",
+    key: "e",
+    isComposing: true,
+  });
+  await expect(page.getByTestId("typing-physical-trail")).toHaveText(
+    "F → Option → E → E",
+  );
+  await expect(feedback).toHaveText(
+    "Physical sequence complete. Commit the target text. Composition remains unchecked.",
+  );
+  await expect(next).toBeDisabled();
+
+  await input.evaluate((element) => {
+    (element as HTMLInputElement).value = "é";
+  });
+  await dispatchComposition(input, "compositionend", "é");
+  await expect(next).toBeDisabled();
+  await input.press("Enter");
+  await expect(feedback).toHaveText("Correct — é");
+  await expect(next).toBeEnabled();
+});
+
 test("IME composition stays separate and its committing Enter never submits prematurely", async ({
   page,
 }) => {
@@ -465,6 +542,29 @@ test("the presentation-only keyboard keeps required staggered rows and no narrow
   await expect(keyboard.locator("[tabindex]")).toHaveCount(0);
   await expect(page.getByTestId("typing-key-KeyD")).toContainText("D");
   await expect(page.getByTestId("typing-key-KeyD")).toContainText("ㅇ");
+  const q = page.getByTestId("typing-key-KeyQ");
+  const qLegends = q.locator(
+    ".shifted-target-legend, .target-legend, .latin-legend",
+  );
+  await expect(qLegends).toHaveText(["ㅃ", "ㅂ", "Q"]);
+  const [qBox, qLegendBoxes] = await Promise.all([
+    q.evaluate((element) => {
+      const { top, bottom } = element.getBoundingClientRect();
+      return { top, bottom };
+    }),
+    qLegends.evaluateAll((elements) =>
+      elements.map((element) => {
+        const { top, bottom } = element.getBoundingClientRect();
+        return { top, bottom, center: (top + bottom) / 2 };
+      }),
+    ),
+  ]);
+  expect(qLegendBoxes[0].center).toBeLessThan(qLegendBoxes[1].center);
+  expect(qLegendBoxes[1].center).toBeLessThan(qLegendBoxes[2].center);
+  for (const box of qLegendBoxes) {
+    expect(box.bottom).toBeLessThanOrEqual(qBox.bottom + 1);
+    expect(box.top).toBeGreaterThanOrEqual(qBox.top - 1);
+  }
   const [numberX, qwertyX] = await Promise.all([
     page
       .getByTestId("typing-key-Digit1")
@@ -484,7 +584,9 @@ test("the presentation-only keyboard keeps required staggered rows and no narrow
   await page.getByRole("button", { name: "Japanese — Romaji input" }).click();
   await startPractice(page);
   await expect(
-    page.getByTestId("typing-keyboard").locator(".target-legend"),
+    page
+      .getByTestId("typing-keyboard")
+      .locator(".shifted-target-legend, .target-legend"),
   ).toHaveCount(0);
 });
 

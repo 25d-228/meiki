@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { TypingKeyLegend } from "$lib/typing-lessons";
+
   type Keycap = {
     code: string;
     latin: string;
@@ -14,7 +16,7 @@
     completedCodes: string[];
     incorrectCode: string | null;
     sequenceCompleted: boolean;
-    keyLegends: Record<string, string>;
+    keyLegends: Record<string, TypingKeyLegend>;
   };
 
   let {
@@ -127,8 +129,13 @@
           )}
         >
           <span class="shifted-legend">{key.shifted ?? ""}</span>
-          {#if keyLegends[key.code]}
-            <strong class="target-legend">{keyLegends[key.code]}</strong>
+          {#if keyLegends[key.code]?.shifted}
+            <strong class="shifted-target-legend"
+              >{keyLegends[key.code].shifted}</strong
+            >
+          {/if}
+          {#if keyLegends[key.code]?.base}
+            <strong class="target-legend">{keyLegends[key.code].base}</strong>
           {/if}
           <span class="latin-legend">{key.latin}</span>
           {#if keyMarker(key)}
@@ -221,12 +228,23 @@
     line-height: 1;
   }
 
+  .shifted-target-legend,
   .target-legend {
     position: absolute;
-    inset: 50% auto auto 50%;
+    left: 50%;
     font-family: var(--font-content);
-    font-size: clamp(0.6rem, 1.8vw, 1rem);
     line-height: 1;
+    transform: translateX(-50%);
+  }
+
+  .shifted-target-legend {
+    top: 0.15rem;
+    font-size: clamp(0.45rem, 1.3vw, 0.7rem);
+  }
+
+  .target-legend {
+    top: 50%;
+    font-size: clamp(0.6rem, 1.8vw, 1rem);
     transform: translate(-50%, -50%);
   }
 
