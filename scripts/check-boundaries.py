@@ -362,14 +362,11 @@ def main() -> int:
             f"{tauri_config_path.relative_to(ROOT)}: img-src must "
             "allow only packaged content and the managed asset protocol"
         )
-    managed_audio_sources = managed_asset_sources | {
-        "meiki-media:",
-        "http://meiki-media.localhost",
-    }
+    managed_audio_sources = managed_asset_sources | {"blob:"}
     if directives.get("media-src") != managed_audio_sources:
         failures.append(
             f"{tauri_config_path.relative_to(ROOT)}: media-src must "
-            "allow only packaged content and registered managed-media protocols"
+            "allow only packaged content and managed audio blobs"
         )
 
     production_roots = [ROOT / "apps" / "desktop" / "src", ROOT / "crates"]

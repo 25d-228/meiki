@@ -1,10 +1,13 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import {
+  convertFileSrc,
+  invoke as tauriInvoke,
+  isTauri,
+} from "@tauri-apps/api/core";
 import type { StudyMediaDto } from "$lib/generated/StudyMediaDto";
 
 const SCHEME = /^([a-z][a-z\d+.-]*):/i;
 const WINDOWS_ABSOLUTE_PATH = /^[a-z]:[\\/]/i;
 const SHA256_CONTENT_HASH = /^sha256:([a-f\d]{64})$/;
-const managedMediaProtocol = "meiki-media";
 const promptAudioAutoplayKey = "meiki-autoplay-prompt-audio";
 const audioSeekTimeoutMs = 250;
 
@@ -18,8 +21,38 @@ function sourceScheme(path: string): string | undefined {
   return SCHEME.exec(path)?.[1]?.toLowerCase();
 }
 
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+export function usesManagedAudioTransport(
+  contentHash: string | undefined,
+  mediaType: string | undefined,
+): boolean {
+  return (
+    mediaType === "audio/mpeg" && SHA256_CONTENT_HASH.test(contentHash ?? "")
+  );
+}
+
+export async function managedAudioBlobSource(
+  contentHash: string,
+  mediaType: string,
+): Promise<string> {
+  const invoke = window.__MEIKI_TEST_INVOKE__ ?? tauriInvoke;
+  const response = await invoke<unknown>("read_managed_audio", {
+    contentHash,
+  });
+  let bytes: ArrayBuffer;
+  if (response instanceof ArrayBuffer) {
+    bytes = response;
+  } else if (
+    Array.isArray(response) &&
+    response.every(
+      (value) => Number.isInteger(value) && value >= 0 && value <= 0xff,
+    )
+  ) {
+    bytes = Uint8Array.from(response).buffer;
+  } else {
+    throw new Error("Audio transport failed.");
+  }
+  if (bytes.byteLength === 0) throw new Error("Audio transport failed.");
+  return URL.createObjectURL(new Blob([bytes], { type: mediaType }));
 }
 
 export function mediaAssetSource(media: MediaSource): string | undefined {
@@ -32,14 +65,11 @@ export function mediaAssetSource(media: MediaSource): string | undefined {
 
   // Playwright DTO fixtures use bounded inline media in the browser dev server.
   // Packaged Tauri builds accept only managed paths and the asset protocol.
-  if (scheme === "data" && !isTauriRuntime()) return path;
+  if (scheme === "data" && !isTauri()) return path;
   if (scheme) return undefined;
 
-  if (!isTauriRuntime()) return path;
-  const digest = SHA256_CONTENT_HASH.exec(media.content_hash)?.[1];
-  if (media.media_type === "audio/mpeg" && digest) {
-    return convertFileSrc(digest, managedMediaProtocol);
-  }
+  if (usesManagedAudioTransport(media.content_hash, media.media_type)) return;
+  if (!isTauri()) return path;
   return convertFileSrc(path);
 }
 

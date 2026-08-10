@@ -7,6 +7,10 @@ export async function installMockApi(page: Page): Promise<void> {
     const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
     const realMp3Source =
       "data:audio/mpeg;base64,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";
+    const realMp3Hash =
+      "sha256:4732a7cfa0f5dc2a3c8ded1378d2fa4cef6b315dfd0e29ab5479b90a6db13157";
+    const realMp3Path =
+      "/existing-collection/objects/sha256/47/32a7cfa0f5dc2a3c8ded1378d2fa4cef6b315dfd0e29ab5479b90a6db13157";
     const calls: Record<string, number> = {};
     const committedReviewEventIds = new Set<string>();
     const removedDeckCardIds = new Set<string>();
@@ -21,6 +25,41 @@ export async function installMockApi(page: Page): Promise<void> {
       string,
       typeof dtos.schedulerSettings
     > = {};
+
+    const mediaMode = new URLSearchParams(location.search).get("media");
+    if (mediaMode === "real-mp3" || mediaMode === "transport-error") {
+      Reflect.set(globalThis, "isTauri", true);
+      Reflect.set(window, "__TAURI_INTERNALS__", {
+        convertFileSrc(path: string, protocol = "asset") {
+          return `${protocol}://localhost/${encodeURIComponent(path)}`;
+        },
+      });
+      const createObjectUrl = URL.createObjectURL.bind(URL);
+      const revokeObjectUrl = URL.revokeObjectURL.bind(URL);
+      window.__MEIKI_TEST_CREATED_OBJECT_URLS__ = [];
+      window.__MEIKI_TEST_REVOKED_OBJECT_URLS__ = [];
+      URL.createObjectURL = (object) => {
+        const url = createObjectUrl(object);
+        window.__MEIKI_TEST_CREATED_OBJECT_URLS__?.push(url);
+        return url;
+      };
+      URL.revokeObjectURL = (url) => {
+        window.__MEIKI_TEST_REVOKED_OBJECT_URLS__?.push(url);
+        revokeObjectUrl(url);
+      };
+    }
+
+    const realMp3Media = (role: "prompt_audio" | "answer_audio") => ({
+      ...clone(dtos.media.prompt_audio),
+      id: `real-mp3-${role}`,
+      content_hash: realMp3Hash,
+      role,
+      media_type: "audio/mpeg",
+      byte_size: 2_445,
+      original_file_name: "sentence.mp3",
+      duration_ms: 500,
+      asset_path: realMp3Path,
+    });
 
     window.__MEIKI_TEST_REQUESTS__ = [];
     window.__MEIKI_TEST_PICK_FILE__ = async (role) => `/fixture/${role}`;
@@ -115,6 +154,20 @@ export async function installMockApi(page: Page): Promise<void> {
       ) {
         throw new Error("The answer check was interrupted.");
       }
+
+      if (command === "read_managed_audio") {
+        if (mediaMode === "transport-error") {
+          throw new Error("Audio transport failed.");
+        }
+        const requestedHash = (args as { contentHash?: string })?.contentHash;
+        if (requestedHash !== realMp3Hash) {
+          throw new Error("Audio transport failed.");
+        }
+        const encoded = realMp3Source.slice(realMp3Source.indexOf(",") + 1);
+        return Array.from(atob(encoded), (character) =>
+          character.charCodeAt(0),
+        );
+      }
       if (
         params.get("failure") === "grade" &&
         command === "grade_review" &&
@@ -200,21 +253,14 @@ export async function installMockApi(page: Page): Promise<void> {
         );
       }
       if (command === "get_study_card") {
-        if (params.get("media") === "real-mp3") {
+        if (
+          params.get("media") === "real-mp3" ||
+          params.get("media") === "transport-error"
+        ) {
           const ready = clone(dtos.readyMediaCard);
           return {
             ...ready,
-            prompt_media: [
-              {
-                ...ready.prompt_media[0],
-                content_hash: `sha256:${"d".repeat(64)}`,
-                media_type: "audio/mpeg",
-                byte_size: 2_445,
-                original_file_name: "sentence.mp3",
-                duration_ms: 500,
-                asset_path: realMp3Source,
-              },
-            ],
+            prompt_media: [realMp3Media("prompt_audio")],
           };
         }
         if (fixtureName === "stale") {
@@ -287,6 +333,12 @@ export async function installMockApi(page: Page): Promise<void> {
       }
       if (command === "check_answer") {
         if (params.get("answer") === "wrong") return clone(dtos.wrongReveal);
+        if (params.get("media") === "real-mp3") {
+          return {
+            ...clone(dtos.readyMediaReveal),
+            answer_media: [realMp3Media("answer_audio")],
+          };
+        }
         if (
           params.get("media") === "ready" ||
           params.get("media") === "blocked" ||
