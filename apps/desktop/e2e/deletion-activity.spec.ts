@@ -41,7 +41,6 @@ async function startSingleDeckDeletion(page: Page): Promise<void> {
 }
 
 async function startBatchDeletion(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Select", exact: true }).click();
   await page.getByRole("checkbox", { name: "Select Travel phrases" }).click();
   await page
     .getByRole("checkbox", { name: "Select Listening practice" })
@@ -385,7 +384,6 @@ test("one running deletion disables single, batch, and bundle starts", async ({
     .last()
     .click();
 
-  await page.getByRole("button", { name: "Select", exact: true }).click();
   await page
     .getByRole("checkbox", { name: "Select Listening practice" })
     .click();

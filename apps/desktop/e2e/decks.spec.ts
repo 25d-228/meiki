@@ -99,10 +99,14 @@ async function batchDeleteRequestCount(
   );
 }
 
-async function enterDeckSelection(
+async function expectDeckSelectionControls(
   page: import("@playwright/test").Page,
+  expectedCount = 5,
 ): Promise<void> {
-  await page.getByRole("button", { name: "Select", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Select", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("checkbox")).toHaveCount(expectedCount);
 }
 
 async function selectDeck(
@@ -110,6 +114,147 @@ async function selectDeck(
   deckName: string,
 ): Promise<void> {
   await page.getByRole("checkbox", { name: `Select ${deckName}` }).click();
+}
+
+type Point = { x: number; y: number };
+type PointerModifier = "Shift" | "Control" | "Meta";
+
+async function partialDeckDragPoints(
+  page: import("@playwright/test").Page,
+  deckId: string,
+): Promise<{ start: Point; end: Point }> {
+  const area = await page.getByTestId("deck-selection-area").boundingBox();
+  const deck = await page.getByTestId(`deck-${deckId}`).boundingBox();
+  if (!area || !deck) throw new Error("Deck selection geometry is unavailable");
+  const gridVisible = await page.getByTestId("deck-grid").isVisible();
+  if (gridVisible) {
+    const rightGap = area.x + area.width - (deck.x + deck.width);
+    if (rightGap >= 10) {
+      return {
+        start: { x: deck.x + deck.width + 8, y: deck.y + deck.height / 2 },
+        end: { x: deck.x + deck.width - 4, y: deck.y + deck.height / 2 },
+      };
+    }
+    return {
+      start: { x: deck.x - 8, y: deck.y + deck.height / 2 },
+      end: { x: deck.x + 4, y: deck.y + deck.height / 2 },
+    };
+  }
+  const topGap = deck.y - area.y;
+  if (topGap >= 8) {
+    return {
+      start: { x: deck.x + 8, y: deck.y - 4 },
+      end: { x: deck.x + 8, y: deck.y + 4 },
+    };
+  }
+  return {
+    start: { x: deck.x + 8, y: deck.y + deck.height + 4 },
+    end: { x: deck.x + 8, y: deck.y + deck.height - 4 },
+  };
+}
+
+async function dragAcrossDeckEdge(
+  page: import("@playwright/test").Page,
+  deckId: string,
+  modifier?: PointerModifier,
+  releaseModifierAfterPointerDown = false,
+): Promise<void> {
+  const { start, end } = await partialDeckDragPoints(page, deckId);
+  if (modifier) await page.keyboard.down(modifier);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  if (modifier && releaseModifierAfterPointerDown) {
+    await page.keyboard.up(modifier);
+  }
+  await page.mouse.move(end.x, end.y, { steps: 4 });
+  await page.mouse.up();
+  if (modifier && !releaseModifierAfterPointerDown) {
+    await page.keyboard.up(modifier);
+  }
+}
+
+async function dragFromElement(
+  page: import("@playwright/test").Page,
+  locator: import("@playwright/test").Locator,
+): Promise<void> {
+  const origin = await locator.boundingBox();
+  const target = await page.getByTestId("deck-listening-deck").boundingBox();
+  if (!origin || !target)
+    throw new Error("Interactive drag geometry is unavailable");
+  await page.mouse.move(
+    origin.x + origin.width / 2,
+    origin.y + origin.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(target.x + 8, target.y + target.height / 2, {
+    steps: 4,
+  });
+  await page.mouse.up();
+}
+
+async function setPointerPlatform(
+  page: import("@playwright/test").Page,
+  platform: string,
+): Promise<void> {
+  await page.addInitScript((runtimePlatform) => {
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      get: () => runtimePlatform,
+    });
+    Object.defineProperty(navigator, "userAgentData", {
+      configurable: true,
+      get: () => ({ platform: runtimePlatform }),
+    });
+  }, platform);
+}
+
+async function startVerticalEdgeSelection(
+  page: import("@playwright/test").Page,
+  edge: "top" | "bottom",
+): Promise<void> {
+  const area = page.getByTestId("deck-selection-area");
+  await area.evaluate((element) => {
+    element.addEventListener(
+      "pointerdown",
+      (event) => {
+        element.setAttribute("data-test-pointer-id", String(event.pointerId));
+      },
+      { once: true },
+    );
+  });
+  const point = await page.evaluate((requestedEdge) => {
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-deck-selection-id]"),
+    )
+      .map((element) => {
+        const bounds = element.getBoundingClientRect();
+        const x = bounds.left + 8;
+        const y = Math.max(
+          64,
+          Math.min(window.innerHeight - 64, bounds.top + bounds.height / 2),
+        );
+        return { element, bounds, x, y };
+      })
+      .filter(
+        ({ element, bounds, x, y }) =>
+          bounds.bottom > 56 &&
+          bounds.top < window.innerHeight - 56 &&
+          element.contains(document.elementFromPoint(x, y)),
+      );
+    const candidate =
+      requestedEdge === "bottom" ? candidates.at(-1) : candidates.at(0);
+    if (!candidate) return null;
+    return {
+      x: candidate.x,
+      y: candidate.y,
+      edgeY: requestedEdge === "bottom" ? window.innerHeight - 1 : 1,
+    };
+  }, edge);
+  if (!point)
+    throw new Error("No visible deck is available for edge scrolling");
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x, point.edgeY, { steps: 4 });
 }
 
 async function selectDeckView(
@@ -264,12 +409,14 @@ test("uses the shared single-deck deletion flow from List", async ({
 });
 
 for (const deckView of ["Grid", "List"] as const) {
-  test(`enters and clears selection mode in ${deckView}`, async ({ page }) => {
+  test(`keeps selection controls available and clears selection in ${deckView}`, async ({
+    page,
+  }) => {
     await page.goto("/?decks=batch");
     await openDecks(page);
     if (deckView === "List") await selectDeckView(page, "List");
 
-    await enterDeckSelection(page);
+    await expectDeckSelectionControls(page);
     await expect(page.getByRole("checkbox")).toHaveCount(5);
     await expect(
       page
@@ -282,10 +429,362 @@ for (const deckView of ["Grid", "List"] as const) {
     );
     await page.getByRole("button", { name: "Clear selection" }).click();
 
-    await expect(page.getByRole("checkbox")).toHaveCount(0);
+    await expect(page.getByRole("checkbox")).toHaveCount(5);
+    await expect(page.getByTestId("deck-selection-count")).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: "Select", exact: true }),
-    ).toBeVisible();
+      page.getByRole("checkbox", { name: "Select Travel phrases" }),
+    ).toHaveAttribute("aria-checked", "false");
+  });
+}
+
+for (const deckView of ["Grid", "List"] as const) {
+  test(`partially intersecting a deck selects it by rectangle in ${deckView}`, async ({
+    page,
+  }) => {
+    await page.goto("/?decks=batch");
+    await openDecks(page);
+    if (deckView === "List") await selectDeckView(page, "List");
+
+    await dragAcrossDeckEdge(page, "travel-deck");
+
+    await expect(
+      page.getByRole("checkbox", { name: "Select Travel phrases" }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("deck-selection-count")).toContainText(
+      "1 deck selected",
+    );
+    await expect(page.getByTestId("deck-selection-rectangle")).toHaveCount(0);
+    await expect(
+      page
+        .getByTestId("deck-default-deck")
+        .getByRole("checkbox", { name: "Select Unsorted" }),
+    ).toHaveCount(0);
+  });
+}
+
+test("a pointer movement below the threshold does not change selection", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await openDecks(page);
+  await selectDeck(page, "Travel phrases");
+  const { start } = await partialDeckDragPoints(page, "listening-deck");
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 3, start.y + 2);
+  await page.mouse.up();
+
+  await expect(
+    page.getByRole("checkbox", { name: "Select Travel phrases" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(
+    page.getByRole("checkbox", { name: "Select Listening practice" }),
+  ).toHaveAttribute("aria-checked", "false");
+  await expect(page.getByTestId("deck-selection-count")).toContainText(
+    "1 deck selected",
+  );
+});
+
+test("the rectangle stays clipped to Decks without horizontal overflow", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await openDecks(page);
+  const area = page.getByTestId("deck-selection-area");
+  const areaBefore = await area.boundingBox();
+  if (!areaBefore) throw new Error("Deck selection area is unavailable");
+  await page.mouse.move(areaBefore.x + 2, areaBefore.y + 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    areaBefore.x + areaBefore.width + 200,
+    areaBefore.y + 40,
+  );
+
+  const rectangle = await page
+    .getByTestId("deck-selection-rectangle")
+    .boundingBox();
+  const areaAfter = await area.boundingBox();
+  if (!rectangle || !areaAfter) {
+    throw new Error("Deck selection rectangle geometry is unavailable");
+  }
+  expect(rectangle.x).toBeGreaterThanOrEqual(areaAfter.x);
+  expect(rectangle.x + rectangle.width).toBeLessThanOrEqual(
+    areaAfter.x + areaAfter.width,
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.mouse.up();
+});
+
+test("plain and Shift rectangle drags use the pointer-down selection snapshot", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await openDecks(page);
+  await selectDeck(page, "Travel phrases");
+
+  await dragAcrossDeckEdge(page, "listening-deck");
+  await expect(
+    page.getByRole("checkbox", { name: "Select Travel phrases" }),
+  ).toHaveAttribute("aria-checked", "false");
+  await expect(
+    page.getByRole("checkbox", { name: "Select Listening practice" }),
+  ).toHaveAttribute("aria-checked", "true");
+
+  await dragAcrossDeckEdge(page, "travel-deck", "Shift", true);
+  await expect(
+    page.getByRole("checkbox", { name: "Select Travel phrases" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(
+    page.getByRole("checkbox", { name: "Select Listening practice" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByTestId("deck-selection-count")).toContainText(
+    "2 decks selected",
+  );
+});
+
+for (const modifierCase of [
+  { platform: "macOS", modifier: "Meta", label: "Command on macOS" },
+  { platform: "Windows", modifier: "Control", label: "Ctrl outside macOS" },
+] as const) {
+  test(`${modifierCase.label} toggles intersections from the pointer-down snapshot`, async ({
+    page,
+  }) => {
+    await setPointerPlatform(page, modifierCase.platform);
+    await page.goto("/?decks=batch");
+    await openDecks(page);
+    await selectDeck(page, "Travel phrases");
+    await selectDeck(page, "Listening practice");
+
+    await dragAcrossDeckEdge(page, "travel-deck", modifierCase.modifier, true);
+
+    await expect(
+      page.getByRole("checkbox", { name: "Select Travel phrases" }),
+    ).toHaveAttribute("aria-checked", "false");
+    await expect(
+      page.getByRole("checkbox", { name: "Select Listening practice" }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("deck-selection-count")).toContainText(
+      "1 deck selected",
+    );
+  });
+}
+
+test("a rectangle excludes Unsorted while selecting every deletable deck", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await openDecks(page);
+  const area = await page.getByTestId("deck-selection-area").boundingBox();
+  if (!area) throw new Error("Deck selection area is unavailable");
+  await page.mouse.move(area.x + 1, area.y + 1);
+  await page.mouse.down();
+  await page.mouse.move(area.x + area.width - 1, area.y + area.height - 1, {
+    steps: 8,
+  });
+  await page.mouse.up();
+
+  await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(5);
+  await expect(page.getByTestId("deck-selection-count")).toContainText(
+    "5 decks selected",
+  );
+  await expect(page.getByTestId("deck-default-deck")).toHaveAttribute(
+    "data-selected",
+    "false",
+  );
+});
+
+test("interactive origins never begin rectangle selection", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await openDecks(page);
+  const travel = page.getByTestId("deck-travel-deck");
+  await dragFromElement(
+    page,
+    travel.getByRole("checkbox", { name: "Select Travel phrases" }),
+  );
+  await dragFromElement(page, travel.getByRole("button", { name: "Open" }));
+  await dragFromElement(
+    page,
+    travel.getByRole("button", { name: "Actions for Travel phrases" }),
+  );
+  await expect(page.getByTestId("deck-selection-count")).toHaveCount(0);
+
+  await page.getByTestId("deck-selection-area").evaluate((area) => {
+    const fixtures = document.createElement("div");
+    fixtures.dataset.testid = "interactive-selection-origins";
+    fixtures.setAttribute(
+      "style",
+      "position:absolute;z-index:20;left:4px;top:4px;display:flex;gap:2px",
+    );
+    for (const tag of ["a", "input", "select", "textarea"] as const) {
+      const element = document.createElement(tag);
+      element.dataset.interactiveOrigin = tag;
+      if (element instanceof HTMLAnchorElement) element.href = "#decks-title";
+      element.setAttribute("style", "width:24px;height:24px");
+      fixtures.append(element);
+    }
+    const editable = document.createElement("span");
+    editable.dataset.interactiveOrigin = "contenteditable";
+    editable.contentEditable = "true";
+    editable.setAttribute("style", "display:block;width:24px;height:24px");
+    fixtures.append(editable);
+    const label = document.createElement("label");
+    label.dataset.interactiveOrigin = "label";
+    label.setAttribute("style", "display:block;width:24px;height:24px");
+    fixtures.append(label);
+    const focusable = document.createElement("span");
+    focusable.dataset.interactiveOrigin = "tabindex";
+    focusable.tabIndex = 0;
+    focusable.setAttribute("style", "display:block;width:24px;height:24px");
+    fixtures.append(focusable);
+    const overlayControl = document.createElement("span");
+    overlayControl.dataset.interactiveOrigin = "overlay";
+    overlayControl.dataset.deckSelectionInteractive = "true";
+    overlayControl.setAttribute(
+      "style",
+      "display:block;width:24px;height:24px",
+    );
+    fixtures.append(overlayControl);
+    area.append(fixtures);
+  });
+
+  for (const origin of [
+    "a",
+    "input",
+    "select",
+    "textarea",
+    "contenteditable",
+    "label",
+    "tabindex",
+    "overlay",
+  ]) {
+    await dragFromElement(
+      page,
+      page.locator(`[data-interactive-origin="${origin}"]`),
+    );
+    await expect(page.getByTestId("deck-selection-rectangle")).toHaveCount(0);
+    await expect(page.getByTestId("deck-selection-count")).toHaveCount(0);
+  }
+});
+
+test("single-deck actions remain available with selected decks", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await openDecks(page);
+  await selectDeck(page, "Travel phrases");
+  await openDeckDeleteAction(page, "listening-deck", "Listening practice");
+  await expect(
+    page.getByRole("alertdialog", { name: "Delete “Listening practice”?" }),
+  ).toBeVisible();
+});
+
+for (const edge of ["bottom", "top"] as const) {
+  test(`${edge}-edge scrolling continues rectangle selection and stops on release`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 700, height: 420 });
+    await page.goto("/?decks=scroll");
+    await openDecks(page);
+    await selectDeckView(page, "List");
+    if (edge === "top") {
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    } else {
+      await page.getByTestId("deck-travel-deck").scrollIntoViewIfNeeded();
+    }
+    const scrollBefore = await page.evaluate(() => window.scrollY);
+
+    await startVerticalEdgeSelection(page, edge);
+    const scrollPosition = expect.poll(() =>
+      page.evaluate(() => window.scrollY),
+    );
+    if (edge === "bottom") {
+      await scrollPosition.toBeGreaterThan(scrollBefore);
+    } else {
+      await scrollPosition.toBeLessThan(scrollBefore);
+    }
+    await expect
+      .poll(() => page.getByRole("checkbox", { checked: true }).count())
+      .toBeGreaterThan(0);
+    await page.mouse.up();
+    const scrollAfterRelease = await page.evaluate(() => window.scrollY);
+    await page.waitForTimeout(100);
+    expect(await page.evaluate(() => window.scrollY)).toBe(scrollAfterRelease);
+  });
+}
+
+test("edge scrolling uses the nearest vertical Decks container only", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.goto("/?decks=scroll");
+  await openDecks(page);
+  await selectDeckView(page, "List");
+  const main = page.locator("#main-content");
+  await main.evaluate((element) => {
+    element.style.height = "520px";
+    element.style.minHeight = "0";
+    element.style.overflowX = "hidden";
+    element.style.overflowY = "auto";
+  });
+  const windowScrollBefore = await page.evaluate(() => window.scrollY);
+  await startVerticalEdgeSelection(page, "bottom");
+  await expect
+    .poll(() => main.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+  expect(await main.evaluate((element) => element.scrollLeft)).toBe(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(windowScrollBefore);
+  await page.mouse.up();
+});
+
+for (const stopCase of ["pointer cancel", "window blur", "unmount"] as const) {
+  test(`edge scrolling stops immediately on ${stopCase}`, async ({ page }) => {
+    await page.setViewportSize({ width: 700, height: 420 });
+    await page.goto("/?decks=scroll");
+    await openDecks(page);
+    await selectDeckView(page, "List");
+    await page.getByTestId("deck-travel-deck").scrollIntoViewIfNeeded();
+    const scrollBefore = await page.evaluate(() => window.scrollY);
+    await startVerticalEdgeSelection(page, "bottom");
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY))
+      .toBeGreaterThan(scrollBefore);
+
+    if (stopCase === "pointer cancel") {
+      await page.getByTestId("deck-selection-area").evaluate((area) => {
+        const pointerId = Number(area.getAttribute("data-test-pointer-id"));
+        area.dispatchEvent(
+          new PointerEvent("pointercancel", {
+            bubbles: true,
+            pointerId,
+            pointerType: "mouse",
+          }),
+        );
+      });
+    } else if (stopCase === "window blur") {
+      await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    } else {
+      await page
+        .getByRole("button", { name: "Open navigation" })
+        .evaluate((button: HTMLButtonElement) => button.click());
+      await page
+        .getByRole("navigation", { name: "Primary navigation" })
+        .getByRole("button", { name: "Today", exact: true })
+        .evaluate((button: HTMLButtonElement) => button.click());
+      await expect(
+        page.getByRole("heading", { name: "Today", level: 1 }),
+      ).toBeVisible();
+    }
+    const stoppedAt = await page.evaluate(() => window.scrollY);
+    await page.waitForTimeout(100);
+    expect(await page.evaluate(() => window.scrollY)).toBe(stoppedAt);
+    await expect(page.getByTestId("deck-selection-rectangle")).toHaveCount(0);
+    await page.mouse.up();
   });
 }
 
@@ -294,7 +793,7 @@ test("keeps selected decks while switching between Grid and List", async ({
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
   await expect(page.getByTestId("deck-selection-count")).toContainText(
@@ -321,7 +820,7 @@ test("deletes several ordinary decks with one batch command", async ({
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page);
   for (const deckName of [
     "Travel phrases",
     "Listening practice",
@@ -358,7 +857,7 @@ test("confirms several bundle stages once with permanent-content copy", async ({
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page);
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
   await selectDeck(page, "Japanese 01 — N5 / A1 foundation");
   await page.getByRole("button", { name: "Delete selected" }).click();
@@ -386,7 +885,7 @@ test("mixed deletion clears only removed focused queue and Today state", async (
   await seedStudyState(page, "travel-deck", "deck:ja-JP:00");
   await page.evaluate(() => localStorage.setItem("meiki-decks-view", "list"));
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
   await page.getByRole("button", { name: "Delete selected" }).click();
@@ -418,7 +917,8 @@ test("mixed deletion clears only removed focused queue and Today state", async (
     today: "__all_decks__",
     view: "list",
   });
-  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await expect(page.getByRole("checkbox")).toHaveCount(3);
+  await expect(page.getByTestId("deck-selection-count")).toHaveCount(0);
   await expect(page.getByTestId("deck-list")).toBeVisible();
 });
 
@@ -428,7 +928,7 @@ test("batch deletion preserves all-decks queue and unrelated Today state", async
   await page.goto("/?decks=batch");
   await seedStudyState(page, "__all_decks__", "archive-deck");
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page);
   await selectDeck(page, "Listening practice");
   await page.getByRole("button", { name: "Delete selected" }).click();
   await page
@@ -460,7 +960,7 @@ test("pre-commit batch failure preserves decks, selection, queue, and Today", as
   await page.goto("/?decks=batch&batchDeletion=precommit-failure");
   await seedStudyState(page, "travel-deck", "travel-deck");
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Listening practice");
   await page.getByRole("button", { name: "Delete selected" }).click();
@@ -497,7 +997,7 @@ test("post-commit cleanup failure reports that every selected deck was deleted",
 }) => {
   await page.goto("/?decks=batch&batchDeletion=postcommit-failure");
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
   await page.getByRole("button", { name: "Delete selected" }).click();
@@ -521,7 +1021,7 @@ test("post-commit cleanup failure reports that every selected deck was deleted",
 test("batch deletion progress is semantic and monotonic", async ({ page }) => {
   await page.goto("/?decks=batch&batchDeletion=progress");
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
   await page.getByRole("button", { name: "Delete selected" }).click();
@@ -704,7 +1204,7 @@ test("clears selected decks and a pending batch snapshot after one selected deck
 }) => {
   await page.goto("/?decks=batch&deckDeletion=postcommit-failure");
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Listening practice");
   await page.getByRole("button", { name: "Delete selected" }).click();
@@ -729,9 +1229,11 @@ test("clears selected decks and a pending batch snapshot after one selected deck
   await expect(page.getByTestId("deck-selection-count")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Select", exact: true }),
-  ).toBeVisible();
+  ).toHaveCount(0);
 
-  await enterDeckSelection(page);
+  await expect(
+    page.getByRole("checkbox", { name: "Select Listening practice" }),
+  ).toHaveAttribute("aria-checked", "false");
   await selectDeck(page, "Listening practice");
   await page.getByRole("button", { name: "Delete selected" }).click();
   await page
@@ -826,7 +1328,7 @@ test("preserves queue, session, Today selection, and deck after a pre-commit fai
   );
   await page.goto("/?deckDeletion=precommit-failure");
   await openDecks(page);
-  await enterDeckSelection(page);
+  await expectDeckSelectionControls(page, 1);
   await selectDeck(page, "Travel phrases");
   await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
   await page

@@ -373,7 +373,6 @@ for (const selectionCase of [
         .getByRole("button", { name: "List" })
         .click();
     }
-    await page.getByRole("button", { name: "Select", exact: true }).click();
     await page.getByRole("checkbox", { name: "Select Travel phrases" }).click();
     await page
       .getByRole("checkbox", {
@@ -395,6 +394,36 @@ for (const selectionCase of [
       await heading.evaluate((element) => element.getBoundingClientRect().top),
     ).toBeGreaterThanOrEqual(48);
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+    const areaBounds = await page
+      .getByTestId("deck-selection-area")
+      .boundingBox();
+    const deckBounds = await page.getByTestId("deck-travel-deck").boundingBox();
+    if (!areaBounds || !deckBounds) {
+      throw new Error("Deck selection geometry is unavailable");
+    }
+    const start =
+      selectionCase.view === "Grid"
+        ? {
+            x: deckBounds.x + deckBounds.width + 8,
+            y: deckBounds.y + deckBounds.height - 12,
+          }
+        : { x: deckBounds.x + 8, y: deckBounds.y - 4 };
+    const end =
+      selectionCase.view === "Grid"
+        ? {
+            x: deckBounds.x + deckBounds.width - 48,
+            y: deckBounds.y + 40,
+          }
+        : {
+            x: deckBounds.x + deckBounds.width - 24,
+            y: deckBounds.y + 40,
+          };
+    await page.keyboard.down("Shift");
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.keyboard.up("Shift");
+    await page.mouse.move(end.x, end.y, { steps: 4 });
+    await expect(page.getByTestId("deck-selection-rectangle")).toBeVisible();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -405,6 +434,7 @@ for (const selectionCase of [
       caret: "hide",
       maxDiffPixelRatio: 0.12,
     });
+    await page.mouse.up();
   });
 }
 

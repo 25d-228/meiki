@@ -501,6 +501,19 @@ export async function installMockApi(page: Page): Promise<void> {
             ),
           );
         }
+        if (params.get("decks") === "scroll") {
+          return clone([
+            ...dtos.batchDeckSummaries,
+            ...Array.from({ length: 24 }, (_, index) => ({
+              id: `scroll-deck-${index + 1}`,
+              name: `Scroll fixture ${index + 1}`,
+              is_bundle_stage: false,
+              total_cards: index + 1,
+              due_cards: index % 3,
+              new_cards: index % 2,
+            })),
+          ]);
+        }
         if (
           (bundleImported || params.get("bundleRemoval") === "installed") &&
           !bundleRemoved
