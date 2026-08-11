@@ -200,6 +200,52 @@ for (const visualCase of visualCases) {
   });
 }
 
+for (const vimCase of [
+  {
+    name: "vim-decks-normal-desktop-light",
+    screen: "Decks",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "vim-study-insert-narrow-dark",
+    screen: "Study",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${vimCase.name}`, async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("meiki-vim-keybindings", "true");
+    });
+    await prepare(page, {
+      route: "/",
+      screen: vimCase.screen,
+      theme: vimCase.theme,
+      viewport: vimCase.viewport,
+    });
+    if (vimCase.screen === "Decks") {
+      await page.locator("#main-content").focus();
+      await page.keyboard.press("j");
+      await expect(page.getByTestId("deck-travel-deck")).toBeFocused();
+      await expect(page.getByLabel("Vim mode NORMAL")).toBeVisible();
+    } else {
+      await expect(page.getByLabel("Your answer")).toBeFocused();
+      await expect(page.getByLabel("Vim mode INSERT")).toBeVisible();
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${vimCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 for (const typingCase of [
   {
     name: "typing-practice-desktop-light",
@@ -884,7 +930,7 @@ for (const theme of ["light", "dark"] as const) {
     await answer.fill("行きます");
     await answer.press("Enter");
     await expect(page.getByText("Expected answer")).toBeVisible();
-    await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: /^Good/ }).click();
     await expect(
       page.getByRole("heading", { name: "Review saved" }),
     ).toBeVisible();

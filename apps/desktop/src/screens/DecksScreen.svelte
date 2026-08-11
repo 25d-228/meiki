@@ -6,7 +6,7 @@
   import RiGridLine from "remixicon-svelte/icons/grid-line";
   import RiListUnordered from "remixicon-svelte/icons/list-unordered";
   import RiMore2Line from "remixicon-svelte/icons/more-2-line";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { SvelteDate, SvelteSet } from "svelte/reactivity";
 
   import DeckBatchDeletionFlow from "../components/DeckBatchDeletionFlow.svelte";
@@ -35,6 +35,11 @@
     remainingStudyCards,
     type StudyQueueSession,
   } from "../lib/study-queue";
+  import {
+    eventPathContainsActionControl,
+    readVimKeybindings,
+    vimCommandAllowed,
+  } from "../lib/vim-keybindings";
 
   type Props = {
     onStudy: (deckName: string) => void;
@@ -143,9 +148,12 @@
   let deckInteractionArea: HTMLDivElement;
   let pointerSelection: PointerSelection | null = null;
   let edgeScrollFrame: number | null = null;
+  let vimKeybindingsEnabled = $state(false);
+  let focusedDeckId = $state("");
 
   onMount(() => {
     onDeckContextChange("All decks");
+    vimKeybindingsEnabled = readVimKeybindings();
     if (localStorage.getItem(deckViewPreferenceKey) === "list") {
       deckView = "list";
     }
@@ -198,6 +206,9 @@
         api.listInstalledBundles(),
       ]);
       decks = loadedDecks;
+      if (!loadedDecks.some((deck) => deck.id === focusedDeckId)) {
+        focusedDeckId = loadedDecks[0]?.id ?? "";
+      }
       installedBundles = loadedBundles;
       if (
         activeQueue &&
@@ -247,6 +258,65 @@
     localStorage.setItem(deckViewPreferenceKey, view);
   }
 
+  async function focusDeck(deckId: string): Promise<void> {
+    focusedDeckId = deckId;
+    await tick();
+    deckInteractionArea
+      ?.querySelector<HTMLElement>(`[data-vim-deck-id="${CSS.escape(deckId)}"]`)
+      ?.focus();
+  }
+
+  function moveDeckFocus(direction: -1 | 1): void {
+    if (decks.length === 0) return;
+    const currentIndex = decks.findIndex((deck) => deck.id === focusedDeckId);
+    const nextIndex =
+      currentIndex < 0
+        ? direction === 1
+          ? 0
+          : decks.length - 1
+        : Math.min(decks.length - 1, Math.max(0, currentIndex + direction));
+    void focusDeck(decks[nextIndex].id);
+  }
+
+  function handleVimKeydown(event: KeyboardEvent): void {
+    if (!vimCommandAllowed(event, vimKeybindingsEnabled)) return;
+    const key = event.key.toLowerCase();
+    if (key === "j" || key === "k") {
+      event.preventDefault();
+      moveDeckFocus(key === "j" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (selectedDeckIds.length > 0) {
+        clearSelection();
+      } else if (focusedDeckId) {
+        void focusDeck(focusedDeckId);
+      }
+      return;
+    }
+    const deck = decks.find((candidate) => candidate.id === focusedDeckId);
+    if (!deck) return;
+    if (
+      (event.key === "Enter" || key === "o") &&
+      !(event.key === "Enter" && eventPathContainsActionControl(event))
+    ) {
+      event.preventDefault();
+      onOpen(deck.id, deck.name, deck.is_bundle_stage);
+    } else if (
+      key === "s" &&
+      deck.total_cards > 0 &&
+      !busyDeckId &&
+      !deletionRunning
+    ) {
+      event.preventDefault();
+      void beginStudy(deck);
+    } else if (key === "x" && deck.id !== defaultDeckId) {
+      event.preventDefault();
+      toggleDeckSelection(deck.id);
+    }
+  }
+
   function clearSelection(): void {
     selectedDeckIds = [];
   }
@@ -264,8 +334,7 @@
       event.button !== 0 ||
       !event.isPrimary ||
       !(event.currentTarget instanceof HTMLDivElement) ||
-      (event.target instanceof Element &&
-        event.target.closest(interactiveOriginSelector))
+      pointerOriginIsInteractive(event.target)
     ) {
       return;
     }
@@ -287,6 +356,15 @@
       active: false,
     };
     area.setPointerCapture(event.pointerId);
+  }
+
+  function pointerOriginIsInteractive(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    const interactiveOrigin = target.closest(interactiveOriginSelector);
+    return Boolean(
+      interactiveOrigin &&
+      !interactiveOrigin.hasAttribute("data-vim-deck-item"),
+    );
   }
 
   function updatePointerSelection(event: PointerEvent): void {
@@ -721,6 +799,8 @@
   }
 </script>
 
+<svelte:window onkeydown={handleVimKeydown} />
+
 {#snippet deckCounts(deck: DeckSummaryDto)}
   <dl class="deck-counts">
     <div>
@@ -815,6 +895,13 @@
       </p>
     </div>
     <div class="screen-actions">
+      {#if vimKeybindingsEnabled}
+        <span
+          class="vim-mode-indicator"
+          role="status"
+          aria-label="Vim mode NORMAL">NORMAL</span
+        >
+      {/if}
       {#if installedBundles.length > 0}
         <Button
           variant="outline"
@@ -935,6 +1022,19 @@
                 : deck.id}
               data-selected={selectedDeckIds.includes(deck.id)}
               data-testid={`deck-${deck.id}`}
+              data-vim-deck-item
+              data-vim-deck-id={deck.id}
+              data-vim-focused={focusedDeckId === deck.id}
+              role={vimKeybindingsEnabled ? "group" : undefined}
+              tabindex={vimKeybindingsEnabled
+                ? focusedDeckId === deck.id
+                  ? 0
+                  : -1
+                : undefined}
+              aria-label={vimKeybindingsEnabled
+                ? `Deck ${deck.name}`
+                : undefined}
+              onfocusin={() => (focusedDeckId = deck.id)}
             >
               <Card.Header class="p-0">
                 <Card.Title class="[overflow-wrap:anywhere]" data-deck-name
@@ -969,6 +1069,7 @@
           </Card.Root>
         {:else}
           {#each decks as deck (deck.id)}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex (roving focus must coexist with the row's native action controls) -->
             <article
               class="deck-list-row"
               data-deck-selection-id={deck.id === defaultDeckId
@@ -976,6 +1077,19 @@
                 : deck.id}
               data-selected={selectedDeckIds.includes(deck.id)}
               data-testid={`deck-${deck.id}`}
+              data-vim-deck-item
+              data-vim-deck-id={deck.id}
+              data-vim-focused={focusedDeckId === deck.id}
+              role={vimKeybindingsEnabled ? "group" : undefined}
+              tabindex={vimKeybindingsEnabled
+                ? focusedDeckId === deck.id
+                  ? 0
+                  : -1
+                : undefined}
+              aria-label={vimKeybindingsEnabled
+                ? `Deck ${deck.name}`
+                : undefined}
+              onfocusin={() => (focusedDeckId = deck.id)}
             >
               <h2 class="deck-list-name" data-deck-name>{deck.name}</h2>
               {@render deckCounts(deck)}
@@ -1169,6 +1283,17 @@
     gap: 0.5rem;
   }
 
+  .vim-mode-indicator {
+    align-self: center;
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+
   .deck-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
@@ -1250,6 +1375,11 @@
 
   .deck-list-row[data-selected="true"] {
     box-shadow: 0 0 0 2px var(--primary);
+  }
+
+  :global([data-vim-deck-item]:focus-visible) {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
 
   .deck-list-name {
