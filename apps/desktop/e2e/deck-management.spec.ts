@@ -323,6 +323,12 @@ test("clears a focused study queue when its deck is deleted", async ({
   await expect(page.getByText(/A saved session is active/)).toHaveCount(0);
 
   await page
+    .getByRole("dialog", { name: "Deck deleted" })
+    .getByRole("button", { name: "Close" })
+    .last()
+    .click();
+
+  await page
     .getByTestId("deck-default-deck")
     .getByRole("button", { name: "Study" })
     .click();
@@ -361,6 +367,11 @@ test("keeps cards reachable in Unsorted Trash after direct deck deletion", async
   const unsorted = page.getByTestId("deck-default-deck");
   await expect(unsorted.getByText("Unsorted", { exact: true })).toBeVisible();
   await expect(unsorted).toContainText("0 cards");
+  await page
+    .getByRole("dialog", { name: "Deck deleted" })
+    .getByRole("button", { name: "Close" })
+    .last()
+    .click();
   await unsorted.getByRole("button", { name: "Open" }).click();
   await page.getByRole("button", { name: "Show Trash" }).click();
   const deletedCard = page.getByTestId("card-trashed-card");

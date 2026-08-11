@@ -338,7 +338,9 @@ test("deletes several ordinary decks with one batch command", async ({
   );
   await confirmation.getByRole("button", { name: "Delete selected" }).click();
 
-  await expect(page.getByText("Deleted 3 decks.")).toBeVisible();
+  await expect(
+    page.getByTestId("deletion-activity").getByText("Deleted 3 decks."),
+  ).toBeVisible();
   expect(await batchDeleteRequestCount(page)).toBe(1);
   expect(await deleteDeckRequestCount(page)).toBe(0);
   expect((await lastRequest(page, "delete_decks"))?.args).toMatchObject({
@@ -371,7 +373,9 @@ test("confirms several bundle stages once with permanent-content copy", async ({
     "Personal cards in those stages will be moved to Trash.",
   );
   await confirmation.getByRole("button", { name: "Delete selected" }).click();
-  await expect(page.getByText("Deleted 2 decks.")).toBeVisible();
+  await expect(
+    page.getByTestId("deletion-activity").getByText("Deleted 2 decks."),
+  ).toBeVisible();
   expect(await batchDeleteRequestCount(page)).toBe(1);
 });
 
@@ -397,7 +401,9 @@ test("mixed deletion clears only removed focused queue and Today state", async (
     "Bundled content in 1 bundle stage will be permanently removed.",
   );
   await confirmation.getByRole("button", { name: "Delete selected" }).click();
-  await expect(page.getByText("Deleted 2 decks.")).toBeVisible();
+  await expect(
+    page.getByTestId("deletion-activity").getByText("Deleted 2 decks."),
+  ).toBeVisible();
 
   expect(
     await page.evaluate(() => ({
@@ -429,7 +435,9 @@ test("batch deletion preserves all-decks queue and unrelated Today state", async
     .getByRole("alertdialog", { name: "Delete 1 selected deck?" })
     .getByRole("button", { name: "Delete selected" })
     .click();
-  await expect(page.getByText("Deleted 1 deck.")).toBeVisible();
+  await expect(
+    page.getByTestId("deletion-activity").getByText("Deleted 1 deck."),
+  ).toBeVisible();
 
   expect(
     await page.evaluate(() => ({
@@ -503,7 +511,9 @@ test("post-commit cleanup failure reports that every selected deck was deleted",
     "Decks deleted, but some unused audio could not be cleaned up.",
   );
   await warning.locator('[data-slot="dialog-footer"] button').click();
-  await expect(page.getByText("Deleted 2 decks.")).toBeVisible();
+  await expect(page.getByTestId("deletion-activity")).toContainText(
+    "Decks deleted, but some unused audio could not be cleaned up.",
+  );
   await expect(page.getByTestId("deck-travel-deck")).toHaveCount(0);
   await expect(page.getByTestId("deck-deck:ja-JP:00")).toHaveCount(0);
 });
@@ -538,7 +548,9 @@ test("batch deletion progress is semantic and monotonic", async ({ page }) => {
     progress.getByRole("progressbar", { name: "Cleaning audio" }),
   ).toHaveAttribute("aria-valuenow", "300");
   await expect(progress.getByText("Finalizing", { exact: true })).toBeVisible();
-  await expect(page.getByText("Deleted 2 decks.")).toBeVisible();
+  await expect(
+    page.getByTestId("deletion-activity").getByText("Deleted 2 decks."),
+  ).toBeVisible();
 });
 
 for (const deckView of ["Grid", "List"] as const) {
@@ -674,7 +686,9 @@ test("deletes an ordinary deck from its card once and refreshes Decks in place",
   await expect(
     page.getByRole("heading", { name: "Decks", level: 1 }),
   ).toBeVisible();
-  await expect(page.getByText("Deleted Travel phrases.")).toBeVisible();
+  await expect(
+    page.getByTestId("deletion-activity").getByText("Deleted Travel phrases."),
+  ).toBeVisible();
   expect(await deleteDeckRequestCount(page)).toBe(1);
   expect((await lastRequest(page, "delete_deck"))?.args).toMatchObject({
     request: {
@@ -1069,9 +1083,19 @@ test("removes an installed bundle after one confirmation and leaves unrelated de
 
   await confirmJapaneseBundleRemoval(page);
 
-  const progress = page.getByRole("dialog", { name: "Removing bundle" });
-  await expect(progress.getByRole("status")).toContainText(/Decks\s*1 \/ 6/);
-  await expect(page.getByText("Removed Japanese with 6 decks.")).toBeVisible();
+  const progress = page.getByRole("dialog", { name: "Removing Japanese" });
+  await expect(progress.getByRole("status")).toContainText(
+    /Removing cards\s*300 \/ 9,700/,
+  );
+  await expect(progress.getByRole("progressbar")).toHaveAttribute(
+    "aria-valuemax",
+    "9700",
+  );
+  await expect(
+    page
+      .getByTestId("deletion-activity")
+      .getByText("Removed Japanese with 6 decks."),
+  ).toBeVisible();
   await expect(page.getByTestId("deck-deck:ja-JP:05")).toHaveCount(0);
   await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
   await expect(
@@ -1134,7 +1158,9 @@ test("preserves an all-decks study queue when its bundle decks are removed", asy
   await expect(page.getByText(/A saved session is active/)).toBeVisible();
 
   await confirmJapaneseBundleRemoval(page);
-  await expect(page.getByText(/Removed Japanese/)).toBeVisible();
+  await expect(page.getByTestId("deletion-activity")).toContainText(
+    "Removed Japanese with 6 decks.",
+  );
   await expect(page.getByText(/A saved session is active/)).toBeVisible();
   expect(
     await page.evaluate(() =>
@@ -1151,10 +1177,18 @@ test("resets a removed Today deck selection to All decks", async ({ page }) => {
   });
 
   await confirmJapaneseBundleRemoval(page);
-  await expect(page.getByText(/Removed Japanese/)).toBeVisible();
+  await expect(page.getByTestId("deletion-activity")).toContainText(
+    "Removed Japanese with 6 decks.",
+  );
   expect(
     await page.evaluate(() => localStorage.getItem("meiki-today-deck")),
   ).toBe("__all_decks__");
+
+  await page
+    .getByRole("dialog", { name: "Bundle removed" })
+    .getByRole("button", { name: "Close" })
+    .last()
+    .click();
 
   await page
     .getByRole("navigation", { name: "Primary navigation" })

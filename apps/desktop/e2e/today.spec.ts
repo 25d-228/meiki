@@ -344,7 +344,14 @@ test("recovers the selected Today deck after its bundle is removed and the app r
     .getByRole("alertdialog", { name: "Remove Japanese?" })
     .getByRole("button", { name: "Remove bundle" })
     .click();
-  await expect(page.getByText(/Removed Japanese/)).toBeVisible();
+  await expect(page.getByTestId("deletion-activity")).toContainText(
+    "Removed Japanese with 6 decks.",
+  );
+  await page
+    .getByRole("dialog", { name: "Bundle removed" })
+    .getByRole("button", { name: "Close" })
+    .last()
+    .click();
 
   await page
     .getByRole("navigation", { name: "Primary navigation" })
@@ -409,6 +416,14 @@ test("recovers the selected Today deck after an individual deck is deleted", asy
   await page
     .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
     .getByRole("button", { name: "Delete deck" })
+    .click();
+  await expect(page.getByTestId("deletion-activity")).toContainText(
+    "Deleted Travel phrases.",
+  );
+  await page
+    .getByRole("dialog", { name: "Deck deleted" })
+    .getByRole("button", { name: "Close" })
+    .last()
     .click();
   await page
     .getByRole("navigation", { name: "Primary navigation" })

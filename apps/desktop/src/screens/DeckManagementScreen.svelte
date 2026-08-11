@@ -17,6 +17,7 @@
   import type { DeckCardStatusDto } from "../lib/generated/DeckCardStatusDto";
   import type { DeckCardTrashDto } from "../lib/generated/DeckCardTrashDto";
   import type { SchedulerSettingsDto } from "../lib/generated/SchedulerSettingsDto";
+  import type { SingleDeckDeletion } from "../lib/deletion-activity";
   import { localDayBounds } from "../lib/local-day";
   import DeckDeletionFlow from "../components/DeckDeletionFlow.svelte";
 
@@ -26,7 +27,8 @@
     isBundleStage: boolean;
     onBack: () => void;
     onCreate: () => void;
-    onDeleted: () => void;
+    deletionRunning: boolean;
+    onDeleteDeck: (deletion: SingleDeckDeletion) => void;
     onEdit: (cardId: string) => void;
     onRename: (name: string) => void;
   };
@@ -40,7 +42,8 @@
     isBundleStage,
     onBack,
     onCreate,
-    onDeleted,
+    deletionRunning,
+    onDeleteDeck,
     onEdit,
     onRename,
   }: Props = $props();
@@ -241,7 +244,7 @@
   }
 
   async function openDeleteDeck(): Promise<void> {
-    if (busyDeckAction) return;
+    if (busyDeckAction || deletionRunning) return;
     busyDeckAction = true;
     error = "";
     try {
@@ -311,7 +314,7 @@
         >
         <Button
           variant="destructive"
-          disabled={busyDeckAction}
+          disabled={busyDeckAction || deletionRunning}
           onclick={() => void openDeleteDeck()}>Delete deck</Button
         >
       {/if}
@@ -578,7 +581,8 @@
   destinationDecks={overview?.decks.filter(
     (deck) => deck.id !== selectedDeckId,
   ) ?? []}
-  onFinished={() => onDeleted()}
+  {deletionRunning}
+  onDelete={onDeleteDeck}
 />
 
 <Dialog.Root
