@@ -29,14 +29,6 @@ async function navigatePrimary(
   ).toBeVisible();
 }
 
-async function waitForDocumentInteractionUnlock(page: Page): Promise<void> {
-  await expect
-    .poll(() =>
-      page.evaluate(() => getComputedStyle(document.body).pointerEvents),
-    )
-    .not.toBe("none");
-}
-
 async function expectActionGroupGap(
   group: Locator,
   minimumActions = 2,
@@ -176,10 +168,8 @@ test("keeps Study prompt, reveal, grading, audio, and saved actions separated", 
   await expectActionGroupGap(page.locator(".next-actions"));
 });
 
-test("keeps import, bundle, and deck deletion dialog actions separated", async ({
-  page,
-}) => {
-  await page.goto("/?bundleRemoval=installed&decks=batch");
+test("keeps import and bundle dialog actions separated", async ({ page }) => {
+  await page.goto("/?bundleRemoval=installed");
   await navigatePrimary(page, "Decks");
 
   await page.getByRole("button", { name: "Import bundle" }).click();
@@ -206,8 +196,13 @@ test("keeps import, bundle, and deck deletion dialog actions separated", async (
   await bundleRemoval.getByRole("button", { name: "Cancel" }).click();
   await expect(bundleRemoval).toBeHidden();
   await expect(bundleActions).toBeHidden();
-  await waitForDocumentInteractionUnlock(page);
+});
 
+test("keeps single-deck deletion dialog actions separated", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await navigatePrimary(page, "Decks");
   const travelDeck = page.getByTestId("deck-travel-deck");
   await travelDeck
     .getByRole("button", { name: "Actions for Travel phrases" })
@@ -227,9 +222,16 @@ test("keeps import, bundle, and deck deletion dialog actions separated", async (
   await expectActionGroupGap(moveDialog.locator('[data-slot="dialog-footer"]'));
   await moveDialog.getByRole("button", { name: "Cancel" }).click();
   await expect(moveDialog).toBeHidden();
+  await expect(deckDeletion).toBeHidden();
+});
 
+test("keeps batch-deletion dialog actions separated", async ({ page }) => {
+  await page.goto("/?decks=batch");
+  await navigatePrimary(page, "Decks");
   await page.getByRole("checkbox", { name: "Select Travel phrases" }).click();
-  await page.getByRole("checkbox", { name: "Select Listening drills" }).click();
+  await page
+    .getByRole("checkbox", { name: "Select Listening practice" })
+    .click();
   await page.getByRole("button", { name: "Delete selected" }).click();
   const batchDeletion = page.getByRole("alertdialog", {
     name: "Delete 2 selected decks?",
