@@ -21,6 +21,10 @@
   } from "../lib/media";
   import type { ThemeMode } from "../lib/ui";
   import {
+    readStudyVisualKeyboardPreference,
+    writeStudyVisualKeyboardPreference,
+  } from "../lib/study-visual-keyboard";
+  import {
     readVimKeybindings,
     writeVimKeybindings,
   } from "../lib/vim-keybindings";
@@ -44,6 +48,7 @@
   let policyPreview = $state<SchedulerPolicyPreviewDto | null>(null);
   let previewedRequest = $state<UpdateSchedulerSettingsRequest | null>(null);
   let autoplayPromptAudio = $state(true);
+  let studyVisualKeyboardEnabled = $state(false);
   let vimKeybindingsEnabled = $state(false);
   let busy = $state(false);
   let notice = $state("");
@@ -51,6 +56,7 @@
 
   onMount(() => {
     autoplayPromptAudio = readPromptAudioAutoplay();
+    studyVisualKeyboardEnabled = readStudyVisualKeyboardPreference();
     vimKeybindingsEnabled = readVimKeybindings();
     void loadSettings();
   });
@@ -167,6 +173,11 @@
   function updateVimKeybindings(enabled: boolean): void {
     vimKeybindingsEnabled = enabled;
     writeVimKeybindings(enabled);
+  }
+
+  function updateStudyVisualKeyboard(enabled: boolean): void {
+    studyVisualKeyboardEnabled = enabled;
+    writeStudyVisualKeyboardPreference(enabled);
   }
 
   async function importParameters(): Promise<void> {
@@ -535,6 +546,27 @@
             </Alert.Description>
           </Alert.Root>
         {/if}
+      </div>
+
+      <Separator />
+
+      <div class="setting-row">
+        <div>
+          <strong>Show visual keyboard during Study</strong>
+          <p>
+            Shows only your physical keys and input-method state while the card
+            front is visible.
+          </p>
+        </div>
+        <label class="toggle" for="study-visual-keyboard">
+          <Switch
+            id="study-visual-keyboard"
+            aria-label="Show visual keyboard during Study"
+            checked={studyVisualKeyboardEnabled}
+            onCheckedChange={updateStudyVisualKeyboard}
+          />
+          <span>{studyVisualKeyboardEnabled ? "On" : "Off"}</span>
+        </label>
       </div>
 
       <Separator />

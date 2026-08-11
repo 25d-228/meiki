@@ -12,6 +12,8 @@
   import TypingPractice from "../components/TypingPractice.svelte";
   import {
     detectInstructionPlatform,
+    instructionPlatformPreferenceKey,
+    isInstructionPlatform,
     typingLessons,
     typingTracks,
     type InstructionPlatform,
@@ -24,7 +26,6 @@
     vimCommandAllowed,
   } from "../lib/vim-keybindings";
 
-  const platformPreferenceKey = "meiki-typing-platform";
   const languagePreferenceKey = "meiki-typing-language";
   const completionPreferenceKey = "meiki-typing-completed";
 
@@ -54,12 +55,14 @@
     }
 
     detectedPlatform = detectInstructionPlatform(navigator);
-    const savedPlatform = localStorage.getItem(platformPreferenceKey);
+    const savedPlatform = localStorage.getItem(
+      instructionPlatformPreferenceKey,
+    );
     if (isInstructionPlatform(savedPlatform)) {
       selectedPlatform = savedPlatform;
     } else if (detectedPlatform) {
       selectedPlatform = detectedPlatform;
-      localStorage.setItem(platformPreferenceKey, detectedPlatform);
+      localStorage.setItem(instructionPlatformPreferenceKey, detectedPlatform);
     }
 
     const savedCompletion = localStorage.getItem(completionPreferenceKey);
@@ -81,12 +84,6 @@
 
   function isTypingLanguage(value: string | null): value is TypingLanguage {
     return typingTracks.some((track) => track.language === value);
-  }
-
-  function isInstructionPlatform(
-    value: string | null,
-  ): value is InstructionPlatform {
-    return value === "windows" || value === "macos";
   }
 
   function chooseLanguage(language: TypingLanguage): void {
@@ -116,7 +113,7 @@
 
   function choosePlatform(platform: InstructionPlatform): void {
     selectedPlatform = platform;
-    localStorage.setItem(platformPreferenceKey, platform);
+    localStorage.setItem(instructionPlatformPreferenceKey, platform);
   }
 
   function completeLesson(lessonId: string): void {

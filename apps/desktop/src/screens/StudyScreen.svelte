@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import { SvelteDate } from "svelte/reactivity";
 
+  import TypingKeyboard from "../components/TypingKeyboard.svelte";
   import { api } from "../lib/api";
   import * as Alert from "$lib/components/ui/alert/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -23,6 +24,7 @@
     writePromptAudioAutoplay,
   } from "../lib/media";
   import { messages } from "../lib/messages";
+  import { readStudyVisualKeyboardPreference } from "../lib/study-visual-keyboard";
   import {
     clearStudyQueue,
     clearStudySession,
@@ -36,6 +38,14 @@
     writeStudyQueue,
     type StudyQueueSession,
   } from "../lib/study-queue";
+  import {
+    detectInstructionPlatform,
+    instructionPlatformPreferenceKey,
+    isInstructionPlatform,
+    koreanKeyLegends,
+    typingCodeLabel,
+    type InstructionPlatform,
+  } from "../lib/typing-lessons";
   import {
     readVimKeybindings,
     type VimMode,
@@ -104,6 +114,21 @@
   let nextDueAt = $state<string | null>(null);
   let vimKeybindingsEnabled = $state(false);
   let vimMode = $state<VimMode>("normal");
+  let studyVisualKeyboardEnabled = $state(false);
+  let studyKeyboardPlatform = $state<InstructionPlatform | null>(null);
+  let studyKeyboardPressedCodes = $state<string[]>([]);
+  let studyKeyboardPhysicalTrail = $state<string[]>([]);
+  let studyKeyboardComposition = $state("");
+  let studyKeyboardCommittedOutput = $state("");
+  let studyKeyboardLanguage = $derived(primaryLanguage(card?.language_tag));
+  let studyKeyboardLegends = $derived(
+    studyKeyboardLanguage === "ko" && studyKeyboardPlatform
+      ? koreanKeyLegends
+      : {},
+  );
+  let studyKeyboardGuidance = $derived(
+    passiveKeyboardGuidance(studyKeyboardLanguage, studyKeyboardPlatform),
+  );
   const firstReadyPromptAudioId = $derived(
     card?.prompt_media.find(
       (media) =>
@@ -113,11 +138,20 @@
 
   onMount(() => {
     autoplayPromptAudio = readPromptAudioAutoplay();
+    studyVisualKeyboardEnabled = readStudyVisualKeyboardPreference();
+    const savedPlatform = localStorage.getItem(
+      instructionPlatformPreferenceKey,
+    );
+    studyKeyboardPlatform = isInstructionPlatform(savedPlatform)
+      ? savedPlatform
+      : detectInstructionPlatform(navigator);
     vimKeybindingsEnabled = readVimKeybindings();
     void prepareStudy();
+    return resetStudyKeyboardState;
   });
 
   async function prepareStudy(): Promise<void> {
+    resetStudyKeyboardState();
     view = "loading";
     errorMessage = "";
     try {
@@ -244,6 +278,7 @@
   }
 
   async function loadCard(): Promise<void> {
+    resetStudyKeyboardState();
     view = "loading";
     errorMessage = "";
     sessionNotice = "";
@@ -427,6 +462,7 @@
       responseDurationMs = 0;
       pendingUndoEventId = null;
       completionKind = null;
+      resetStudyKeyboardState();
       restoreStudyQueueCard();
       undoNotice = "Last review undone. The card is back in the queue.";
       view = "prompt";
@@ -515,6 +551,7 @@
 
   async function retry(): Promise<void> {
     const action = retryAction;
+    resetStudyKeyboardState();
     view = recoveryView;
     if (action === "recover") {
       await prepareStudy();
@@ -532,6 +569,7 @@
   }
 
   function finishQueue(): void {
+    resetStudyKeyboardState();
     clearStudyQueue();
     clearStudySession();
     queueSession = null;
@@ -553,6 +591,7 @@
   }
 
   function handleAnswerKeydown(event: KeyboardEvent): void {
+    trackStudyKeyboardKeydown(event);
     if (event.key === "Escape" && vimKeybindingsEnabled) {
       if (event.isComposing || composing) return;
       event.preventDefault();
@@ -564,6 +603,79 @@
       event.preventDefault();
       void checkAnswer();
     }
+  }
+
+  function trackStudyKeyboardKeydown(event: KeyboardEvent): void {
+    if (!studyVisualKeyboardEnabled || !event.code) return;
+    if (!studyKeyboardPressedCodes.includes(event.code)) {
+      studyKeyboardPressedCodes = [...studyKeyboardPressedCodes, event.code];
+    }
+    if (!event.repeat) {
+      studyKeyboardPhysicalTrail = [...studyKeyboardPhysicalTrail, event.code];
+    }
+  }
+
+  function releaseStudyKeyboardKey(event: KeyboardEvent): void {
+    studyKeyboardPressedCodes = studyKeyboardPressedCodes.filter(
+      (code) => code !== event.code,
+    );
+  }
+
+  function updateStudyKeyboardInput(event: Event): void {
+    if (!studyVisualKeyboardEnabled || composing) return;
+    studyKeyboardCommittedOutput = (event.currentTarget as HTMLInputElement)
+      .value;
+  }
+
+  function startStudyKeyboardComposition(event: CompositionEvent): void {
+    composing = true;
+    if (studyVisualKeyboardEnabled) {
+      studyKeyboardComposition = event.data;
+    }
+  }
+
+  function updateStudyKeyboardComposition(event: CompositionEvent): void {
+    if (studyVisualKeyboardEnabled) {
+      studyKeyboardComposition = event.data;
+    }
+  }
+
+  function endStudyKeyboardComposition(event: CompositionEvent): void {
+    composing = false;
+    if (!studyVisualKeyboardEnabled) return;
+    studyKeyboardComposition = "";
+    studyKeyboardCommittedOutput = (event.currentTarget as HTMLInputElement)
+      .value;
+  }
+
+  function resetStudyKeyboardState(): void {
+    studyKeyboardPressedCodes = [];
+    studyKeyboardPhysicalTrail = [];
+    studyKeyboardComposition = "";
+    studyKeyboardCommittedOutput = "";
+    composing = false;
+  }
+
+  function primaryLanguage(languageTag: string | null | undefined): string {
+    if (!languageTag?.trim()) return "";
+    try {
+      return new Intl.Locale(languageTag).language.toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
+  function passiveKeyboardGuidance(
+    language: string,
+    platform: InstructionPlatform | null,
+  ): string {
+    if (!platform) {
+      return "Configure the language input source through your desktop environment.";
+    }
+    if (language !== "fr" && language !== "es") return "";
+    return platform === "windows"
+      ? "Use United States-International on Windows."
+      : "Use the standard U.S. layout on macOS.";
   }
 
   function handleWindowKeydown(event: KeyboardEvent): void {
@@ -665,7 +777,11 @@
   }
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} />
+<svelte:window
+  onkeydown={handleWindowKeydown}
+  onkeyup={releaseStudyKeyboardKey}
+  onblur={() => (studyKeyboardPressedCodes = [])}
+/>
 
 <section
   bind:this={studyElement}
@@ -870,9 +986,12 @@
                 placeholder={messages.answerPlaceholder}
                 disabled={view === "checking"}
                 aria-describedby="answer-guidance"
-                oncompositionstart={() => (composing = true)}
-                oncompositionend={() => (composing = false)}
+                oninput={updateStudyKeyboardInput}
+                oncompositionstart={startStudyKeyboardComposition}
+                oncompositionupdate={updateStudyKeyboardComposition}
+                oncompositionend={endStudyKeyboardComposition}
                 onkeydown={handleAnswerKeydown}
+                onkeyup={releaseStudyKeyboardKey}
                 onfocus={() => vimKeybindingsEnabled && (vimMode = "insert")}
                 onblur={() => vimKeybindingsEnabled && (vimMode = "normal")}
               />
@@ -890,6 +1009,61 @@
               {view === "checking" ? messages.checking : messages.checkAnswer}
             </Button>
           </form>
+          {#if studyVisualKeyboardEnabled}
+            <section
+              class="study-visual-keyboard"
+              data-testid="study-visual-keyboard"
+              aria-labelledby="study-visual-keyboard-title"
+            >
+              <div class="study-keyboard-heading">
+                <h2 id="study-visual-keyboard-title">Visual keyboard</h2>
+                {#if studyKeyboardGuidance}
+                  <p data-testid="study-keyboard-guidance">
+                    {studyKeyboardGuidance}
+                  </p>
+                {/if}
+              </div>
+              <dl class="study-keyboard-state">
+                <div>
+                  <dt>Physical keys typed</dt>
+                  <dd data-testid="study-keyboard-physical-trail">
+                    {studyKeyboardPhysicalTrail.length
+                      ? studyKeyboardPhysicalTrail
+                          .map(typingCodeLabel)
+                          .join(" → ")
+                      : "None yet"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Current composition</dt>
+                  <dd
+                    class="content-text"
+                    data-testid="study-keyboard-composition"
+                  >
+                    {studyKeyboardComposition || "None"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Committed output</dt>
+                  <dd
+                    class="content-text"
+                    data-testid="study-keyboard-committed-output"
+                  >
+                    {studyKeyboardCommittedOutput || "None"}
+                  </dd>
+                </div>
+              </dl>
+              <TypingKeyboard
+                expectedCode={null}
+                expectedCodes={[]}
+                pressedCodes={studyKeyboardPressedCodes}
+                completedCodes={[]}
+                incorrectCode={null}
+                sequenceCompleted={false}
+                keyLegends={studyKeyboardLegends}
+              />
+            </section>
+          {/if}
         {:else if reveal && (view === "revealed" || view === "committing")}
           <div class="reveal" aria-live="polite">
             <div class="answer-comparison">
@@ -1143,11 +1317,77 @@
     margin: 1.25rem auto 0;
   }
 
+  .study-visual-keyboard {
+    display: grid;
+    min-width: 0;
+    gap: 1rem;
+    width: 100%;
+    margin-top: 1.5rem;
+    padding: clamp(0.75rem, 2vw, 1rem);
+    border: 1px solid var(--border);
+    border-radius: 0;
+    background: color-mix(in oklch, var(--muted) 35%, transparent);
+  }
+
+  .study-keyboard-heading {
+    display: grid;
+    min-width: 0;
+    gap: 0.25rem;
+  }
+
+  .study-keyboard-heading h2,
+  .study-keyboard-heading p,
+  .study-keyboard-state {
+    margin: 0;
+  }
+
+  .study-keyboard-heading h2 {
+    font-size: var(--text-base);
+  }
+
+  .study-keyboard-heading p {
+    color: var(--muted-foreground);
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
+  }
+
+  .study-keyboard-state {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .study-keyboard-state div {
+    min-width: 0;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+  }
+
+  .study-keyboard-state dt {
+    color: var(--muted-foreground);
+    font-size: var(--text-xs);
+    font-weight: 700;
+  }
+
+  .study-keyboard-state dd {
+    margin: 0.25rem 0 0;
+    overflow-wrap: anywhere;
+    font-size: var(--text-sm);
+    white-space: pre-wrap;
+  }
+
   .input-guidance {
     margin: 0.5rem 0 1rem;
     color: var(--muted-foreground);
     font-size: var(--text-xs);
     line-height: 1.5;
+  }
+
+  @media (max-width: 560px) {
+    .study-keyboard-state {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .answer-comparison {
