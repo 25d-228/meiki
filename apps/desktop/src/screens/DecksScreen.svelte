@@ -279,6 +279,18 @@
     void focusDeck(decks[nextIndex].id);
   }
 
+  function openDeck(deck: DeckSummaryDto): void {
+    onOpen(deck.id, deck.name, deck.is_bundle_stage);
+  }
+
+  function openDeckFromDoubleClick(
+    event: MouseEvent,
+    deck: DeckSummaryDto,
+  ): void {
+    if (pointerOriginIsInteractive(event.target)) return;
+    openDeck(deck);
+  }
+
   function handleVimKeydown(event: KeyboardEvent): void {
     if (!vimCommandAllowed(event, vimKeybindingsEnabled)) return;
     const key = event.key.toLowerCase();
@@ -303,7 +315,7 @@
       !(event.key === "Enter" && eventPathContainsActionControl(event))
     ) {
       event.preventDefault();
-      onOpen(deck.id, deck.name, deck.is_bundle_stage);
+      openDeck(deck);
     } else if (
       key === "s" &&
       deck.total_cards > 0 &&
@@ -846,11 +858,7 @@
 
 {#snippet deckNavigationActions(deck: DeckSummaryDto)}
   <div class="deck-navigation-actions">
-    <Button
-      variant="outline"
-      onclick={() => onOpen(deck.id, deck.name, deck.is_bundle_stage)}
-      >Open</Button
-    >
+    <Button variant="outline" onclick={() => openDeck(deck)}>Open</Button>
     <Button
       disabled={busyDeckId !== "" || deck.total_cards === 0}
       onclick={() => void beginStudy(deck)}
@@ -1060,6 +1068,7 @@
                 ? `Deck ${deck.name}`
                 : undefined}
               onfocusin={() => (focusedDeckId = deck.id)}
+              ondblclick={(event) => openDeckFromDoubleClick(event, deck)}
             >
               <Card.Header class="p-0">
                 <Card.Title class="[overflow-wrap:anywhere]" data-deck-name
@@ -1116,6 +1125,7 @@
                 ? `Deck ${deck.name}`
                 : undefined}
               onfocusin={() => (focusedDeckId = deck.id)}
+              ondblclick={(event) => openDeckFromDoubleClick(event, deck)}
             >
               <h2 class="deck-list-name" data-deck-name>{deck.name}</h2>
               {@render deckCounts(deck)}
