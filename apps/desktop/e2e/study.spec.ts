@@ -75,7 +75,7 @@ test("maps answer and grade requests and renders returned DTOs", async ({
     request: { card_id: "due-card", raw_response: "行きます" },
   });
 
-  await page.getByRole("button", { name: /^Easy/ }).click();
+  await page.keyboard.press("4");
   await expect(
     page.getByRole("heading", { name: "Review saved" }),
   ).toBeVisible();
@@ -170,7 +170,7 @@ test("persists the Study autoplay toggle and applies it to the next card", async
 
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
-  await page.getByRole("button", { name: /^Good/ }).click();
+  await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Continue" }).click();
 
   await expect(page.getByText(/Second card ·/)).toBeVisible();
@@ -203,7 +203,6 @@ test("plays pauses replays and seeks with the custom audio control", async ({
 }) => {
   await page.addInitScript(() => {
     localStorage.setItem("meiki-autoplay-prompt-audio", "false");
-    localStorage.setItem("meiki-vim-keybindings", "true");
   });
   await openStudy(page, "/?media=ready");
   const audio = page.locator("audio");
@@ -367,7 +366,7 @@ test("decodes non-silent managed MP3 bytes and cleans up prompt and reveal URLs"
     .poll(() => revealAudio.evaluate((element) => element.ended))
     .toBe(true);
   const revealUrl = await revealAudio.getAttribute("src");
-  await page.getByRole("button", { name: /^Good/ }).click();
+  await page.keyboard.press("3");
   await expect(
     page.getByRole("heading", { name: "Review saved" }),
   ).toBeVisible();
@@ -689,9 +688,6 @@ test("renders difference semantics without altering raw input", async ({
 test("maps keyboard grading and undo without browser persistence logic", async ({
   page,
 }) => {
-  await page.addInitScript(() => {
-    localStorage.setItem("meiki-vim-keybindings", "true");
-  });
   await openStudy(page, "/");
   await page.keyboard.type("行きます");
   await page.keyboard.press("Enter");
@@ -728,7 +724,7 @@ test("offers UI retries for interrupted command responses", async ({
   await openStudy(page, "/?failure=grade");
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
-  await page.getByRole("button", { name: /^Good/ }).click();
+  await page.keyboard.press("Enter");
   await expect(
     page.getByText("The review commit was interrupted."),
   ).toBeVisible();

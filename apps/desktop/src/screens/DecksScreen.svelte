@@ -1034,7 +1034,7 @@
               aria-label={vimKeybindingsEnabled
                 ? `Deck ${deck.name}`
                 : undefined}
-              onfocus={() => (focusedDeckId = deck.id)}
+              onfocusin={() => (focusedDeckId = deck.id)}
             >
               <Card.Header class="p-0">
                 <Card.Title class="[overflow-wrap:anywhere]" data-deck-name
@@ -1089,7 +1089,7 @@
               aria-label={vimKeybindingsEnabled
                 ? `Deck ${deck.name}`
                 : undefined}
-              onfocus={() => (focusedDeckId = deck.id)}
+              onfocusin={() => (focusedDeckId = deck.id)}
             >
               <h2 class="deck-list-name" data-deck-name>{deck.name}</h2>
               {@render deckCounts(deck)}

@@ -34,13 +34,13 @@ export function vimCommandAllowed(
   event: KeyboardEvent,
   enabled: boolean,
   compositionActive = false,
+  primaryModifierAllowed = false,
 ): boolean {
   return (
     enabled &&
     !compositionActive &&
     !event.isComposing &&
-    !event.ctrlKey &&
-    !event.metaKey &&
+    (primaryModifierAllowed || (!event.ctrlKey && !event.metaKey)) &&
     !event.altKey &&
     !event.getModifierState("AltGraph") &&
     !pathMatches(event, editableControlSelector) &&

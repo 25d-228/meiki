@@ -133,20 +133,47 @@ test("disabled Vim commands leave Decks, Typing, and Study behavior unchanged", 
   await navigate(page, "Today");
   await page.getByRole("button", { name: "Start study" }).click();
   const answer = page.getByLabel("Your answer");
+  await page.locator("#main-content").focus();
+  for (const key of ["u", "i"]) {
+    await page.keyboard.press(key);
+  }
+  await expect(answer).not.toBeFocused();
+  expect(await requestCount(page, "grade_review")).toBe(0);
+  expect(await requestCount(page, "undo_review")).toBe(0);
+});
+
+test("Study preserves replay, suggested grading, and next-state Enter when Vim is Off", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("meiki-autoplay-prompt-audio", "false");
+  });
+  await openStudy(page, "/?media=ready&reconcile=request");
+  const answer = page.getByLabel("Your answer");
   await answer.fill("行きます");
   await answer.press("Enter");
   await expect(
     page.getByText("Expected answer", { exact: true }),
   ).toBeVisible();
+
   await page.locator("#main-content").focus();
-  for (const key of ["Enter", "r", "u", "i", "1", "2", "3", "4"]) {
-    await page.keyboard.press(key);
-  }
-  expect(await requestCount(page, "grade_review")).toBe(0);
-  expect(await requestCount(page, "undo_review")).toBe(0);
-  await page.getByRole("button", { name: /^Good/ }).click();
-  await page.keyboard.press("ControlOrMeta+z");
-  await expect(page.getByText("Last review undone.")).toBeVisible();
+  await page.keyboard.press("R");
+  expect(
+    await page.evaluate(() =>
+      Number(localStorage.getItem("meiki-e2e-media-play-count") ?? "0"),
+    ),
+  ).toBe(1);
+
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("heading", { name: "Review saved" }),
+  ).toBeVisible();
+  expect((await lastRequest(page, "grade_review"))?.args).toMatchObject({
+    request: { chosen_grade: "good" },
+  });
+
+  await page.keyboard.press("Enter");
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
 });
 
 test("Decks supports bounded roving commands in Grid and List without blocking rectangle selection", async ({
@@ -248,6 +275,42 @@ test("Decks Vim study respects empty decks and uses the existing study flow", as
   ).toBeVisible();
 });
 
+test("Deck descendant controls transfer focus ownership to their containing deck", async ({
+  page,
+}) => {
+  await enableVimKeybindings(page);
+  await openDecks(page);
+  const unsorted = page.getByTestId("deck-default-deck");
+  const travel = page.getByTestId("deck-travel-deck");
+  const travelOpen = travel.getByRole("button", { name: "Open" });
+
+  await expect(unsorted).toHaveAttribute("data-vim-focused", "true");
+  await travelOpen.focus();
+  await expect(travel).toHaveAttribute("data-vim-focused", "true");
+  await expect(unsorted).toHaveAttribute("data-vim-focused", "false");
+  await page.keyboard.press("Escape");
+  await expect(travel).toBeFocused();
+
+  await travelOpen.focus();
+  await page.keyboard.press("o");
+  await expect(
+    page.getByRole("heading", { name: "Travel phrases", level: 1 }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Unsorted", level: 1 }),
+  ).toHaveCount(0);
+
+  await navigate(page, "Decks");
+  const nativeOpen = page
+    .getByTestId("deck-travel-deck")
+    .getByRole("button", { name: "Open" });
+  await nativeOpen.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("heading", { name: "Travel phrases", level: 1 }),
+  ).toBeVisible();
+});
+
 test("opened-deck cards use roving edit commands while search and overlays retain input ownership", async ({
   page,
 }) => {
@@ -257,7 +320,6 @@ test("opened-deck cards use roving edit commands while search and overlays retai
   await page.keyboard.press("j");
   await page.keyboard.press("o");
 
-  const firstCard = page.getByTestId("card-card-ar");
   const secondCard = page.getByTestId("card-travel-new-card");
   await expect(page.getByLabel("Vim mode NORMAL")).toBeVisible();
   await page.locator("#main-content").focus();
@@ -271,7 +333,7 @@ test("opened-deck cards use roving edit commands while search and overlays retai
   await expect(secondCard).toHaveAttribute("data-vim-focused", "true");
   await search.fill("");
 
-  await firstCard.getByRole("button", { name: "Move", exact: true }).click();
+  await secondCard.getByRole("button", { name: "Move", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Move card" });
   await page.keyboard.press("o");
   await expect(dialog).toBeVisible();
@@ -298,6 +360,44 @@ test("opened-deck cards use roving edit commands while search and overlays retai
   expect(
     (await lastRequest(page, "get_authoring_draft_for_card"))?.args,
   ).toMatchObject({ cardId: "card-ar" });
+});
+
+test("opened-deck descendant controls transfer focus ownership to their containing card", async ({
+  page,
+}) => {
+  await enableVimKeybindings(page);
+  await openDecks(page);
+  await page
+    .getByTestId("deck-travel-deck")
+    .getByRole("button", { name: "Open" })
+    .click();
+
+  const firstCard = page.getByTestId("card-card-ar");
+  const laterCard = page.getByTestId("card-travel-new-card");
+  const laterEdit = laterCard.getByRole("button", { name: "Edit" });
+  await expect(firstCard).toHaveAttribute("data-vim-focused", "true");
+  await laterEdit.focus();
+  await expect(laterCard).toHaveAttribute("data-vim-focused", "true");
+  await expect(firstCard).toHaveAttribute("data-vim-focused", "false");
+  await page.keyboard.press("Escape");
+  await expect(laterCard).toBeFocused();
+
+  await laterEdit.focus();
+  await page.keyboard.press("o");
+  await expect(
+    page.getByRole("heading", { name: "Add / Edit card", level: 1 }),
+  ).toBeVisible();
+  expect(
+    (await lastRequest(page, "get_authoring_draft_for_card"))?.args,
+  ).toMatchObject({ cardId: "travel-new-card" });
+
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  const laterMove = page
+    .getByTestId("card-travel-new-card")
+    .getByRole("button", { name: "Move", exact: true });
+  await laterMove.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Move card" })).toBeVisible();
 });
 
 test("Typing keeps NORMAL and INSERT synchronized across lesson, Retry, and IME-safe input actions", async ({
@@ -417,13 +517,13 @@ for (const [key, grade] of [
   ["3", "good"],
   ["4", "easy"],
 ] as const) {
-  test(`Study Vim ${key} submits the ${grade} grade`, async ({ page }) => {
-    await enableVimKeybindings(page);
+  test(`Study preserves ${key} for the ${grade} grade when Vim is Off`, async ({
+    page,
+  }) => {
     await openStudy(page);
     const answer = page.getByLabel("Your answer");
     await answer.fill("行きます");
-    await answer.press("Escape");
-    await page.keyboard.press("Enter");
+    await answer.press("Enter");
     await page.keyboard.press(key);
     await expect(
       page.getByRole("heading", { name: "Review saved" }),

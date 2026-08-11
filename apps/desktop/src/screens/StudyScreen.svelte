@@ -567,42 +567,61 @@
   }
 
   function handleWindowKeydown(event: KeyboardEvent): void {
-    if (composing || event.isComposing) return;
+    const key = event.key.toLowerCase();
     if (
       (event.metaKey || event.ctrlKey) &&
-      event.key.toLowerCase() === "z" &&
+      key === "z" &&
       view === "next" &&
       result
     ) {
+      if (!vimCommandAllowed(event, true, composing, true)) return;
       event.preventDefault();
       void undoReview();
       return;
     }
 
-    const key = event.key.toLowerCase();
-    if (vimCommandAllowed(event, true, composing)) {
-      if (
-        key === "e" &&
-        (view === "prompt" || view === "revealed" || view === "next")
-      ) {
+    if (!vimCommandAllowed(event, true, composing)) return;
+    if (
+      key === "e" &&
+      (view === "prompt" || view === "revealed" || view === "next")
+    ) {
+      event.preventDefault();
+      beginEdit();
+      return;
+    }
+    if (key === "s" && (view === "prompt" || view === "revealed")) {
+      event.preventDefault();
+      void suspendCard();
+      return;
+    }
+    if (key === "r" && (view === "prompt" || view === "revealed")) {
+      event.preventDefault();
+      replayAudio();
+      return;
+    }
+    if (event.key === "Enter" && view === "revealed" && reveal) {
+      event.preventDefault();
+      void grade(reveal.suggested_grade);
+      return;
+    }
+    if (event.key === "Enter" && view === "next") {
+      event.preventDefault();
+      void continueStudy();
+      return;
+    }
+    if (view === "revealed") {
+      const chosenGrade = grades[Number(event.key) - 1];
+      if (chosenGrade) {
         event.preventDefault();
-        beginEdit();
-        return;
-      }
-      if (key === "s" && (view === "prompt" || view === "revealed")) {
-        event.preventDefault();
-        void suspendCard();
+        void grade(chosenGrade);
         return;
       }
     }
 
-    if (!vimCommandAllowed(event, vimKeybindingsEnabled, composing)) return;
+    if (!vimKeybindingsEnabled) return;
     if (key === "i" && view === "prompt") {
       event.preventDefault();
       void focusAnswer();
-    } else if (key === "r" && (view === "prompt" || view === "revealed")) {
-      event.preventDefault();
-      replayAudio();
     } else if (
       key === "u" &&
       view === "next" &&
@@ -615,18 +634,7 @@
       if (view === "prompt") {
         event.preventDefault();
         void checkAnswer();
-      } else if (view === "revealed" && reveal) {
-        event.preventDefault();
-        void grade(reveal.suggested_grade);
-      } else if (view === "next") {
-        event.preventDefault();
-        void continueStudy();
       }
-    } else if (view === "revealed") {
-      const chosenGrade = grades[Number(event.key) - 1];
-      if (!chosenGrade) return;
-      event.preventDefault();
-      void grade(chosenGrade);
     }
   }
 

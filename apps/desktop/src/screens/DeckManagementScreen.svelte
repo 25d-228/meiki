@@ -449,7 +449,7 @@
           aria-label={vimKeybindingsEnabled
             ? `Card ${card.sentence}`
             : undefined}
-          onfocus={() => (focusedCardId = card.id)}
+          onfocusin={() => (focusedCardId = card.id)}
         >
           <Card.Header class="p-0">
             <div class="card-heading">
