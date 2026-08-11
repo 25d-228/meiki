@@ -240,7 +240,7 @@
 
   .audio-actions {
     display: flex;
-    gap: 0.375rem;
+    gap: 0.5rem;
   }
 
   .audio-actions :global(button) {

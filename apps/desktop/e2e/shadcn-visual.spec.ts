@@ -2,6 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
 
+const minimumActionGapPixels = 8;
+
 type Theme = "system" | "light" | "dark";
 type Screen =
   "Today" | "Study" | "Decks" | "Deck" | "Add" | "Typing" | "Settings";
@@ -73,6 +75,20 @@ async function prepare(
   await page.goto(options.route);
   await chooseTheme(page, options.theme);
   if (options.screen !== "Today") await navigate(page, options.screen);
+}
+
+async function expectActionGap(
+  group: import("@playwright/test").Locator,
+): Promise<void> {
+  const gaps = await group.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      column: Number.parseFloat(style.columnGap),
+      row: Number.parseFloat(style.rowGap),
+    };
+  });
+  expect(gaps.column).toBeGreaterThanOrEqual(minimumActionGapPixels);
+  expect(gaps.row).toBeGreaterThanOrEqual(minimumActionGapPixels);
 }
 
 const visualCases = [
@@ -191,6 +207,12 @@ for (const visualCase of visualCases) {
           () => document.documentElement.scrollWidth <= window.innerWidth,
         ),
       ).toBe(true);
+    }
+    if (visualCase.name === "deck-management-narrow-dark-normal") {
+      await expectActionGap(page.locator(".deck-management-actions"));
+      await expectActionGap(
+        page.getByTestId("card-card-ar").locator(".card-actions"),
+      );
     }
     await expect(page).toHaveScreenshot(`${visualCase.name}.png`, {
       animations: "disabled",
@@ -427,6 +449,13 @@ for (const deckViewCase of [
         deckViewCase.view === "Grid" ? "deck-grid" : "deck-list",
       ),
     ).toBeVisible();
+    if (deckViewCase.name === "deck-view-grid-desktop-light") {
+      await expectActionGap(
+        page
+          .getByTestId("deck-travel-deck")
+          .locator(".deck-navigation-actions"),
+      );
+    }
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
