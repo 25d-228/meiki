@@ -330,9 +330,9 @@
 
   function beginPointerSelection(event: PointerEvent): void {
     if (
-      event.pointerType !== "mouse" ||
+      event.pointerType === "touch" ||
+      event.pointerType === "pen" ||
       event.button !== 0 ||
-      !event.isPrimary ||
       !(event.currentTarget instanceof HTMLDivElement) ||
       pointerOriginIsInteractive(event.target)
     ) {
@@ -355,7 +355,6 @@
       scrollContainer: nearestScrollableContainer(area),
       active: false,
     };
-    area.setPointerCapture(event.pointerId);
   }
 
   function pointerOriginIsInteractive(target: EventTarget | null): boolean {
@@ -403,14 +402,7 @@
   }
 
   function stopPointerSelection(): void {
-    const pointerId = pointerSelection?.pointerId;
     pointerSelection = null;
-    if (
-      pointerId !== undefined &&
-      deckInteractionArea?.hasPointerCapture(pointerId)
-    ) {
-      deckInteractionArea.releasePointerCapture(pointerId);
-    }
     pointerSelectionActive = false;
     selectionRectangle = null;
     if (edgeScrollFrame !== null) {
@@ -799,7 +791,12 @@
   }
 </script>
 
-<svelte:window onkeydown={handleVimKeydown} />
+<svelte:window
+  onkeydown={handleVimKeydown}
+  onpointermove={updatePointerSelection}
+  onpointerup={finishPointerSelection}
+  onpointercancel={finishPointerSelection}
+/>
 
 {#snippet deckCounts(deck: DeckSummaryDto)}
   <dl class="deck-counts">
@@ -1000,10 +997,6 @@
     data-testid="deck-selection-area"
     bind:this={deckInteractionArea}
     onpointerdown={beginPointerSelection}
-    onpointermove={updatePointerSelection}
-    onpointerup={finishPointerSelection}
-    onpointercancel={finishPointerSelection}
-    onlostpointercapture={finishPointerSelection}
   >
     {#if deckView === "grid"}
       <div class="deck-grid" data-testid="deck-grid" aria-busy={loading}>

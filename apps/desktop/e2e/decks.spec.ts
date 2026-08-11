@@ -173,6 +173,67 @@ async function dragAcrossDeckEdge(
   }
 }
 
+async function beginPackagedCompatibleDrag(
+  page: import("@playwright/test").Page,
+  deckId: string,
+): Promise<number> {
+  const { start, end } = await partialDeckDragPoints(page, deckId);
+  return page.evaluate(
+    ({ startPoint, endPoint }) => {
+      const area = document.querySelector<HTMLElement>(
+        '[data-testid="deck-selection-area"]',
+      );
+      const origin = document.elementFromPoint(startPoint.x, startPoint.y);
+      if (!area || !origin || !area.contains(origin)) {
+        throw new Error("Packaged-compatible drag origin is unavailable");
+      }
+      const pointerId = 47;
+      // WKWebView can omit mouse-specific PointerEvent fields for a valid left-button drag.
+      origin.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          buttons: 1,
+          clientX: startPoint.x,
+          clientY: startPoint.y,
+          pointerId,
+        }),
+      );
+      window.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          cancelable: true,
+          button: -1,
+          buttons: 1,
+          clientX: endPoint.x,
+          clientY: endPoint.y,
+          pointerId,
+        }),
+      );
+      return pointerId;
+    },
+    { startPoint: start, endPoint: end },
+  );
+}
+
+async function finishPackagedCompatibleDrag(
+  page: import("@playwright/test").Page,
+  pointerId: number,
+): Promise<void> {
+  await page.evaluate((activePointerId) => {
+    window.dispatchEvent(
+      new PointerEvent("pointerup", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons: 0,
+        pointerId: activePointerId,
+      }),
+    );
+  }, pointerId);
+}
+
 async function dragFromElement(
   page: import("@playwright/test").Page,
   locator: import("@playwright/test").Locator,
@@ -438,15 +499,16 @@ for (const deckView of ["Grid", "List"] as const) {
 }
 
 for (const deckView of ["Grid", "List"] as const) {
-  test(`partially intersecting a deck selects it by rectangle in ${deckView}`, async ({
+  test(`a packaged-compatible left-button drag selects a partial deck intersection in ${deckView}`, async ({
     page,
   }) => {
     await page.goto("/?decks=batch");
     await openDecks(page);
     if (deckView === "List") await selectDeckView(page, "List");
 
-    await dragAcrossDeckEdge(page, "travel-deck");
+    const pointerId = await beginPackagedCompatibleDrag(page, "travel-deck");
 
+    await expect(page.getByTestId("deck-selection-rectangle")).toBeVisible();
     await expect(
       page.getByRole("checkbox", { name: "Select Travel phrases" }),
     ).toHaveAttribute("aria-checked", "true");
@@ -459,6 +521,8 @@ for (const deckView of ["Grid", "List"] as const) {
         .getByTestId("deck-default-deck")
         .getByRole("checkbox", { name: "Select Unsorted" }),
     ).toHaveCount(0);
+    await finishPackagedCompatibleDrag(page, pointerId);
+    await expect(page.getByTestId("deck-selection-rectangle")).toHaveCount(0);
   });
 }
 
