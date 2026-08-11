@@ -29,6 +29,14 @@ async function navigatePrimary(
   ).toBeVisible();
 }
 
+async function waitForDocumentInteractionUnlock(page: Page): Promise<void> {
+  await expect
+    .poll(() =>
+      page.evaluate(() => getComputedStyle(document.body).pointerEvents),
+    )
+    .not.toBe("none");
+}
+
 async function expectActionGroupGap(
   group: Locator,
   minimumActions = 2,
@@ -188,6 +196,7 @@ test("keeps import, bundle, and deck deletion dialog actions separated", async (
     bundleActions.locator(".bundle-action-list > div").first(),
   );
   await bundleActions.getByRole("button", { name: /^Remove Japanese/ }).click();
+  await expect(bundleActions).toBeHidden();
   const bundleRemoval = page.getByRole("alertdialog", {
     name: "Remove Japanese?",
   });
@@ -195,8 +204,9 @@ test("keeps import, bundle, and deck deletion dialog actions separated", async (
     bundleRemoval.locator('[data-slot="alert-dialog-footer"]'),
   );
   await bundleRemoval.getByRole("button", { name: "Cancel" }).click();
-  await bundleActions.getByRole("button", { name: "Close" }).click();
+  await expect(bundleRemoval).toBeHidden();
   await expect(bundleActions).toBeHidden();
+  await waitForDocumentInteractionUnlock(page);
 
   const travelDeck = page.getByTestId("deck-travel-deck");
   await travelDeck
