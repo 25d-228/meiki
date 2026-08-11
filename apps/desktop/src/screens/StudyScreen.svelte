@@ -36,6 +36,11 @@
     writeStudyQueue,
     type StudyQueueSession,
   } from "../lib/study-queue";
+  import {
+    readVimKeybindings,
+    type VimMode,
+    vimCommandAllowed,
+  } from "../lib/vim-keybindings";
 
   type Props = {
     onCreate: () => void;
@@ -97,6 +102,8 @@
   let queueSession = $state<StudyQueueSession | null>(null);
   let studyAvailability = $state<StudyAvailabilityDto | null>(null);
   let nextDueAt = $state<string | null>(null);
+  let vimKeybindingsEnabled = $state(false);
+  let vimMode = $state<VimMode>("normal");
   const firstReadyPromptAudioId = $derived(
     card?.prompt_media.find(
       (media) =>
@@ -106,6 +113,7 @@
 
   onMount(() => {
     autoplayPromptAudio = readPromptAudioAutoplay();
+    vimKeybindingsEnabled = readVimKeybindings();
     void prepareStudy();
   });
 
@@ -329,6 +337,7 @@
         raw_response: response,
       });
       view = "revealed";
+      vimMode = "normal";
     } catch (error) {
       fail(error, "prompt", "check");
     }
@@ -365,6 +374,7 @@
       );
       writeStudyQueue(queueSession);
       view = "next";
+      vimMode = "normal";
     } catch (error) {
       fail(error, "revealed", "grade");
     }
@@ -385,6 +395,7 @@
       completionKind = "suspended";
       advanceStudyQueue();
       view = "next";
+      vimMode = "normal";
     } catch (error) {
       fail(error, origin, "suspend");
     }
@@ -542,6 +553,13 @@
   }
 
   function handleAnswerKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape" && vimKeybindingsEnabled) {
+      if (event.isComposing || composing) return;
+      event.preventDefault();
+      answerInput?.blur();
+      vimMode = "normal";
+      return;
+    }
     if (event.key === "Enter" && !event.isComposing && !composing) {
       event.preventDefault();
       void checkAnswer();
@@ -561,45 +579,54 @@
       return;
     }
 
-    const editable =
-      event.target instanceof HTMLInputElement ||
-      event.target instanceof HTMLTextAreaElement ||
-      event.target instanceof HTMLSelectElement;
-    if (editable) return;
-
     const key = event.key.toLowerCase();
-    if (key === "r" && (view === "prompt" || view === "revealed")) {
-      event.preventDefault();
-      replayAudio();
-      return;
-    }
-    if (
-      key === "e" &&
-      (view === "prompt" || view === "revealed" || view === "next")
-    ) {
-      event.preventDefault();
-      beginEdit();
-      return;
-    }
-    if (key === "s" && (view === "prompt" || view === "revealed")) {
-      event.preventDefault();
-      void suspendCard();
-      return;
-    }
-    if (view === "revealed" && reveal) {
-      if (event.key === "Enter") {
+    if (vimCommandAllowed(event, true, composing)) {
+      if (
+        key === "e" &&
+        (view === "prompt" || view === "revealed" || view === "next")
+      ) {
         event.preventDefault();
-        void grade(reveal.suggested_grade);
+        beginEdit();
         return;
       }
-      const chosenGrade = grades[Number(event.key) - 1];
-      if (chosenGrade) {
+      if (key === "s" && (view === "prompt" || view === "revealed")) {
         event.preventDefault();
-        void grade(chosenGrade);
+        void suspendCard();
+        return;
       }
-    } else if (view === "next" && event.key === "Enter") {
+    }
+
+    if (!vimCommandAllowed(event, vimKeybindingsEnabled, composing)) return;
+    if (key === "i" && view === "prompt") {
       event.preventDefault();
-      void continueStudy();
+      void focusAnswer();
+    } else if (key === "r" && (view === "prompt" || view === "revealed")) {
+      event.preventDefault();
+      replayAudio();
+    } else if (
+      key === "u" &&
+      view === "next" &&
+      completionKind === "graded" &&
+      result
+    ) {
+      event.preventDefault();
+      void undoReview();
+    } else if (event.key === "Enter") {
+      if (view === "prompt") {
+        event.preventDefault();
+        void checkAnswer();
+      } else if (view === "revealed" && reveal) {
+        event.preventDefault();
+        void grade(reveal.suggested_grade);
+      } else if (view === "next") {
+        event.preventDefault();
+        void continueStudy();
+      }
+    } else if (view === "revealed") {
+      const chosenGrade = grades[Number(event.key) - 1];
+      if (!chosenGrade) return;
+      event.preventDefault();
+      void grade(chosenGrade);
     }
   }
 
@@ -608,6 +635,7 @@
     recoveryView = resume;
     retryAction = action;
     view = "error";
+    vimMode = "normal";
   }
 
   function previewFor(grade: GradeDto): GradePreviewDto | undefined {
@@ -645,6 +673,14 @@
       </p>
     </div>
     <div class="study-header-actions">
+      {#if vimKeybindingsEnabled}
+        <span
+          class="vim-mode-indicator"
+          role="status"
+          aria-label={`Vim mode ${vimMode.toUpperCase()}`}
+          >{vimMode.toUpperCase()}</span
+        >
+      {/if}
       <Button
         variant="outline"
         size="sm"
@@ -829,6 +865,8 @@
                 oncompositionstart={() => (composing = true)}
                 oncompositionend={() => (composing = false)}
                 onkeydown={handleAnswerKeydown}
+                onfocus={() => vimKeybindingsEnabled && (vimMode = "insert")}
+                onblur={() => vimKeybindingsEnabled && (vimMode = "normal")}
               />
             </div>
             <p id="answer-guidance" class="input-guidance">
@@ -1036,6 +1074,16 @@
     gap: 0.5rem;
     align-items: center;
     justify-content: flex-end;
+  }
+
+  .vim-mode-indicator {
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
   }
 
   .study-content {

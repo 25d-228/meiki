@@ -9,6 +9,7 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import type { InstructionPlatform, TypingLesson } from "$lib/typing-lessons";
+  import { type VimMode, vimCommandAllowed } from "$lib/vim-keybindings";
   import TypingKeyboard from "./TypingKeyboard.svelte";
 
   type PracticeResult = "idle" | "correct" | "incorrect";
@@ -19,9 +20,21 @@
     completed: boolean;
     onComplete: (lessonId: string) => void;
     onNext: () => void;
+    onPrevious: () => void;
+    vimEnabled: boolean;
+    onVimModeChange: (mode: VimMode) => void;
   };
 
-  let { lesson, platform, completed, onComplete, onNext }: Props = $props();
+  let {
+    lesson,
+    platform,
+    completed,
+    onComplete,
+    onNext,
+    onPrevious,
+    vimEnabled,
+    onVimModeChange,
+  }: Props = $props();
   let expectedCodes = $derived([
     ...lesson.sharedPhysicalCodes,
     ...(platform ? lesson.platformPhysicalCodes[platform] : []),
@@ -38,6 +51,7 @@
   let sequenceCompleted = $state(false);
   let feedback = $state("");
   let liveStatus = $state("");
+  let inputElement = $state<HTMLInputElement | null>(null);
 
   let expectedCode = $derived(expectedCodes[expectedIndex] ?? null);
   let completedCodes = $derived(expectedCodes.slice(0, expectedIndex));
@@ -153,6 +167,13 @@
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
+    if (event.key === "Escape" && vimEnabled) {
+      if (event.isComposing || composing) return;
+      event.preventDefault();
+      inputElement?.blur();
+      onVimModeChange("normal");
+      return;
+    }
     if (!acceptsPhysicalCode(event.code)) return;
     setPressed(event.code);
     if (event.repeat) return;
@@ -177,6 +198,24 @@
     }
 
     updatePhysicalSequence(event.code, compositionActive);
+  }
+
+  function handleVimKeydown(event: KeyboardEvent): void {
+    if (!vimCommandAllowed(event, vimEnabled, composing)) return;
+    const key = event.key.toLowerCase();
+    if (key === "h") {
+      event.preventDefault();
+      onPrevious();
+    } else if (key === "l" && result === "correct") {
+      event.preventDefault();
+      onNext();
+    } else if (key === "r") {
+      event.preventDefault();
+      retry();
+    } else if (key === "i") {
+      event.preventDefault();
+      inputElement?.focus();
+    }
   }
 
   function handleKeyUp(event: KeyboardEvent): void {
@@ -274,7 +313,11 @@
   }
 </script>
 
-<svelte:window onkeyup={handleKeyUp} onblur={() => (pressedCodes = [])} />
+<svelte:window
+  onkeydown={handleVimKeydown}
+  onkeyup={handleKeyUp}
+  onblur={() => (pressedCodes = [])}
+/>
 
 <section class="practice" aria-labelledby="typing-practice-title">
   <header class="practice-header">
@@ -338,6 +381,7 @@
   <div class="practice-input field">
     <Label for="typing-input">Practice input</Label>
     <Input
+      bind:ref={inputElement}
       id="typing-input"
       value={inputValue}
       autocomplete="off"
@@ -349,6 +393,8 @@
       oncompositionstart={handleCompositionStart}
       oncompositionupdate={handleCompositionUpdate}
       oncompositionend={handleCompositionEnd}
+      onfocus={() => vimEnabled && onVimModeChange("insert")}
+      onblur={() => vimEnabled && onVimModeChange("normal")}
     />
     <p id="typing-hint" class="field-description">{lesson.hint}</p>
   </div>

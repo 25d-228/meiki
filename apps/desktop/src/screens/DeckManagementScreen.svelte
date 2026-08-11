@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { SvelteDate } from "svelte/reactivity";
 
   import { api } from "../lib/api";
@@ -20,6 +20,11 @@
   import type { SingleDeckDeletion } from "../lib/deletion-activity";
   import { localDayBounds } from "../lib/local-day";
   import DeckDeletionFlow from "../components/DeckDeletionFlow.svelte";
+  import {
+    eventPathContainsActionControl,
+    readVimKeybindings,
+    vimCommandAllowed,
+  } from "../lib/vim-keybindings";
 
   type Props = {
     selectedDeckId: string;
@@ -67,8 +72,11 @@
   let deleteCardCount = $state(0);
   let busyDeckAction = $state(false);
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  let vimKeybindingsEnabled = $state(false);
+  let focusedCardId = $state("");
 
   onMount(() => {
+    vimKeybindingsEnabled = readVimKeybindings();
     void loadCards();
     return () => {
       if (searchTimer) clearTimeout(searchTimer);
@@ -102,6 +110,9 @@
         });
       }
       overview = nextOverview;
+      if (!nextOverview.cards.some((card) => card.id === focusedCardId)) {
+        focusedCardId = nextOverview.cards[0]?.id ?? "";
+      }
       destinationDeckId =
         overview.decks.find((deck) => deck.id !== selectedDeckId)?.id ?? "";
     } catch (reason) {
@@ -129,6 +140,54 @@
   function changePage(nextOffset: number): void {
     offset = Math.max(0, nextOffset);
     void loadCards();
+  }
+
+  async function focusCard(cardId: string): Promise<void> {
+    focusedCardId = cardId;
+    await tick();
+    document
+      .querySelector<HTMLElement>(`[data-vim-card-id="${CSS.escape(cardId)}"]`)
+      ?.focus();
+  }
+
+  function moveCardFocus(direction: -1 | 1): void {
+    const cards = overview?.cards ?? [];
+    if (cards.length === 0) return;
+    const currentIndex = cards.findIndex((card) => card.id === focusedCardId);
+    const nextIndex =
+      currentIndex < 0
+        ? direction === 1
+          ? 0
+          : cards.length - 1
+        : Math.min(cards.length - 1, Math.max(0, currentIndex + direction));
+    void focusCard(cards[nextIndex].id);
+  }
+
+  function handleVimKeydown(event: KeyboardEvent): void {
+    if (!vimCommandAllowed(event, vimKeybindingsEnabled)) return;
+    const key = event.key.toLowerCase();
+    if (key === "j" || key === "k") {
+      event.preventDefault();
+      moveCardFocus(key === "j" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Escape" && focusedCardId) {
+      event.preventDefault();
+      void focusCard(focusedCardId);
+      return;
+    }
+    if (
+      trash === "active" &&
+      (event.key === "Enter" || key === "o") &&
+      !(event.key === "Enter" && eventPathContainsActionControl(event))
+    ) {
+      const card = overview?.cards.find(
+        (candidate) => candidate.id === focusedCardId,
+      );
+      if (!card) return;
+      event.preventDefault();
+      onEdit(card.id);
+    }
   }
 
   async function runAction(
@@ -285,6 +344,8 @@
   }
 </script>
 
+<svelte:window onkeydown={handleVimKeydown} />
+
 <section class="screen deck-management-screen" aria-labelledby="deck-title">
   <header class="screen-header">
     <div>
@@ -295,6 +356,13 @@
       </p>
     </div>
     <div class="flex flex-wrap gap-2">
+      {#if vimKeybindingsEnabled}
+        <span
+          class="vim-mode-indicator"
+          role="status"
+          aria-label="Vim mode NORMAL">NORMAL</span
+        >
+      {/if}
       <Button variant="ghost" onclick={onBack}>Back to decks</Button>
       <Button
         variant="outline"
@@ -367,7 +435,22 @@
       </Card.Root>
     {:else}
       {#each overview?.cards ?? [] as card (card.id)}
-        <Card.Root class="gap-4 p-5" data-testid={`card-${card.id}`}>
+        <Card.Root
+          class="gap-4 p-5"
+          data-testid={`card-${card.id}`}
+          data-vim-card-id={card.id}
+          data-vim-focused={focusedCardId === card.id}
+          role={vimKeybindingsEnabled ? "group" : undefined}
+          tabindex={vimKeybindingsEnabled
+            ? focusedCardId === card.id
+              ? 0
+              : -1
+            : undefined}
+          aria-label={vimKeybindingsEnabled
+            ? `Card ${card.sentence}`
+            : undefined}
+          onfocus={() => (focusedCardId = card.id)}
+        >
           <Card.Header class="p-0">
             <div class="card-heading">
               <Card.Title>
@@ -625,6 +708,22 @@
 </Dialog.Root>
 
 <style>
+  .vim-mode-indicator {
+    align-self: center;
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+
+  :global([data-vim-card-id]:focus-visible) {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
   .search-row {
     display: grid;
     grid-template-columns: auto minmax(12rem, 32rem) auto;

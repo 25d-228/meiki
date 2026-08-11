@@ -286,7 +286,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(
       page.getByText("Expected answer", { exact: true }),
     ).toBeVisible();
-    await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: /^Good/ }).click();
     await expect(
       page.getByRole("heading", { name: "Review saved" }),
     ).toBeVisible();
@@ -314,7 +314,7 @@ test("skip navigation, focus transfer, and live study states are exposed", async
   await expect(
     page.getByText("Expected answer", { exact: true }),
   ).toBeVisible();
-  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
   await expect(
     page.getByRole("heading", { name: "Review saved" }),
   ).toBeVisible();

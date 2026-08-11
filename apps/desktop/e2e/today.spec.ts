@@ -562,7 +562,7 @@ test("renders and continues a persisted queue fixture", async ({ page }) => {
 
   await page.getByLabel("Your answer").fill("三時");
   await page.getByLabel("Your answer").press("Enter");
-  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
   await page.getByRole("button", { name: "Finish session" }).click();
 
   await expect(page.getByTestId("app-announcement")).toHaveText(

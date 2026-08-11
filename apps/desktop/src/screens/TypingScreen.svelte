@@ -17,6 +17,12 @@
     type InstructionPlatform,
     type TypingLanguage,
   } from "../lib/typing-lessons";
+  import {
+    eventPathContainsActionControl,
+    readVimKeybindings,
+    type VimMode,
+    vimCommandAllowed,
+  } from "../lib/vim-keybindings";
 
   const platformPreferenceKey = "meiki-typing-platform";
   const languagePreferenceKey = "meiki-typing-language";
@@ -28,6 +34,8 @@
   let completedLessonIds = $state<string[]>([]);
   let practiceStarted = $state(false);
   let selectedLessonId = $state(typingLessons[0].id);
+  let vimKeybindingsEnabled = $state(false);
+  let vimMode = $state<VimMode>("normal");
   let selectedLanguageLessons = $derived(
     typingLessons.filter((lesson) => lesson.language === selectedLanguage),
   );
@@ -38,6 +46,7 @@
   );
 
   onMount(() => {
+    vimKeybindingsEnabled = readVimKeybindings();
     const savedLanguage = localStorage.getItem(languagePreferenceKey);
     if (isTypingLanguage(savedLanguage)) {
       selectedLanguage = savedLanguage;
@@ -84,6 +93,7 @@
     selectedLanguage = language;
     selectedLessonId = firstLessonId(language);
     practiceStarted = false;
+    vimMode = "normal";
     localStorage.setItem(languagePreferenceKey, language);
   }
 
@@ -128,8 +138,39 @@
       ];
     selectedLessonId = next.id;
     practiceStarted = true;
+    vimMode = "normal";
+  }
+
+  function previousLesson(): void {
+    const currentIndex = selectedLanguageLessons.findIndex(
+      (lesson) => lesson.id === selectedLesson.id,
+    );
+    if (currentIndex <= 0) return;
+    selectedLessonId = selectedLanguageLessons[currentIndex - 1].id;
+    practiceStarted = true;
+    vimMode = "normal";
+  }
+
+  function startPractice(): void {
+    practiceStarted = true;
+    vimMode = "normal";
+  }
+
+  function handleVimKeydown(event: KeyboardEvent): void {
+    if (
+      practiceStarted ||
+      event.key !== "Enter" ||
+      !vimCommandAllowed(event, vimKeybindingsEnabled) ||
+      eventPathContainsActionControl(event)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    startPractice();
   }
 </script>
+
+<svelte:window onkeydown={handleVimKeydown} />
 
 <section class="screen typing-screen" aria-labelledby="typing-title">
   <header class="screen-header">
@@ -141,10 +182,20 @@
         commits.
       </p>
     </div>
-    <Button data-primary-action onclick={() => (practiceStarted = true)}>
-      <RiKeyboardLine data-icon="inline-start" aria-hidden="true" />
-      Start practice
-    </Button>
+    <div class="typing-header-actions">
+      {#if vimKeybindingsEnabled}
+        <span
+          class="vim-mode-indicator"
+          role="status"
+          aria-label={`Vim mode ${vimMode.toUpperCase()}`}
+          >{vimMode.toUpperCase()}</span
+        >
+      {/if}
+      <Button data-primary-action onclick={startPractice}>
+        <RiKeyboardLine data-icon="inline-start" aria-hidden="true" />
+        Start practice
+      </Button>
+    </div>
   </header>
 
   <div class="typing-settings">
@@ -239,6 +290,9 @@
         completed={completedLessonIds.includes(selectedLesson.id)}
         onComplete={completeLesson}
         onNext={nextLesson}
+        onPrevious={previousLesson}
+        vimEnabled={vimKeybindingsEnabled}
+        onVimModeChange={(mode) => (vimMode = mode)}
       />
     {/key}
   {:else}
@@ -270,6 +324,25 @@
 
   .typing-screen :global(.screen-header) {
     margin-bottom: 0.25rem;
+  }
+
+  .typing-header-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .vim-mode-indicator {
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--border);
+    color: var(--muted-foreground);
+    font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
   }
 
   .typing-settings {

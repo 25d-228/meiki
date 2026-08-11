@@ -20,6 +20,10 @@
     writePromptAudioAutoplay,
   } from "../lib/media";
   import type { ThemeMode } from "../lib/ui";
+  import {
+    readVimKeybindings,
+    writeVimKeybindings,
+  } from "../lib/vim-keybindings";
 
   type Props = {
     theme: ThemeMode;
@@ -40,12 +44,14 @@
   let policyPreview = $state<SchedulerPolicyPreviewDto | null>(null);
   let previewedRequest = $state<UpdateSchedulerSettingsRequest | null>(null);
   let autoplayPromptAudio = $state(true);
+  let vimKeybindingsEnabled = $state(false);
   let busy = $state(false);
   let notice = $state("");
   let error = $state("");
 
   onMount(() => {
     autoplayPromptAudio = readPromptAudioAutoplay();
+    vimKeybindingsEnabled = readVimKeybindings();
     void loadSettings();
   });
 
@@ -156,6 +162,11 @@
   function updatePromptAudioAutoplay(enabled: boolean): void {
     autoplayPromptAudio = enabled;
     writePromptAudioAutoplay(enabled);
+  }
+
+  function updateVimKeybindings(enabled: boolean): void {
+    vimKeybindingsEnabled = enabled;
+    writeVimKeybindings(enabled);
   }
 
   async function importParameters(): Promise<void> {
@@ -524,6 +535,34 @@
             </Alert.Description>
           </Alert.Root>
         {/if}
+      </div>
+
+      <Separator />
+
+      <div class="setting-row">
+        <div>
+          <strong>Vim keybindings</strong>
+          <p>
+            Adds bounded NORMAL and INSERT commands to Decks, opened decks,
+            Typing, and Study.
+          </p>
+          {#if vimKeybindingsEnabled}
+            <p data-testid="vim-keybindings-summary">
+              Decks/cards: j/k and Enter/o. Decks: s/x. Typing: h/l, r, and i.
+              Study: i, Enter, r, u, and 1–4. Escape returns to NORMAL; focused
+              practice inputs use INSERT.
+            </p>
+          {/if}
+        </div>
+        <label class="toggle" for="vim-keybindings">
+          <Switch
+            id="vim-keybindings"
+            aria-label="Vim keybindings"
+            checked={vimKeybindingsEnabled}
+            onCheckedChange={updateVimKeybindings}
+          />
+          <span>{vimKeybindingsEnabled ? "On" : "Off"}</span>
+        </label>
       </div>
 
       <Separator />
