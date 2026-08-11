@@ -3,10 +3,25 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { installMockApi } from "./support/mock-api";
 
 const terminalCardTimeoutMs = 3_000;
+const importCompletionStepMs = 20;
+const importCompletionTimeoutMs = 500;
+const fakeClockTestNames = new Set([
+  "success card auto-hides at three seconds without closing its details and another import can start",
+  "failure card remains until exactly three seconds",
+  "running card remains visible beyond three seconds",
+  "manual dismissal cancels the terminal timer before a later running import",
+]);
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page }, testInfo) => {
   await installMockApi(page);
+  const usesFakeClock = fakeClockTestNames.has(testInfo.title);
+  if (usesFakeClock) {
+    await page.clock.install({ time: new Date("2026-08-11T00:00:00Z") });
+  }
   await page.goto("/?bundleImport=activity");
+  if (usesFakeClock) {
+    await page.clock.pauseAt(new Date("2026-08-11T00:01:00Z"));
+  }
 });
 
 async function navigatePrimary(
@@ -32,7 +47,7 @@ async function navigatePrimary(
 async function startBundleImport(
   page: Page,
   expectedLanguage = "Japanese",
-  pauseClock = false,
+  advanceFakeClock = false,
 ): Promise<void> {
   await navigatePrimary(page, "Decks");
   await page.getByRole("button", { name: "Import bundle" }).click();
@@ -40,16 +55,12 @@ async function startBundleImport(
   await expect(
     dialog.getByText(expectedLanguage, { exact: true }),
   ).toBeVisible();
-  if (pauseClock) {
-    await page.clock.install({ time: new Date("2026-08-11T00:00:00Z") });
-    await page.clock.pauseAt(new Date("2026-08-11T00:01:00Z"));
-  }
   await dialog.getByRole("button", { name: "Add bundle" }).click();
   await expect(dialog).toContainText("Preparing decks");
   await expect(dialog.getByRole("progressbar")).not.toHaveAttribute(
     "aria-valuenow",
   );
-  if (pauseClock) await page.clock.runFor(100);
+  if (advanceFakeClock) await page.clock.runFor(100);
   const activity = page.getByTestId("bundle-import-activity");
   await expect(activity).toContainText(`Adding ${expectedLanguage}`);
   await expect(activity).toContainText(/Adding cards\s+1,240 \/ 9,700/);
@@ -70,8 +81,22 @@ async function finishBundleImport(
   await page.evaluate((value) => {
     localStorage.setItem("meiki-e2e-finish-bundle-import", value);
   }, outcome);
-  // The fixture has four remaining progress delays on success and two before failure.
-  await page.clock.runFor(outcome === "success" ? 400 : 200);
+  const terminalMessage =
+    outcome === "success"
+      ? "Added Japanese with 6 decks."
+      : "Could not add Japanese.";
+  const card = page.getByTestId("bundle-import-activity");
+  for (
+    let elapsed = 0;
+    elapsed < importCompletionTimeoutMs;
+    elapsed += importCompletionStepMs
+  ) {
+    await page.clock.runFor(importCompletionStepMs);
+    if (await card.getByText(terminalMessage, { exact: true }).isVisible()) {
+      return;
+    }
+  }
+  await expect(card).toContainText(terminalMessage);
 }
 
 async function requestCount(page: Page, command: string): Promise<number> {
@@ -295,6 +320,7 @@ test("success card auto-hides at three seconds without closing its details and a
   const dialog = page.getByRole("dialog", { name: "Import bundle" });
   await dialog.getByRole("button", { name: "Close" }).last().click();
   await page.clock.runFor(200);
+  await expect(dialog).toBeHidden();
   await finishBundleImport(page, "success");
   await expect(card).toContainText("Added Japanese with 6 decks.");
   await card
@@ -311,6 +337,7 @@ test("success card auto-hides at three seconds without closing its details and a
 
   await dialog.getByRole("button", { name: "Close" }).last().click();
   await page.clock.runFor(200);
+  await expect(dialog).toBeHidden();
   await page.evaluate(() =>
     localStorage.removeItem("meiki-e2e-finish-bundle-import"),
   );
@@ -354,6 +381,7 @@ test("manual dismissal cancels the terminal timer before a later running import"
   const dialog = page.getByRole("dialog", { name: "Import bundle" });
   await dialog.getByRole("button", { name: "Close" }).last().click();
   await page.clock.runFor(200);
+  await expect(dialog).toBeHidden();
   await finishBundleImport(page, "failure");
   await card
     .getByRole("button", { name: "Dismiss bundle import status" })
