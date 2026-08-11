@@ -9,7 +9,6 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import {
-    typingCodeLabel,
     type InstructionPlatform,
     type TypingLesson,
   } from "$lib/typing-lessons";
@@ -95,6 +94,31 @@
         "Space",
       ].includes(code)
     );
+  }
+
+  function typingCodeLabel(code: string): string {
+    if (code.startsWith("Key")) return code.slice(3);
+    if (code.startsWith("Digit")) return code.slice(5);
+    const labels: Record<string, string> = {
+      AltLeft: "Option",
+      AltRight: "AltGr",
+      Backquote: "`",
+      Backslash: "\\",
+      BracketLeft: "[",
+      BracketRight: "]",
+      CapsLock: "Caps Lock",
+      Comma: ",",
+      Equal: "=",
+      Minus: "-",
+      Period: ".",
+      Quote: "'",
+      Semicolon: ";",
+      ShiftLeft: "Shift",
+      ShiftRight: "Shift",
+      Slash: "/",
+      Space: "Space",
+    };
+    return labels[code] ?? code;
   }
 
   function initialStatus(): string {

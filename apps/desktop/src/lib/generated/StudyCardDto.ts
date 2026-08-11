@@ -3,4 +3,4 @@ import type { DirectionDto } from "./DirectionDto";
 import type { LocalizedTextDto } from "./LocalizedTextDto";
 import type { StudyMediaDto } from "./StudyMediaDto";
 
-export type StudyCardDto = { card_id: string, card_content_version: number, schedule_version: number, prompt: string, language_tag: string | null, direction: DirectionDto, due_at: string, completed_reviews: number, suspended: boolean, hint: LocalizedTextDto | null, prompt_media: Array<StudyMediaDto>, };
+export type StudyCardDto = { card_id: string, card_content_version: number, schedule_version: number, prompt: string, expected_answer: string, language_tag: string | null, direction: DirectionDto, due_at: string, completed_reviews: number, suspended: boolean, hint: LocalizedTextDto | null, prompt_media: Array<StudyMediaDto>, };

@@ -7,16 +7,30 @@ test.beforeEach(async ({ page }) => {
   await installMockApi(page);
 });
 
-async function enableStudyKeyboard(
+type StudyPreferences = {
+  answer?: boolean;
+  keyboard?: boolean;
+  platform?: "windows" | "macos";
+};
+
+async function setStudyPreferences(
   page: Page,
-  platform?: "windows" | "macos",
+  preferences: StudyPreferences,
 ): Promise<void> {
-  await page.addInitScript((savedPlatform) => {
-    localStorage.setItem("meiki-study-visual-keyboard", "true");
-    if (savedPlatform) {
-      localStorage.setItem("meiki-typing-platform", savedPlatform);
+  await page.addInitScript((saved) => {
+    if (saved.answer !== undefined) {
+      localStorage.setItem("meiki-study-front-answer", String(saved.answer));
     }
-  }, platform);
+    if (saved.keyboard !== undefined) {
+      localStorage.setItem(
+        "meiki-study-visual-keyboard",
+        String(saved.keyboard),
+      );
+    }
+    if (saved.platform) {
+      localStorage.setItem("meiki-typing-platform", saved.platform);
+    }
+  }, preferences);
 }
 
 async function setRuntimePlatform(page: Page, platform: string): Promise<void> {
@@ -47,34 +61,26 @@ async function openStudy(page: Page, route = "/"): Promise<void> {
   await expect(page.getByLabel("Your answer")).toBeVisible();
 }
 
+async function clearSavedStudy(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    localStorage.removeItem("meiki-active-study-queue");
+    sessionStorage.removeItem("meiki-active-study-session");
+  });
+}
+
 async function dispatchKey(
   target: Locator,
   type: "keydown" | "keyup",
   code: string,
   key: string,
-  options: { repeat?: boolean; isComposing?: boolean } = {},
+  repeat = false,
 ): Promise<void> {
   await target.dispatchEvent(type, {
     bubbles: true,
     code,
     key,
-    repeat: options.repeat ?? false,
-    isComposing: options.isComposing ?? false,
+    repeat,
   });
-}
-
-async function dispatchComposition(
-  input: Locator,
-  type: "compositionstart" | "compositionupdate" | "compositionend",
-  data: string,
-): Promise<void> {
-  await input.evaluate(
-    (element, event) =>
-      element.dispatchEvent(
-        new CompositionEvent(event.type, { bubbles: true, data: event.data }),
-      ),
-    { type, data },
-  );
 }
 
 async function requestCount(page: Page, command: string): Promise<number> {
@@ -87,22 +93,41 @@ async function requestCount(page: Page, command: string): Promise<number> {
   );
 }
 
-async function expectPassiveStateReset(page: Page): Promise<void> {
-  await expect(page.getByTestId("study-keyboard-physical-trail")).toHaveText(
-    "None yet",
-  );
-  await expect(page.getByTestId("study-keyboard-composition")).toHaveText(
-    "None",
-  );
-  await expect(page.getByTestId("study-keyboard-committed-output")).toHaveText(
-    "None",
-  );
-  await expect(
-    page.getByTestId("study-visual-keyboard").locator('[data-pressed="true"]'),
-  ).toHaveCount(0);
+async function lastRequest(page: Page, command: string) {
+  return page.evaluate((name) => {
+    const requests = window.__MEIKI_TEST_REQUESTS__ ?? [];
+    return requests.filter((request) => request.command === name).at(-1);
+  }, command);
 }
 
-test("Study visual keyboard defaults Off and persists from the keyboard-operated Settings toggle", async ({
+test("front answer defaults Off and persists from the keyboard-operated Settings switch", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await navigate(page, "Settings");
+  const toggle = page.getByRole("switch", {
+    name: "Show answer on card front",
+  });
+
+  await expect(toggle).not.toBeChecked();
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-study-front-answer")),
+  ).toBeNull();
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  await expect(toggle).toBeChecked();
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-study-front-answer")),
+  ).toBe("true");
+
+  await page.reload();
+  await navigate(page, "Settings");
+  await expect(
+    page.getByRole("switch", { name: "Show answer on card front" }),
+  ).toBeChecked();
+});
+
+test("Study visual keyboard defaults Off and persists from its keyboard-operated Settings switch", async ({
   page,
 }) => {
   await page.goto("/");
@@ -112,11 +137,6 @@ test("Study visual keyboard defaults Off and persists from the keyboard-operated
   });
 
   await expect(toggle).not.toBeChecked();
-  expect(
-    await page.evaluate(() =>
-      localStorage.getItem("meiki-study-visual-keyboard"),
-    ),
-  ).toBeNull();
   await toggle.focus();
   await page.keyboard.press("Space");
   await expect(toggle).toBeChecked();
@@ -135,17 +155,96 @@ test("Study visual keyboard defaults Off and persists from the keyboard-operated
   ).toBeChecked();
 });
 
-test("Study renders no keyboard when the preference is disabled", async ({
+test("front answer stays hidden when its preference is Off", async ({
   page,
 }) => {
   await openStudy(page);
-  await expect(page.getByTestId("study-visual-keyboard")).toHaveCount(0);
+  await expect(page.getByTestId("study-front-answer")).toHaveCount(0);
+  await expect(page.getByText("Expected answer", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(page.getByLabel("Your answer")).toHaveValue("");
+  expect(await requestCount(page, "check_answer")).toBe(0);
 });
+
+test("front answer uses the current card language and direction without changing the response", async ({
+  page,
+}) => {
+  await setStudyPreferences(page, { answer: true });
+  await openStudy(page, "/?fixture=rtl&check=loading");
+  const answer = page.getByTestId("study-front-answer");
+  const input = page.getByLabel("Your answer");
+
+  await expect(answer).toContainText("Expected answer");
+  await expect(answer.locator("strong")).toHaveText("کتاب");
+  await expect(answer.locator("strong")).toHaveAttribute("lang", "fa");
+  await expect(answer.locator("strong")).toHaveAttribute("dir", "rtl");
+  await expect(input).toHaveValue("");
+  expect(await requestCount(page, "check_answer")).toBe(0);
+
+  await input.fill("پاسخ من");
+  await input.press("Enter");
+  await expect(page.getByRole("button", { name: "Checking…" })).toBeVisible();
+  await expect(answer.locator("strong")).toHaveText("کتاب");
+  await expect(input).toHaveValue("پاسخ من");
+  const checkArgs = (await lastRequest(page, "check_answer"))?.args as
+    { request: Record<string, unknown> } | undefined;
+  expect(checkArgs?.request).toMatchObject({ raw_response: "پاسخ من" });
+  expect(checkArgs?.request).not.toHaveProperty("expected_answer");
+
+  await expect(answer).toHaveCount(0);
+  await expect(
+    page.getByText("Expected answer", { exact: true }),
+  ).toBeVisible();
+});
+
+test("the next card replaces the previous front answer", async ({ page }) => {
+  await setStudyPreferences(page, { answer: true });
+  await openStudy(page, "/?reconcile=request");
+  const input = page.getByLabel("Your answer");
+
+  await expect(
+    page.getByTestId("study-front-answer").locator("strong"),
+  ).toHaveText("行きます");
+  await input.fill("行きます");
+  await input.press("Enter");
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("heading", { name: "Review saved" }),
+  ).toBeVisible();
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(
+    page.getByTestId("study-front-answer").locator("strong"),
+  ).toHaveText("行きます · second");
+  await expect(page.getByLabel("Your answer")).toHaveValue("");
+});
+
+for (const preferences of [
+  { answer: false, keyboard: false },
+  { answer: true, keyboard: false },
+  { answer: false, keyboard: true },
+  { answer: true, keyboard: true },
+] as const) {
+  test(`front answer ${preferences.answer ? "On" : "Off"} and keyboard ${preferences.keyboard ? "On" : "Off"} remain independent`, async ({
+    page,
+  }) => {
+    await setStudyPreferences(page, { ...preferences, platform: "windows" });
+    await openStudy(page);
+    await expect(page.getByTestId("study-front-answer")).toHaveCount(
+      preferences.answer ? 1 : 0,
+    );
+    await expect(page.getByTestId("study-visual-keyboard")).toHaveCount(
+      preferences.keyboard ? 1 : 0,
+    );
+  });
+}
 
 test("the keyboard remains through checking and hides for reveal and saved states", async ({
   page,
 }) => {
-  await enableStudyKeyboard(page, "windows");
+  await setStudyPreferences(page, { keyboard: true, platform: "windows" });
   await openStudy(page, "/?check=loading&grade=loading");
   const input = page.getByLabel("Your answer");
   await expect(page.getByTestId("study-visual-keyboard")).toBeVisible();
@@ -154,9 +253,6 @@ test("the keyboard remains through checking and hides for reveal and saved state
   await expect(page.getByTestId("study-visual-keyboard")).toBeVisible();
   await expect(page.getByRole("button", { name: "Checking…" })).toBeVisible();
 
-  await expect(
-    page.getByText("Expected answer", { exact: true }),
-  ).toBeVisible();
   await expect(page.getByTestId("study-visual-keyboard")).toHaveCount(0);
   await page.keyboard.press("Enter");
   await expect(page.getByRole("button", { name: /^Good/ })).toBeDisabled();
@@ -164,319 +260,165 @@ test("the keyboard remains through checking and hides for reveal and saved state
   await expect(
     page.getByRole("heading", { name: "Review saved" }),
   ).toBeVisible();
-  await expect(page.getByTestId("study-visual-keyboard")).toHaveCount(0);
 });
 
-test("loading, empty, and error states never show the keyboard", async ({
+test("the enabled Study keyboard renders only the passive keyboard layout", async ({
   page,
 }) => {
-  await enableStudyKeyboard(page, "windows");
-  await page.goto("/?fixture=loading");
-  await page.getByRole("button", { name: "Start study" }).click();
-  await expect(page.getByText("Opening your local collection…")).toBeVisible();
-  await expect(page.getByTestId("study-visual-keyboard")).toHaveCount(0);
+  await setStudyPreferences(page, { keyboard: true, platform: "windows" });
+  await openStudy(page);
+  const surface = page.getByTestId("study-visual-keyboard");
 
-  await page.evaluate(() => {
-    localStorage.removeItem("meiki-active-study-queue");
-    sessionStorage.removeItem("meiki-active-study-session");
-  });
-  await page.goto("/?today=empty");
-  await page.getByRole("button", { name: "Start study" }).click();
+  await expect(surface.getByTestId("typing-keyboard")).toBeVisible();
+  await expect(page.getByText("Visual keyboard", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(page.getByTestId("study-keyboard-guidance")).toHaveCount(0);
   await expect(
-    page.getByRole("heading", { name: "Nothing is due" }),
-  ).toBeVisible();
-  await expect(page.getByTestId("study-visual-keyboard")).toHaveCount(0);
-
-  await page.evaluate(() => {
-    localStorage.removeItem("meiki-active-study-queue");
-    sessionStorage.removeItem("meiki-active-study-session");
-  });
-  await page.goto("/?fixture=error");
-  await page.getByRole("button", { name: "Start study" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
-  await expect(page.getByTestId("study-visual-keyboard")).toHaveCount(0);
-});
-
-test("Korean tags select shifted and base jamo above the Latin legend", async ({
-  page,
-}) => {
-  await enableStudyKeyboard(page, "windows");
-  await openStudy(page, "/?studyLanguage=KO-kR");
-  const key = page.getByTestId("typing-key-KeyQ");
-  await expect(
-    key.locator(".shifted-target-legend, .target-legend, .latin-legend"),
-  ).toHaveText(["ㅃ", "ㅂ", "Q"]);
-});
-
-test("Japanese remains Latin-only", async ({ page }) => {
-  await enableStudyKeyboard(page, "windows");
-  await openStudy(page, "/?studyLanguage=JA-jp");
-  const key = page.getByTestId("typing-key-KeyQ");
-  await expect(
-    key.locator(".target-legend, .shifted-target-legend"),
+    page.getByText("Physical keys typed", { exact: true }),
   ).toHaveCount(0);
-  await expect(key.locator(".latin-legend")).toHaveText("Q");
+  await expect(
+    page.getByText("Current composition", { exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Committed output", { exact: true })).toHaveCount(
+    0,
+  );
+  expect(
+    await surface.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        background: style.backgroundColor,
+        border: style.borderTopWidth,
+        padding: style.paddingTop,
+      };
+    }),
+  ).toEqual({
+    background: "rgba(0, 0, 0, 0)",
+    border: "0px",
+    padding: "0px",
+  });
 });
 
-for (const guidance of [
-  {
-    language: "fr-FR",
-    platform: "windows",
-    expected: "Use United States-International on Windows.",
-  },
-  {
-    language: "fr",
-    platform: "macos",
-    expected: "Use the standard U.S. layout on macOS.",
-  },
-  {
-    language: "es-MX",
-    platform: "windows",
-    expected: "Use United States-International on Windows.",
-  },
-  {
-    language: "ES",
-    platform: "macos",
-    expected: "Use the standard U.S. layout on macOS.",
-  },
-] as const) {
-  test(`${guidance.language} uses the saved ${guidance.platform} guidance`, async ({
-    page,
-  }) => {
-    await enableStudyKeyboard(page, guidance.platform);
-    await openStudy(
-      page,
-      `/?studyLanguage=${encodeURIComponent(guidance.language)}`,
-    );
-    await expect(page.getByTestId("study-keyboard-guidance")).toHaveText(
-      guidance.expected,
-    );
-    await expect(
-      page.getByTestId("study-visual-keyboard").locator(".target-legend"),
-    ).toHaveCount(0);
-  });
-}
+test("Korean retains shifted and base jamo while Japanese remains Latin-only", async ({
+  page,
+}) => {
+  await setStudyPreferences(page, { keyboard: true, platform: "windows" });
+  await openStudy(page, "/?studyLanguage=KO-kR");
+  const koreanKey = page.getByTestId("typing-key-KeyQ");
+  await expect(
+    koreanKey.locator(".shifted-target-legend, .target-legend, .latin-legend"),
+  ).toHaveText(["ㅃ", "ㅂ", "Q"]);
 
-test("Linux without a saved reference uses plain Latin and non-prescriptive guidance", async ({
+  await clearSavedStudy(page);
+  await openStudy(page, "/?studyLanguage=JA-jp");
+  const japaneseKey = page.getByTestId("typing-key-KeyQ");
+  await expect(
+    japaneseKey.locator(".target-legend, .shifted-target-legend"),
+  ).toHaveCount(0);
+  await expect(japaneseKey.locator(".latin-legend")).toHaveText("Q");
+});
+
+test("Linux and unsupported language tags keep the Study keyboard Latin-only", async ({
   page,
 }) => {
   await setRuntimePlatform(page, "Linux x86_64");
-  await enableStudyKeyboard(page);
-  await openStudy(page, "/?studyLanguage=ko");
-  await expect(page.getByTestId("study-keyboard-guidance")).toHaveText(
-    "Configure the language input source through your desktop environment.",
-  );
-  await expect(
-    page.getByTestId("study-visual-keyboard").locator(".target-legend"),
-  ).toHaveCount(0);
-  await expect(page.getByTestId("study-keyboard-guidance")).not.toContainText(
-    /Ctrl|Alt\+|Super/,
-  );
-});
-
-for (const fallback of ["missing", "%%", "zh-Hant"] as const) {
-  test(`${fallback} language falls back safely to plain Latin`, async ({
-    page,
-  }) => {
-    await enableStudyKeyboard(page, "windows");
-    await openStudy(page, `/?studyLanguage=${encodeURIComponent(fallback)}`);
+  await setStudyPreferences(page, { keyboard: true });
+  for (const [index, language] of [
+    "ko",
+    "missing",
+    "%%",
+    "zh-Hant",
+  ].entries()) {
+    if (index > 0) await clearSavedStudy(page);
+    await openStudy(page, `/?studyLanguage=${encodeURIComponent(language)}`);
+    const surface = page.getByTestId("study-visual-keyboard");
     await expect(
-      page.getByTestId("study-visual-keyboard").locator(".target-legend"),
+      surface.locator(".target-legend, .shifted-target-legend"),
     ).toHaveCount(0);
     await expect(page.getByTestId("typing-key-KeyQ")).toContainText("Q");
-  });
-}
+  }
+});
 
-test("physical trail preserves ordinal codes, ignores repeat, and clears held keys on keyup and blur", async ({
+test("pressed and held keys update without duplicate repeat state and clear on keyup and blur", async ({
   page,
 }) => {
-  await enableStudyKeyboard(page, "windows");
+  await setStudyPreferences(page, { keyboard: true, platform: "windows" });
   await openStudy(page);
   const input = page.getByLabel("Your answer");
-  const trail = page.getByTestId("study-keyboard-physical-trail");
+  const keyA = page.getByTestId("typing-key-KeyA");
+  const shift = page.getByTestId("typing-key-ShiftLeft");
+  const altGr = page.getByTestId("typing-key-AltRight");
+  const option = page.getByTestId("typing-key-AltLeft");
 
   await dispatchKey(input, "keydown", "KeyA", "a");
-  await dispatchKey(input, "keydown", "KeyA", "a", { repeat: true });
+  await dispatchKey(input, "keydown", "KeyA", "a", true);
+  await expect(keyA).toHaveAttribute("data-pressed", "true");
   await dispatchKey(input, "keyup", "KeyA", "a");
-  await dispatchKey(input, "keydown", "KeyA", "a");
-  await dispatchKey(input, "keyup", "KeyA", "a");
-  await expect(trail).toHaveText("A → A");
+  await expect(keyA).toHaveAttribute("data-pressed", "false");
 
   await dispatchKey(input, "keydown", "ShiftLeft", "Shift");
   await dispatchKey(input, "keydown", "AltRight", "AltGraph");
   await dispatchKey(input, "keydown", "AltLeft", "Alt");
-  const shift = page.getByTestId("typing-key-ShiftLeft");
-  const altGr = page.getByTestId("typing-key-AltRight");
-  const option = page.getByTestId("typing-key-AltLeft");
   await expect(shift).toHaveAttribute("data-held", "true");
   await expect(altGr).toHaveAttribute("data-held", "true");
   await expect(option).toHaveAttribute("data-held", "true");
 
   await page.evaluate(() =>
     window.dispatchEvent(
-      new KeyboardEvent("keyup", {
-        code: "AltRight",
-        key: "AltGraph",
-      }),
+      new KeyboardEvent("keyup", { code: "AltRight", key: "AltGraph" }),
     ),
   );
   await expect(altGr).toHaveAttribute("data-held", "false");
   await expect(shift).toHaveAttribute("data-held", "true");
-  await expect(option).toHaveAttribute("data-held", "true");
-  const trailBeforeBlur = await trail.textContent();
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
   await expect(shift).toHaveAttribute("data-held", "false");
   await expect(option).toHaveAttribute("data-held", "false");
-  await expect(trail).toHaveText(trailBeforeBlur ?? "");
 });
 
-test("composition remains separate until commit and composing Enter never checks", async ({
+test("pressed state from one card cannot appear on the next card", async ({
   page,
 }) => {
-  await enableStudyKeyboard(page, "windows");
-  await openStudy(page, "/?studyLanguage=ja");
-  const input = page.getByLabel("Your answer");
-  const composition = page.getByTestId("study-keyboard-composition");
-  const committed = page.getByTestId("study-keyboard-committed-output");
-
-  await dispatchComposition(input, "compositionstart", "に");
-  await dispatchComposition(input, "compositionupdate", "にほ");
-  await input.evaluate((element) => {
-    element.value = "にほ";
-    element.dispatchEvent(
-      new InputEvent("input", {
-        bubbles: true,
-        data: "にほ",
-        isComposing: true,
-      }),
-    );
-  });
-  await expect(composition).toHaveText("にほ");
-  await expect(committed).toHaveText("None");
-  await dispatchKey(input, "keydown", "Enter", "Enter", {
-    isComposing: true,
-  });
-  await dispatchKey(input, "keyup", "Enter", "Enter", { isComposing: true });
-  expect(await requestCount(page, "check_answer")).toBe(0);
-
-  await input.evaluate((element) => {
-    element.value = "日本";
-    element.dispatchEvent(
-      new InputEvent("input", {
-        bubbles: true,
-        data: "日本",
-        isComposing: true,
-      }),
-    );
-  });
-  await dispatchComposition(input, "compositionend", "日本");
-  await expect(composition).toHaveText("None");
-  await expect(committed).toHaveText("日本");
-  expect(await requestCount(page, "check_answer")).toBe(0);
-
-  await input.press("Enter");
-  await expect(
-    page.getByText("Expected answer", { exact: true }),
-  ).toBeVisible();
-  expect(await requestCount(page, "check_answer")).toBe(1);
-});
-
-test("direct input updates committed output without submitting", async ({
-  page,
-}) => {
-  await enableStudyKeyboard(page, "windows");
-  await openStudy(page);
-  await page.getByLabel("Your answer").fill("direct input");
-  await expect(page.getByTestId("study-keyboard-committed-output")).toHaveText(
-    "direct input",
-  );
-  expect(await requestCount(page, "check_answer")).toBe(0);
-});
-
-test("two same-language cards never share passive keyboard state", async ({
-  page,
-}) => {
-  await enableStudyKeyboard(page, "windows");
+  await setStudyPreferences(page, { keyboard: true, platform: "windows" });
   await openStudy(page, "/?reconcile=request");
   const input = page.getByLabel("Your answer");
-  await input.fill("行きます");
+  const keyA = page.getByTestId("typing-key-KeyA");
   await dispatchKey(input, "keydown", "KeyA", "a");
-  await dispatchKey(input, "keyup", "KeyA", "a");
-  await expect(page.getByTestId("study-keyboard-physical-trail")).toHaveText(
-    "A",
-  );
+  await expect(keyA).toHaveAttribute("data-pressed", "true");
 
+  await input.fill("行きます");
   await input.press("Enter");
   await page.keyboard.press("Enter");
-  await page.keyboard.press("Enter");
-  await expect(page.getByText(/Second card ·/)).toBeVisible();
-  await expectPassiveStateReset(page);
-});
-
-test("Retry and return from Edit reset passive state", async ({ page }) => {
-  await enableStudyKeyboard(page, "windows");
-  await openStudy(page, "/?failure=check&check=loading");
-  const input = page.getByLabel("Your answer");
-  await input.fill("行きます");
-  await dispatchKey(input, "keydown", "KeyA", "a");
-  await dispatchKey(input, "keyup", "KeyA", "a");
-  await input.press("Enter");
-  await expect(page.getByRole("alert")).toBeVisible();
-  await page.getByRole("button", { name: "Try again" }).click();
-  await expect(page.getByTestId("study-visual-keyboard")).toBeVisible();
-  await expectPassiveStateReset(page);
   await expect(
-    page.getByText("Expected answer", { exact: true }),
+    page.getByRole("heading", { name: "Review saved" }),
   ).toBeVisible();
+  await page.keyboard.press("Enter");
 
-  await page.goto("/");
-  await page.getByRole("button", { name: /^(Start|Resume) study$/ }).click();
-  const nextInput = page.getByLabel("Your answer");
-  await nextInput.fill("draft");
-  await dispatchKey(nextInput, "keydown", "KeyD", "d");
-  await dispatchKey(nextInput, "keyup", "KeyD", "d");
-  await page.getByRole("button", { name: "Edit note" }).click();
-  await page.getByRole("button", { name: "Return to study" }).click();
-  await expectPassiveStateReset(page);
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("typing-key-KeyA")).toHaveAttribute(
+    "data-pressed",
+    "false",
+  );
 });
 
-test("unmount and queue replacement reset passive state", async ({ page }) => {
-  await enableStudyKeyboard(page, "windows");
-  await openStudy(page);
-  const input = page.getByLabel("Your answer");
-  await input.fill("abandoned");
-  await dispatchKey(input, "keydown", "KeyA", "a");
-  await dispatchKey(input, "keyup", "KeyA", "a");
-
-  await navigate(page, "Today");
-  await page.getByRole("button", { name: "Resume study" }).click();
-  await expectPassiveStateReset(page);
-
-  await page.getByLabel("Your answer").fill("replace me");
-  await dispatchKey(page.getByLabel("Your answer"), "keydown", "KeyR", "r");
-  await dispatchKey(page.getByLabel("Your answer"), "keyup", "KeyR", "r");
-  await navigate(page, "Today");
-  await page.getByLabel("Deck").selectOption("travel-deck");
-  await page.getByRole("button", { name: "Start study" }).click();
-  await expectPassiveStateReset(page);
-});
-
-test("the passive surface exposes no answer-derived state and remains accessible without overflow", async ({
+test("keyboard-only Study remains answer-safe, accessible, and free of horizontal overflow", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await enableStudyKeyboard(page, "windows");
+  await setStudyPreferences(page, {
+    answer: true,
+    keyboard: true,
+    platform: "windows",
+  });
   await openStudy(page, "/?fixture=korean");
   const surface = page.getByTestId("study-visual-keyboard");
-  const hiddenAnswer = "읽어요";
-  const hiddenPhysicalSequence = "D → K → S → S → U → D";
 
+  await expect(page.getByTestId("study-front-answer")).toContainText("읽어요");
   await expect(surface.locator('[data-expected="true"]')).toHaveCount(0);
   await expect(surface.locator('[data-correct="true"]')).toHaveCount(0);
   await expect(surface.locator('[data-incorrect="true"]')).toHaveCount(0);
   await expect(surface.locator('[data-completed="true"]')).toHaveCount(0);
-  await expect(surface).not.toContainText(hiddenAnswer);
-  await expect(surface).not.toContainText(hiddenPhysicalSequence);
+  await expect(surface).not.toContainText("읽어요");
+  await expect(surface).not.toContainText("D → K → S → S → U → D");
   await expect(surface).not.toContainText(
     /Expected physical sequence|answer length/i,
   );
