@@ -291,9 +291,11 @@ test("success card auto-hides at three seconds without closing its details and a
   page,
 }) => {
   await startBundleImport(page, "Japanese", true);
-  await finishBundleImport(page, "success");
   const card = page.getByTestId("bundle-import-activity");
   const dialog = page.getByRole("dialog", { name: "Import bundle" });
+  await dialog.getByRole("button", { name: "Close" }).last().click();
+  await page.clock.runFor(200);
+  await finishBundleImport(page, "success");
   await expect(card).toContainText("Added Japanese with 6 decks.");
   await card
     .getByRole("button", { name: "Open Japanese import details" })
@@ -348,11 +350,11 @@ test("manual dismissal cancels the terminal timer before a later running import"
   page,
 }) => {
   await startBundleImport(page, "Japanese", true);
-  await finishBundleImport(page, "failure");
   const card = page.getByTestId("bundle-import-activity");
   const dialog = page.getByRole("dialog", { name: "Import bundle" });
   await dialog.getByRole("button", { name: "Close" }).last().click();
   await page.clock.runFor(200);
+  await finishBundleImport(page, "failure");
   await card
     .getByRole("button", { name: "Dismiss bundle import status" })
     .click();
