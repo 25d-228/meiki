@@ -2,6 +2,8 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
 
+const terminalCardTimeoutMs = 3_000;
+
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
   await page.goto("/?bundleImport=activity");
@@ -30,6 +32,7 @@ async function navigatePrimary(
 async function startBundleImport(
   page: Page,
   expectedLanguage = "Japanese",
+  pauseClock = false,
 ): Promise<void> {
   await navigatePrimary(page, "Decks");
   await page.getByRole("button", { name: "Import bundle" }).click();
@@ -37,11 +40,16 @@ async function startBundleImport(
   await expect(
     dialog.getByText(expectedLanguage, { exact: true }),
   ).toBeVisible();
+  if (pauseClock) {
+    await page.clock.install({ time: new Date("2026-08-11T00:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-08-11T00:01:00Z"));
+  }
   await dialog.getByRole("button", { name: "Add bundle" }).click();
   await expect(dialog).toContainText("Preparing decks");
   await expect(dialog.getByRole("progressbar")).not.toHaveAttribute(
     "aria-valuenow",
   );
+  if (pauseClock) await page.clock.runFor(100);
   const activity = page.getByTestId("bundle-import-activity");
   await expect(activity).toContainText(`Adding ${expectedLanguage}`);
   await expect(activity).toContainText(/Adding cards\s+1,240 \/ 9,700/);
@@ -52,6 +60,27 @@ async function startBundleImport(
   await expect(dialog.getByRole("progressbar")).toHaveAttribute(
     "aria-valuemax",
     "9700",
+  );
+}
+
+async function finishBundleImport(
+  page: Page,
+  outcome: "success" | "failure",
+): Promise<void> {
+  await page.evaluate((value) => {
+    localStorage.setItem("meiki-e2e-finish-bundle-import", value);
+  }, outcome);
+  // The fixture has four remaining progress delays on success and two before failure.
+  await page.clock.runFor(outcome === "success" ? 400 : 200);
+}
+
+async function requestCount(page: Page, command: string): Promise<number> {
+  return page.evaluate(
+    (requestedCommand) =>
+      (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+        (request) => request.command === requestedCommand,
+      ).length,
+    command,
   );
 }
 
@@ -256,4 +285,90 @@ test("shows a dismissible failure card that reopens the import error", async ({
     .getByRole("button", { name: "Dismiss bundle import status" })
     .click();
   await expect(card).toHaveCount(0);
+});
+
+test("success card auto-hides at three seconds without closing its details and another import can start", async ({
+  page,
+}) => {
+  await startBundleImport(page, "Japanese", true);
+  await finishBundleImport(page, "success");
+  const card = page.getByTestId("bundle-import-activity");
+  const dialog = page.getByRole("dialog", { name: "Import bundle" });
+  await expect(card).toContainText("Added Japanese with 6 decks.");
+  await card
+    .getByRole("button", { name: "Open Japanese import details" })
+    .click();
+  await expect(dialog).toContainText("Added Japanese with 6 decks.");
+
+  await page.clock.fastForward(terminalCardTimeoutMs - 1);
+  await expect(card).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await page.clock.fastForward(1);
+  await expect(card).toBeHidden();
+  await expect(dialog).toContainText("Added Japanese with 6 decks.");
+
+  await dialog.getByRole("button", { name: "Close" }).last().click();
+  await page.clock.runFor(200);
+  await page.evaluate(() =>
+    localStorage.removeItem("meiki-e2e-finish-bundle-import"),
+  );
+  await page.getByRole("button", { name: "Import bundle" }).click();
+  await expect(dialog.getByText("Japanese", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Add bundle" }).click();
+  await expect(dialog).toContainText("Preparing decks");
+  await page.clock.runFor(100);
+  await expect(card).toContainText("Adding Japanese");
+  expect(await requestCount(page, "import_bundle")).toBe(2);
+});
+
+test("failure card remains until exactly three seconds", async ({ page }) => {
+  await startBundleImport(page, "Japanese", true);
+  await finishBundleImport(page, "failure");
+  const card = page.getByTestId("bundle-import-activity");
+  await expect(card).toContainText("Could not add Japanese.");
+
+  await page.clock.fastForward(terminalCardTimeoutMs - 1);
+  await expect(card).toBeVisible();
+  await page.clock.fastForward(1);
+  await expect(card).toBeHidden();
+});
+
+test("running card remains visible beyond three seconds", async ({ page }) => {
+  await startBundleImport(page, "Japanese", true);
+  const card = page.getByTestId("bundle-import-activity");
+
+  await page.clock.fastForward(terminalCardTimeoutMs + 1);
+  await expect(card).toContainText("Adding Japanese");
+  await expect(
+    card.getByRole("button", { name: "Dismiss bundle import status" }),
+  ).toHaveCount(0);
+});
+
+test("manual dismissal cancels the terminal timer before a later running import", async ({
+  page,
+}) => {
+  await startBundleImport(page, "Japanese", true);
+  await finishBundleImport(page, "failure");
+  const card = page.getByTestId("bundle-import-activity");
+  const dialog = page.getByRole("dialog", { name: "Import bundle" });
+  await dialog.getByRole("button", { name: "Close" }).last().click();
+  await page.clock.runFor(200);
+  await card
+    .getByRole("button", { name: "Dismiss bundle import status" })
+    .click();
+  await expect(card).toBeHidden();
+
+  await page.evaluate(() =>
+    localStorage.removeItem("meiki-e2e-finish-bundle-import"),
+  );
+  await page.getByRole("button", { name: "Import bundle" }).click();
+  await expect(dialog.getByText("Japanese", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Add bundle" }).click();
+  await expect(dialog).toContainText("Preparing decks");
+  await page.clock.runFor(100);
+  await expect(card).toContainText("Adding Japanese");
+
+  await page.clock.fastForward(terminalCardTimeoutMs + 1);
+  await expect(card).toContainText("Adding Japanese");
+  expect(await requestCount(page, "import_bundle")).toBe(2);
 });

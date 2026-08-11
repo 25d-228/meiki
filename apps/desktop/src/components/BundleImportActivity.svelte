@@ -23,6 +23,7 @@
 
   type Props = {
     activity: BundleImportActivity | null;
+    cardVisible: boolean;
     dialogOpen?: boolean;
     onAdd: () => void;
     onAbandon: () => void;
@@ -31,6 +32,7 @@
 
   let {
     activity,
+    cardVisible,
     dialogOpen = $bindable(false),
     onAdd,
     onAbandon,
@@ -39,6 +41,20 @@
 
   $effect(() => {
     if (!dialogOpen && activity?.status === "ready") onAbandon();
+  });
+
+  $effect(() => {
+    if (
+      !cardVisible ||
+      !activity ||
+      (activity.status !== "success" && activity.status !== "failure")
+    )
+      return;
+    const terminalActivity = activity;
+    const timer = window.setTimeout(() => {
+      if (activity === terminalActivity) onDismiss();
+    }, 3_000);
+    return () => window.clearTimeout(timer);
   });
 
   function languageName(languageTag: string): string {
@@ -73,12 +89,12 @@
     return `Added ${language} with ${result.added_decks.toLocaleString()} ${result.added_decks === 1 ? "deck" : "decks"}.`;
   }
 
-  function cardVisible(current: BundleImportActivity): boolean {
+  function statusHasCard(current: BundleImportActivity): boolean {
     return ["running", "success", "failure"].includes(current.status);
   }
 </script>
 
-{#if activity && cardVisible(activity)}
+{#if activity && cardVisible && statusHasCard(activity)}
   <Card.Root
     size="sm"
     class="pointer-events-auto w-full gap-0 rounded-none py-0 shadow-lg"
