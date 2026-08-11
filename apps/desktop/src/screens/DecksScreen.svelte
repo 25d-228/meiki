@@ -77,6 +77,7 @@
     startY: number;
     currentClientX: number;
     currentClientY: number;
+    clickedDeckId: string | null;
     snapshot: SvelteSet<string>;
     mode: "replace" | "add" | "toggle";
     scrollContainer: HTMLElement;
@@ -330,9 +331,9 @@
 
   function beginPointerSelection(event: PointerEvent): void {
     if (
-      event.pointerType !== "mouse" ||
+      event.pointerType === "touch" ||
+      event.pointerType === "pen" ||
       event.button !== 0 ||
-      !event.isPrimary ||
       !(event.currentTarget instanceof HTMLDivElement) ||
       pointerOriginIsInteractive(event.target)
     ) {
@@ -350,12 +351,16 @@
       startY: event.clientY - areaBounds.top + area.scrollTop,
       currentClientX: event.clientX,
       currentClientY: event.clientY,
+      clickedDeckId:
+        event.target instanceof Element
+          ? (event.target.closest<HTMLElement>("[data-deck-selection-click-id]")
+              ?.dataset.deckSelectionClickId ?? null)
+          : null,
       snapshot: new SvelteSet(selectedDeckIds),
       mode: toggleModifier ? "toggle" : event.shiftKey ? "add" : "replace",
       scrollContainer: nearestScrollableContainer(area),
       active: false,
     };
-    area.setPointerCapture(event.pointerId);
   }
 
   function pointerOriginIsInteractive(target: EventTarget | null): boolean {
@@ -393,8 +398,31 @@
   }
 
   function finishPointerSelection(event: PointerEvent): void {
+    const selection = pointerSelection;
+    if (!selection || selection.pointerId !== event.pointerId) return;
+    if (selection.active) {
+      event.preventDefault();
+    } else {
+      const areaBounds = deckInteractionArea.getBoundingClientRect();
+      const currentX =
+        event.clientX - areaBounds.left + deckInteractionArea.scrollLeft;
+      const currentY =
+        event.clientY - areaBounds.top + deckInteractionArea.scrollTop;
+      if (
+        Math.hypot(currentX - selection.startX, currentY - selection.startY) <
+        pointerMovementThreshold
+      ) {
+        selectedDeckIds =
+          selection.clickedDeckId && selection.clickedDeckId !== defaultDeckId
+            ? [selection.clickedDeckId]
+            : [];
+      }
+    }
+    stopPointerSelection();
+  }
+
+  function cancelPointerSelectionEvent(event: PointerEvent): void {
     if (pointerSelection?.pointerId !== event.pointerId) return;
-    if (pointerSelection.active) event.preventDefault();
     stopPointerSelection();
   }
 
@@ -403,14 +431,7 @@
   }
 
   function stopPointerSelection(): void {
-    const pointerId = pointerSelection?.pointerId;
     pointerSelection = null;
-    if (
-      pointerId !== undefined &&
-      deckInteractionArea?.hasPointerCapture(pointerId)
-    ) {
-      deckInteractionArea.releasePointerCapture(pointerId);
-    }
     pointerSelectionActive = false;
     selectionRectangle = null;
     if (edgeScrollFrame !== null) {
@@ -799,7 +820,12 @@
   }
 </script>
 
-<svelte:window onkeydown={handleVimKeydown} />
+<svelte:window
+  onkeydown={handleVimKeydown}
+  onpointermove={updatePointerSelection}
+  onpointerup={finishPointerSelection}
+  onpointercancel={cancelPointerSelectionEvent}
+/>
 
 {#snippet deckCounts(deck: DeckSummaryDto)}
   <dl class="deck-counts">
@@ -819,17 +845,19 @@
 {/snippet}
 
 {#snippet deckNavigationActions(deck: DeckSummaryDto)}
-  <Button
-    variant="outline"
-    onclick={() => onOpen(deck.id, deck.name, deck.is_bundle_stage)}
-    >Open</Button
-  >
-  <Button
-    disabled={busyDeckId !== "" || deck.total_cards === 0}
-    onclick={() => void beginStudy(deck)}
-  >
-    {studyActionLabel(deck)}
-  </Button>
+  <div class="deck-navigation-actions">
+    <Button
+      variant="outline"
+      onclick={() => onOpen(deck.id, deck.name, deck.is_bundle_stage)}
+      >Open</Button
+    >
+    <Button
+      disabled={busyDeckId !== "" || deck.total_cards === 0}
+      onclick={() => void beginStudy(deck)}
+    >
+      {studyActionLabel(deck)}
+    </Button>
+  </div>
 {/snippet}
 
 {#snippet deckActionsMenu(deck: DeckSummaryDto)}
@@ -1000,10 +1028,6 @@
     data-testid="deck-selection-area"
     bind:this={deckInteractionArea}
     onpointerdown={beginPointerSelection}
-    onpointermove={updatePointerSelection}
-    onpointerup={finishPointerSelection}
-    onpointercancel={finishPointerSelection}
-    onlostpointercapture={finishPointerSelection}
   >
     {#if deckView === "grid"}
       <div class="deck-grid" data-testid="deck-grid" aria-busy={loading}>
@@ -1021,6 +1045,7 @@
                 ? undefined
                 : deck.id}
               data-selected={selectedDeckIds.includes(deck.id)}
+              data-deck-selection-click-id={deck.id}
               data-testid={`deck-${deck.id}`}
               data-vim-deck-item
               data-vim-deck-id={deck.id}
@@ -1076,6 +1101,7 @@
                 ? undefined
                 : deck.id}
               data-selected={selectedDeckIds.includes(deck.id)}
+              data-deck-selection-click-id={deck.id}
               data-testid={`deck-${deck.id}`}
               data-vim-deck-item
               data-vim-deck-id={deck.id}
@@ -1321,7 +1347,8 @@
   .deck-toolbar,
   .deck-view-toolbar,
   .deck-selection-toolbar,
-  .deck-card-actions {
+  .deck-card-actions,
+  .deck-navigation-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
@@ -1396,6 +1423,7 @@
     gap: 0.5rem;
     justify-content: flex-end;
     min-width: 0;
+    width: 16rem;
   }
 
   .deck-counts {
@@ -1475,6 +1503,7 @@
 
     .deck-list-actions {
       justify-content: flex-start;
+      width: 100%;
     }
   }
 </style>

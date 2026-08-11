@@ -119,6 +119,51 @@ async function selectDeck(
 type Point = { x: number; y: number };
 type PointerModifier = "Shift" | "Control" | "Meta";
 
+async function clickBelowPointerThreshold(
+  page: import("@playwright/test").Page,
+  point: Point,
+): Promise<void> {
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + 2, point.y + 2);
+  await page.mouse.up();
+}
+
+async function clickDeckBackground(
+  page: import("@playwright/test").Page,
+  deckId: string,
+): Promise<void> {
+  const bounds = await page.getByTestId(`deck-${deckId}`).boundingBox();
+  if (!bounds) throw new Error("Deck background geometry is unavailable");
+  await clickBelowPointerThreshold(page, {
+    x: bounds.x + 4,
+    y: bounds.y + 4,
+  });
+}
+
+async function beginDeckBackgroundPress(
+  page: import("@playwright/test").Page,
+  deckId: string,
+): Promise<number> {
+  const area = page.getByTestId("deck-selection-area");
+  await area.evaluate((element) => {
+    element.addEventListener(
+      "pointerdown",
+      (event) => {
+        element.setAttribute("data-test-pointer-id", String(event.pointerId));
+      },
+      { once: true },
+    );
+  });
+  const bounds = await page.getByTestId(`deck-${deckId}`).boundingBox();
+  if (!bounds) throw new Error("Deck background geometry is unavailable");
+  await page.mouse.move(bounds.x + 4, bounds.y + 4);
+  await page.mouse.down();
+  const pointerId = await area.getAttribute("data-test-pointer-id");
+  if (!pointerId) throw new Error("Deck background pointer is unavailable");
+  return Number(pointerId);
+}
+
 async function partialDeckDragPoints(
   page: import("@playwright/test").Page,
   deckId: string,
@@ -171,6 +216,67 @@ async function dragAcrossDeckEdge(
   if (modifier && !releaseModifierAfterPointerDown) {
     await page.keyboard.up(modifier);
   }
+}
+
+async function beginPackagedCompatibleDrag(
+  page: import("@playwright/test").Page,
+  deckId: string,
+): Promise<number> {
+  const { start, end } = await partialDeckDragPoints(page, deckId);
+  return page.evaluate(
+    ({ startPoint, endPoint }) => {
+      const area = document.querySelector<HTMLElement>(
+        '[data-testid="deck-selection-area"]',
+      );
+      const origin = document.elementFromPoint(startPoint.x, startPoint.y);
+      if (!area || !origin || !area.contains(origin)) {
+        throw new Error("Packaged-compatible drag origin is unavailable");
+      }
+      const pointerId = 47;
+      // WKWebView can omit mouse-specific PointerEvent fields for a valid left-button drag.
+      origin.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          buttons: 1,
+          clientX: startPoint.x,
+          clientY: startPoint.y,
+          pointerId,
+        }),
+      );
+      window.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          cancelable: true,
+          button: -1,
+          buttons: 1,
+          clientX: endPoint.x,
+          clientY: endPoint.y,
+          pointerId,
+        }),
+      );
+      return pointerId;
+    },
+    { startPoint: start, endPoint: end },
+  );
+}
+
+async function finishPackagedCompatibleDrag(
+  page: import("@playwright/test").Page,
+  pointerId: number,
+): Promise<void> {
+  await page.evaluate((activePointerId) => {
+    window.dispatchEvent(
+      new PointerEvent("pointerup", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons: 0,
+        pointerId: activePointerId,
+      }),
+    );
+  }, pointerId);
 }
 
 async function dragFromElement(
@@ -389,6 +495,78 @@ test("keeps deck information and actions identical in Grid and List", async ({
   ]);
 });
 
+test("aligns every List count column when Study and Resume labels differ", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await seedStudyState(page, "travel-deck", "__all_decks__");
+  await openDecks(page);
+  await selectDeckView(page, "List");
+  await expect(
+    page
+      .getByTestId("deck-travel-deck")
+      .getByRole("button", { name: "Resume" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByTestId("deck-listening-deck")
+      .getByRole("button", { name: "Study" }),
+  ).toBeVisible();
+
+  const countColumns = await page
+    .locator(".deck-list-row")
+    .evaluateAll((rows) =>
+      rows.map((row) =>
+        Array.from(row.querySelectorAll<HTMLElement>(".deck-counts > div")).map(
+          (count) => {
+            const bounds = count.getBoundingClientRect();
+            return { x: bounds.x, width: bounds.width };
+          },
+        ),
+      ),
+    );
+  expect(countColumns.length).toBeGreaterThan(1);
+  const expectedColumns = countColumns[0];
+  for (const columns of countColumns.slice(1)) {
+    expect(columns).toHaveLength(expectedColumns.length);
+    for (const [index, column] of columns.entries()) {
+      expect(Math.abs(column.x - expectedColumns[index].x)).toBeLessThanOrEqual(
+        0.5,
+      );
+      expect(
+        Math.abs(column.width - expectedColumns[index].width),
+      ).toBeLessThanOrEqual(0.5);
+    }
+  }
+});
+
+test("keeps a visible gap between Grid navigation actions", async ({
+  page,
+}) => {
+  await page.goto("/?decks=batch");
+  await seedStudyState(page, "travel-deck", "__all_decks__");
+  await openDecks(page);
+
+  for (const { deckId, studyLabel } of [
+    { deckId: "travel-deck", studyLabel: "Resume" },
+    { deckId: "listening-deck", studyLabel: "Study" },
+  ]) {
+    const deck = page.getByTestId(`deck-${deckId}`);
+    const openBounds = await deck
+      .getByRole("button", { name: "Open" })
+      .boundingBox();
+    const studyBounds = await deck
+      .getByRole("button", { name: studyLabel })
+      .boundingBox();
+    if (!openBounds || !studyBounds) {
+      throw new Error("Grid navigation action geometry is unavailable");
+    }
+    expect(studyBounds.x - (openBounds.x + openBounds.width)).toBeGreaterThan(
+      0,
+    );
+  }
+});
+
 test("uses the shared single-deck deletion flow from List", async ({
   page,
 }) => {
@@ -438,52 +616,125 @@ for (const deckView of ["Grid", "List"] as const) {
 }
 
 for (const deckView of ["Grid", "List"] as const) {
-  test(`partially intersecting a deck selects it by rectangle in ${deckView}`, async ({
+  test(`a packaged-compatible left-button drag selects a partial deck intersection in ${deckView}`, async ({
     page,
   }) => {
     await page.goto("/?decks=batch");
     await openDecks(page);
     if (deckView === "List") await selectDeckView(page, "List");
 
-    await dragAcrossDeckEdge(page, "travel-deck");
+    const pointerId = await beginPackagedCompatibleDrag(page, "travel-deck");
 
+    await expect(page.getByTestId("deck-selection-rectangle")).toBeVisible();
     await expect(
       page.getByRole("checkbox", { name: "Select Travel phrases" }),
     ).toHaveAttribute("aria-checked", "true");
     await expect(page.getByTestId("deck-selection-count")).toContainText(
       "1 deck selected",
     );
-    await expect(page.getByTestId("deck-selection-rectangle")).toHaveCount(0);
     await expect(
       page
         .getByTestId("deck-default-deck")
         .getByRole("checkbox", { name: "Select Unsorted" }),
     ).toHaveCount(0);
+    await finishPackagedCompatibleDrag(page, pointerId);
+    await expect(page.getByTestId("deck-selection-rectangle")).toHaveCount(0);
   });
 }
 
-test("a pointer movement below the threshold does not change selection", async ({
-  page,
-}) => {
-  await page.goto("/?decks=batch");
-  await openDecks(page);
-  await selectDeck(page, "Travel phrases");
-  const { start } = await partialDeckDragPoints(page, "listening-deck");
-  await page.mouse.move(start.x, start.y);
-  await page.mouse.down();
-  await page.mouse.move(start.x + 3, start.y + 2);
-  await page.mouse.up();
+for (const deckView of ["Grid", "List"] as const) {
+  test(`background clicks replace selection and empty space clears it in ${deckView}`, async ({
+    page,
+  }) => {
+    await page.goto("/?decks=batch");
+    await openDecks(page);
+    if (deckView === "List") await selectDeckView(page, "List");
+    await selectDeck(page, "Travel phrases");
+    await selectDeck(page, "Listening practice");
 
-  await expect(
-    page.getByRole("checkbox", { name: "Select Travel phrases" }),
-  ).toHaveAttribute("aria-checked", "true");
-  await expect(
-    page.getByRole("checkbox", { name: "Select Listening practice" }),
-  ).toHaveAttribute("aria-checked", "false");
-  await expect(page.getByTestId("deck-selection-count")).toContainText(
-    "1 deck selected",
-  );
-});
+    await clickDeckBackground(page, "travel-deck");
+    await expect(
+      page.getByRole("checkbox", { name: "Select Travel phrases" }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(1);
+
+    await selectDeck(page, "Listening practice");
+    await clickDeckBackground(page, "archive-deck");
+    await expect(
+      page.getByRole("checkbox", { name: "Select Archived phrases" }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(1);
+
+    await selectDeck(page, "Travel phrases");
+    const { start } = await partialDeckDragPoints(page, "travel-deck");
+    await clickBelowPointerThreshold(page, start);
+    await expect(page.getByTestId("deck-selection-count")).toHaveCount(0);
+
+    await selectDeck(page, "Travel phrases");
+    await selectDeck(page, "Listening practice");
+    await clickDeckBackground(page, "default-deck");
+    await expect(page.getByTestId("deck-selection-count")).toHaveCount(0);
+  });
+
+  test(`interactive deck controls keep their native selection behavior in ${deckView}`, async ({
+    page,
+  }) => {
+    await page.goto("/?decks=batch");
+    await openDecks(page);
+    if (deckView === "List") await selectDeckView(page, "List");
+    await selectDeck(page, "Travel phrases");
+    await selectDeck(page, "Listening practice");
+
+    await page
+      .getByRole("button", { name: "Actions for Travel phrases" })
+      .click();
+    await expect(
+      page.getByRole("menuitem", { name: "Delete deck" }),
+    ).toBeVisible();
+    await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(2);
+    await page.keyboard.press("Escape");
+
+    await selectDeck(page, "Travel phrases");
+    await expect(
+      page.getByRole("checkbox", { name: "Select Travel phrases" }),
+    ).toHaveAttribute("aria-checked", "false");
+    await expect(
+      page.getByRole("checkbox", { name: "Select Listening practice" }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+}
+
+for (const cancellation of ["pointer cancel", "window blur"] as const) {
+  test(`a pending background click is discarded on ${cancellation}`, async ({
+    page,
+  }) => {
+    await page.goto("/?decks=batch");
+    await openDecks(page);
+    await selectDeck(page, "Travel phrases");
+    await selectDeck(page, "Listening practice");
+    const pointerId = await beginDeckBackgroundPress(page, "travel-deck");
+
+    if (cancellation === "pointer cancel") {
+      await page.evaluate((activePointerId) => {
+        window.dispatchEvent(
+          new PointerEvent("pointercancel", {
+            bubbles: true,
+            pointerId: activePointerId,
+            pointerType: "mouse",
+          }),
+        );
+      }, pointerId);
+    } else {
+      await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    }
+    await page.mouse.up();
+
+    await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(2);
+    await expect(page.getByTestId("deck-selection-count")).toContainText(
+      "2 decks selected",
+    );
+  });
+}
 
 test("the rectangle stays clipped to Decks without horizontal overflow", async ({
   page,
@@ -663,11 +914,13 @@ test("interactive origins never begin rectangle selection", async ({
     "tabindex",
     "overlay",
   ]) {
-    await dragFromElement(
-      page,
-      page.locator(`[data-interactive-origin="${origin}"]`),
+    const interactiveOrigin = page.locator(
+      `[data-interactive-origin="${origin}"]`,
     );
+    await dragFromElement(page, interactiveOrigin);
     await expect(page.getByTestId("deck-selection-rectangle")).toHaveCount(0);
+    await expect(page.getByTestId("deck-selection-count")).toHaveCount(0);
+    await interactiveOrigin.click();
     await expect(page.getByTestId("deck-selection-count")).toHaveCount(0);
   }
 });
