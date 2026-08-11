@@ -143,6 +143,17 @@ async function clickDeckBackground(
   });
 }
 
+async function doubleClickDeckBackground(
+  page: import("@playwright/test").Page,
+  deckId: string,
+): Promise<void> {
+  const deck = page.getByTestId(`deck-${deckId}`);
+  await deck.scrollIntoViewIfNeeded();
+  const bounds = await deck.boundingBox();
+  if (!bounds) throw new Error("Deck background geometry is unavailable");
+  await page.mouse.dblclick(bounds.x + 4, bounds.y + 4);
+}
+
 async function beginDeckBackgroundPress(
   page: import("@playwright/test").Page,
   deckId: string,
@@ -641,6 +652,91 @@ for (const deckView of ["Grid", "List"] as const) {
     ).toHaveCount(0);
     await finishPackagedCompatibleDrag(page, pointerId);
     await expect(page.getByTestId("deck-selection-rectangle")).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Decks", level: 1 }),
+    ).toBeVisible();
+  });
+}
+
+for (const { deckView, deckId, deckName } of [
+  {
+    deckView: "Grid",
+    deckId: "travel-deck",
+    deckName: "Travel phrases",
+  },
+  {
+    deckView: "List",
+    deckId: "deck:ja-JP:00",
+    deckName: "Japanese 00 — Kana, sound, and Japanese input",
+  },
+] as const) {
+  test(`a ${deckView} background double-click opens the clicked deck once`, async ({
+    page,
+  }) => {
+    await page.goto("/?bundleRemoval=installed&decks=batch");
+    await openDecks(page);
+    if (deckView === "List") await selectDeckView(page, "List");
+    await selectDeck(page, "Archived phrases");
+    await page
+      .getByTestId("deck-listening-deck")
+      .getByRole("button", { name: "Open" })
+      .focus();
+
+    await doubleClickDeckBackground(page, deckId);
+
+    await expect(
+      page.getByRole("heading", { name: deckName, level: 1 }),
+    ).toBeVisible();
+    const deckRequests = await page.evaluate(() =>
+      (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+        (request) => request.command === "get_deck_cards",
+      ),
+    );
+    expect(deckRequests).toHaveLength(1);
+    expect(deckRequests[0]?.args).toMatchObject({
+      request: { deck_id: deckId },
+    });
+
+    if (deckId === "deck:ja-JP:00") {
+      await page.getByRole("button", { name: "Delete deck" }).click();
+      await expect(
+        page.getByRole("alertdialog", { name: `Delete “${deckName}”?` }),
+      ).toContainText(
+        "Bundled cards in this deck will be permanently removed. Personal cards will be moved to Trash.",
+      );
+    }
+  });
+}
+
+test("a background double-click opens visible Unsorted", async ({ page }) => {
+  await openDecks(page);
+
+  await doubleClickDeckBackground(page, "default-deck");
+
+  await expect(
+    page.getByRole("heading", { name: "Unsorted", level: 1 }),
+  ).toBeVisible();
+  expect((await lastRequest(page, "get_deck_cards"))?.args).toMatchObject({
+    request: { deck_id: "default-deck" },
+  });
+});
+
+for (const deckView of ["Grid", "List"] as const) {
+  test(`double-clicking a ${deckView} selection control does not open its deck`, async ({
+    page,
+  }) => {
+    await page.goto("/?decks=batch");
+    await openDecks(page);
+    if (deckView === "List") await selectDeckView(page, "List");
+
+    await page
+      .getByRole("checkbox", { name: "Select Travel phrases" })
+      .dblclick();
+
+    await expect(
+      page.getByRole("heading", { name: "Decks", level: 1 }),
+    ).toBeVisible();
+    expect(await lastRequest(page, "get_deck_cards")).toBeUndefined();
   });
 }
 
