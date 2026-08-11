@@ -85,6 +85,7 @@
   let deckContext = "All decks";
   let bundleImportActivity: BundleImportActivity | null = null;
   let bundleImportDialogOpen = false;
+  let bundleImportCardVisible = false;
   let bundleImportRefresh = 0;
   let deletionActivity: DeletionActivityState | null = null;
   let deletionDialogOpen = false;
@@ -160,6 +161,7 @@
       bundleImportDialogOpen = true;
       return;
     }
+    bundleImportCardVisible = false;
     bundleImportActivity = {
       status: "choosing",
       path: "",
@@ -192,6 +194,7 @@
         if (bundleImportActivity?.path !== path) return;
         bundleImportActivity.error = message(cause);
         bundleImportActivity.status = "failure";
+        bundleImportCardVisible = true;
       }
     } catch (cause) {
       bundleImportActivity = {
@@ -202,6 +205,7 @@
         result: null,
         error: message(cause),
       };
+      bundleImportCardVisible = true;
       bundleImportDialogOpen = true;
     }
   }
@@ -214,6 +218,7 @@
       return;
     const path = bundleImportActivity.path;
     bundleImportActivity.status = "running";
+    bundleImportCardVisible = true;
     bundleImportActivity.error = "";
     bundleImportActivity.progress = {
       stage: "preparing_decks",
@@ -228,12 +233,14 @@
       if (bundleImportActivity?.path !== path) return;
       bundleImportActivity.result = result;
       bundleImportActivity.status = "success";
+      bundleImportCardVisible = true;
       bundleImportDialogOpen = false;
       bundleImportRefresh += 1;
     } catch (cause) {
       if (bundleImportActivity?.path !== path) return;
       bundleImportActivity.error = message(cause);
       bundleImportActivity.status = "failure";
+      bundleImportCardVisible = true;
     }
   }
 
@@ -258,18 +265,19 @@
     return 2;
   }
 
-  function dismissBundleImport(): void {
+  function hideBundleImportCard(): void {
     if (
       bundleImportActivity?.status !== "success" &&
       bundleImportActivity?.status !== "failure"
     )
       return;
-    bundleImportActivity = null;
-    bundleImportDialogOpen = false;
+    bundleImportCardVisible = false;
   }
 
   function abandonBundlePreview(): void {
-    if (bundleImportActivity?.status === "ready") bundleImportActivity = null;
+    if (bundleImportActivity?.status !== "ready") return;
+    bundleImportActivity = null;
+    bundleImportCardVisible = false;
   }
 
   function beginDeletion(
@@ -857,10 +865,11 @@
     />
     <BundleImportActivity
       activity={bundleImportActivity}
+      cardVisible={bundleImportCardVisible}
       bind:dialogOpen={bundleImportDialogOpen}
       onAdd={() => void addBundle()}
       onAbandon={abandonBundlePreview}
-      onDismiss={dismissBundleImport}
+      onDismiss={hideBundleImportCard}
     />
   </div>
 </Tooltip.Provider>
