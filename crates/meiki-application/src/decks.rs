@@ -138,6 +138,7 @@ pub struct BundleRemovalResultDto {
     pub removed_decks: u64,
     #[ts(type = "number")]
     pub affected_cards: u64,
+    pub media_cleanup_warning: Option<String>,
 }
 
 impl ApplicationService {
@@ -197,11 +198,15 @@ impl ApplicationService {
                 });
             },
         )?;
-        self.remove_orphaned_media(&storage, &removed.orphaned_media_hashes)?;
+        let media_cleanup_warning = self
+            .remove_orphaned_media(&storage, &removed.orphaned_media_hashes)
+            .err()
+            .map(|_| "Bundle removed, but some unused audio could not be cleaned up.".into());
         Ok(BundleRemovalResultDto {
             language_tag: removed.language_tag,
             removed_decks: removed.deck_count,
             affected_cards: removed.active_card_count,
+            media_cleanup_warning,
         })
     }
 
@@ -1130,6 +1135,51 @@ mod tests {
         let storage = service.open_storage().unwrap();
         assert!(storage.get_deck("cleanup-stage").is_err());
         assert!(storage.get_source_note("cleanup-source").is_err());
+    }
+
+    #[test]
+    fn bundle_media_cleanup_failure_reports_the_committed_removal() {
+        let directory = tempdir().unwrap();
+        let service = ApplicationService::new(directory.path().join("collection.db"));
+        let content_hash = service.media_store().seed_wav_objects(1).unwrap().remove(0);
+        let mut storage = service.open_storage().unwrap();
+        storage
+            .import_pristine_bundle(
+                &one_card_bundle(content_hash.clone()),
+                || {},
+                || Ok::<(), ()>(()),
+            )
+            .unwrap();
+        drop(storage);
+        let (_, reviews_before) = review_card(&service, "cleanup-card", "cleanup-review", 1_500);
+        assert_eq!(reviews_before.len(), 1);
+        let object = service.media_store().resolve(&content_hash).unwrap();
+        let preview = service.list_installed_bundles().unwrap().remove(0);
+
+        let result = service
+            .remove_bundle(
+                &BundleRemovalRequest {
+                    language_tag: preview.language_tag,
+                    expected_decks: preview.decks,
+                    expected_cards: preview.cards,
+                    now_ms: 2_000,
+                },
+                |_| fs::write(&object, b"corrupt managed media").unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.media_cleanup_warning.as_deref(),
+            Some("Bundle removed, but some unused audio could not be cleaned up.")
+        );
+        let storage = service.open_storage().unwrap();
+        assert!(storage.installed_bundles().unwrap().is_empty());
+        assert!(storage.bundle_deck_ids("ko-KR").unwrap().is_empty());
+        assert!(storage.get_deck("cleanup-stage").is_err());
+        assert!(storage.get_source_note("cleanup-source").is_err());
+        assert!(storage.get_card("cleanup-card").is_err());
+        assert!(storage.load_schedule("cleanup-card").is_err());
+        assert!(storage.review_events("cleanup-card").is_err());
     }
 
     #[test]

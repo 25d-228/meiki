@@ -81,7 +81,7 @@
 {#if activity && cardVisible(activity)}
   <Card.Root
     size="sm"
-    class="fixed right-3 bottom-3 z-40 w-[min(16rem,calc(100vw-1.5rem))] gap-0 rounded-none py-0 shadow-lg sm:right-5 sm:bottom-5"
+    class="pointer-events-auto w-full gap-0 rounded-none py-0 shadow-lg"
     data-testid="bundle-import-activity"
     role="status"
     aria-live="polite"

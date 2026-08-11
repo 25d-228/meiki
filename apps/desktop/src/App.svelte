@@ -13,11 +13,23 @@
   import * as Sheet from "$lib/components/ui/sheet/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import BundleImportActivity from "./components/BundleImportActivity.svelte";
+  import DeletionActivity from "./components/DeletionActivity.svelte";
   import { api } from "./lib/api";
+  import type {
+    BundleDeletion,
+    DeletionActivity as DeletionActivityState,
+    DeletionProgress,
+    MultipleDeckDeletion,
+    SingleDeckDeletion,
+  } from "./lib/deletion-activity";
   import type { BundleImportProgressDto } from "./lib/generated/BundleImportProgressDto";
   import type { BundleImportResultDto } from "./lib/generated/BundleImportResultDto";
   import type { BundleImportStageDto } from "./lib/generated/BundleImportStageDto";
   import type { BundlePreviewDto } from "./lib/generated/BundlePreviewDto";
+  import type { BundleRemovalResultDto } from "./lib/generated/BundleRemovalResultDto";
+  import type { DeleteDeckProgressDto } from "./lib/generated/DeleteDeckProgressDto";
+  import type { DeleteDeckResultDto } from "./lib/generated/DeleteDeckResultDto";
+  import type { DeleteDecksResultDto } from "./lib/generated/DeleteDecksResultDto";
   import { messages } from "./lib/messages";
   import {
     clearStudyQueue,
@@ -74,10 +86,16 @@
   let bundleImportActivity: BundleImportActivity | null = null;
   let bundleImportDialogOpen = false;
   let bundleImportRefresh = 0;
+  let deletionActivity: DeletionActivityState | null = null;
+  let deletionDialogOpen = false;
+  let deletionCardVisible = false;
+  let deletionRefresh = 0;
+  let nextDeletionOperationId = 1;
   $: bundleImportRunning =
     bundleImportActivity?.status === "choosing" ||
     bundleImportActivity?.status === "previewing" ||
     bundleImportActivity?.status === "running";
+  $: deletionRunning = deletionActivity?.status === "running";
 
   onMount(() => {
     const savedTheme = localStorage.getItem("meiki-theme");
@@ -254,6 +272,274 @@
     if (bundleImportActivity?.status === "ready") bundleImportActivity = null;
   }
 
+  function beginDeletion(
+    kind: DeletionActivityState["kind"],
+    name: string,
+  ): number | null {
+    if (deletionRunning) {
+      announcement = "Another deletion is already running.";
+      return null;
+    }
+    const operationId = nextDeletionOperationId;
+    nextDeletionOperationId += 1;
+    deletionActivity = {
+      operationId,
+      kind,
+      status: "running",
+      name,
+      progress: { phase: "preparing", current: null, total: null },
+      message: "",
+    };
+    deletionCardVisible = true;
+    deletionDialogOpen = true;
+    return operationId;
+  }
+
+  function updateDeletionProgress(
+    operationId: number,
+    progress: DeletionProgress,
+  ): void {
+    if (
+      deletionActivity?.operationId !== operationId ||
+      deletionActivity.status !== "running"
+    )
+      return;
+    const previous = deletionActivity.progress;
+    const previousPhase = deletionPhaseIndex(previous.phase);
+    const nextPhase = deletionPhaseIndex(progress.phase);
+    if (
+      nextPhase < previousPhase ||
+      (nextPhase === previousPhase &&
+        previous.current !== null &&
+        progress.current !== null &&
+        progress.current < previous.current)
+    )
+      return;
+    deletionActivity.progress = progress;
+  }
+
+  function deletionPhaseIndex(phase: DeletionProgress["phase"]): number {
+    if (phase === "preparing") return 0;
+    if (phase === "removing_cards") return 1;
+    if (phase === "cleaning_audio") return 2;
+    return 3;
+  }
+
+  function finishDeletion(
+    operationId: number,
+    status: "success" | "warning" | "failure",
+    message: string,
+  ): void {
+    if (deletionActivity?.operationId !== operationId) return;
+    deletionActivity.status = status;
+    deletionActivity.message = message;
+    deletionCardVisible = true;
+  }
+
+  function dismissDeletion(): void {
+    if (deletionActivity?.status === "running") return;
+    deletionCardVisible = false;
+  }
+
+  async function applyDeletedDeckCleanup(
+    deletedDeckIds: string[],
+  ): Promise<void> {
+    const deletedIds = new Set(deletedDeckIds);
+    const savedQueue = readStudyQueue();
+    if (
+      savedQueue &&
+      savedQueue.deckId !== "__all_decks__" &&
+      deletedIds.has(savedQueue.deckId)
+    ) {
+      clearStudyQueue();
+      clearStudySession();
+    }
+    const selectedTodayDeck = localStorage.getItem("meiki-today-deck");
+    if (selectedTodayDeck && deletedIds.has(selectedTodayDeck)) {
+      localStorage.setItem("meiki-today-deck", "__all_decks__");
+    }
+    deletionRefresh += 1;
+    if (activeScreen === "deck" && deletedIds.has(selectedDeckId)) {
+      const deletedDeckName = selectedDeckName;
+      selectedDeckId = "";
+      selectedDeckName = "";
+      selectedDeckIsBundleStage = false;
+      announcement = `Deleted ${deletedDeckName}. Returning to Decks.`;
+      await performNavigation("decks");
+    }
+  }
+
+  async function deleteSingleDeck(deletion: SingleDeckDeletion): Promise<void> {
+    const operationId = beginDeletion(
+      "deck",
+      `Deleting “${deletion.deckName}”`,
+    );
+    if (operationId === null) return;
+    let result: DeleteDeckResultDto;
+    try {
+      result = await api.deleteDeck(
+        {
+          deck_id: deletion.deckId,
+          move_cards_to_deck_id: deletion.moveCardsToDeckId,
+          confirmation: deletion.deckName,
+          now_ms: Date.now(),
+        },
+        (progress: DeleteDeckProgressDto) =>
+          updateDeletionProgress(operationId, progress),
+      );
+    } catch {
+      finishDeletion(
+        operationId,
+        "failure",
+        "Could not delete the deck. Try again.",
+      );
+      return;
+    }
+    try {
+      await applyDeletedDeckCleanup([result.deleted_deck_id]);
+    } catch {
+      deletionRefresh += 1;
+      finishDeletion(
+        operationId,
+        "warning",
+        "Deck deleted, but the collection view could not be refreshed.",
+      );
+      return;
+    }
+    if (result.media_cleanup_warning) {
+      finishDeletion(
+        operationId,
+        "warning",
+        "Deck deleted, but some unused audio could not be cleaned up.",
+      );
+      return;
+    }
+    finishDeletion(operationId, "success", `Deleted ${deletion.deckName}.`);
+  }
+
+  async function deleteMultipleDecks(
+    deletion: MultipleDeckDeletion,
+  ): Promise<void> {
+    const count = deletion.deckIds.length;
+    const operationId = beginDeletion(
+      "decks",
+      `Deleting ${count.toLocaleString()} ${count === 1 ? "deck" : "decks"}`,
+    );
+    if (operationId === null) return;
+    let result: DeleteDecksResultDto;
+    try {
+      result = await api.deleteDecks(
+        { deck_ids: deletion.deckIds, now_ms: Date.now() },
+        (progress: DeleteDeckProgressDto) =>
+          updateDeletionProgress(operationId, progress),
+      );
+    } catch {
+      finishDeletion(
+        operationId,
+        "failure",
+        "Could not delete the selected decks. Try again.",
+      );
+      return;
+    }
+    try {
+      await applyDeletedDeckCleanup(result.deleted_deck_ids);
+    } catch {
+      deletionRefresh += 1;
+      finishDeletion(
+        operationId,
+        "warning",
+        "Decks deleted, but the collection view could not be refreshed.",
+      );
+      return;
+    }
+    if (result.media_cleanup_warning) {
+      finishDeletion(
+        operationId,
+        "warning",
+        "Decks deleted, but some unused audio could not be cleaned up.",
+      );
+      return;
+    }
+    finishDeletion(
+      operationId,
+      "success",
+      `Deleted ${result.deleted_deck_ids.length.toLocaleString()} ${result.deleted_deck_ids.length === 1 ? "deck" : "decks"}.`,
+    );
+  }
+
+  async function removeBundle(deletion: BundleDeletion): Promise<void> {
+    const bundle = deletion.bundle;
+    const language = languageName(bundle.language_tag);
+    const operationId = beginDeletion("bundle", `Removing ${language}`);
+    if (operationId === null) return;
+    let result: BundleRemovalResultDto;
+    try {
+      result = await api.removeBundle(
+        {
+          language_tag: bundle.language_tag,
+          expected_decks: bundle.decks,
+          expected_cards: bundle.cards,
+          now_ms: Date.now(),
+        },
+        (progress) =>
+          updateDeletionProgress(operationId, {
+            phase: "removing_cards",
+            current: progress.processed_cards,
+            total: progress.total_cards,
+          }),
+      );
+    } catch {
+      finishDeletion(
+        operationId,
+        "failure",
+        `Could not remove ${language}. Try again.`,
+      );
+      return;
+    }
+    try {
+      const remainingDecks = await api.listDeckSummaries(Date.now());
+      const remainingDeckIds = new Set(remainingDecks.map((deck) => deck.id));
+      await applyDeletedDeckCleanup(
+        deletion.deckIdsBeforeRemoval.filter(
+          (deckId) => !remainingDeckIds.has(deckId),
+        ),
+      );
+    } catch {
+      deletionRefresh += 1;
+      finishDeletion(
+        operationId,
+        "warning",
+        `${language} was removed, but the collection view could not be refreshed.`,
+      );
+      return;
+    }
+    if (result.media_cleanup_warning) {
+      finishDeletion(
+        operationId,
+        "warning",
+        `${language} was removed, but some unused audio could not be cleaned up.`,
+      );
+      return;
+    }
+    finishDeletion(
+      operationId,
+      "success",
+      `Removed ${language} with ${result.removed_decks.toLocaleString()} ${result.removed_decks === 1 ? "deck" : "decks"}.`,
+    );
+  }
+
+  function languageName(languageTag: string): string {
+    try {
+      const language = new Intl.Locale(languageTag).language;
+      return (
+        new Intl.DisplayNames(["en"], { type: "language" }).of(language) ??
+        language
+      );
+    } catch {
+      return languageTag;
+    }
+  }
+
   function message(cause: unknown): string {
     return cause instanceof Error ? cause.message : String(cause);
   }
@@ -357,19 +643,6 @@
   function renameSelectedDeck(deckName: string): void {
     selectedDeckName = deckName;
     deckContext = deckName;
-  }
-
-  async function finishDeckDeletion(): Promise<void> {
-    const savedQueue = readStudyQueue();
-    if (savedQueue?.deckId === selectedDeckId) {
-      clearStudyQueue();
-      clearStudySession();
-    }
-    announcement = `Deleted ${selectedDeckName}. Returning to Decks.`;
-    selectedDeckId = "";
-    selectedDeckName = "";
-    selectedDeckIsBundleStage = false;
-    await navigate("decks");
   }
 
   async function addDeckNote(): Promise<void> {
@@ -516,6 +789,7 @@
             onStart={() => void startStudy("today", deckContext)}
             onSettings={() => void navigate("settings")}
             onDeckContextChange={(value) => (deckContext = value)}
+            {deletionRefresh}
           />
         {:else if activeScreen === "decks"}
           <DecksScreen
@@ -526,6 +800,11 @@
             onChooseBundle={() => void chooseBundle()}
             {bundleImportRefresh}
             {bundleImportRunning}
+            {deletionRefresh}
+            {deletionRunning}
+            onDeleteDeck={(deletion) => void deleteSingleDeck(deletion)}
+            onDeleteDecks={(deletion) => void deleteMultipleDecks(deletion)}
+            onRemoveBundle={(deletion) => void removeBundle(deletion)}
           />
         {:else if activeScreen === "study"}
           <StudyScreen
@@ -540,7 +819,8 @@
             isBundleStage={selectedDeckIsBundleStage}
             onBack={() => void navigate("decks")}
             onCreate={() => void addDeckNote()}
-            onDeleted={() => void finishDeckDeletion()}
+            {deletionRunning}
+            onDeleteDeck={(deletion) => void deleteSingleDeck(deletion)}
             onEdit={editDeckCard}
             onRename={renameSelectedDeck}
           />
@@ -565,13 +845,24 @@
     </div>
   </div>
 
-  <BundleImportActivity
-    activity={bundleImportActivity}
-    bind:dialogOpen={bundleImportDialogOpen}
-    onAdd={() => void addBundle()}
-    onAbandon={abandonBundlePreview}
-    onDismiss={dismissBundleImport}
-  />
+  <div
+    class="pointer-events-none fixed right-3 bottom-3 z-40 grid w-[min(16rem,calc(100vw-1.5rem))] gap-3 sm:right-5 sm:bottom-5"
+    data-testid="app-activity-stack"
+  >
+    <DeletionActivity
+      activity={deletionActivity}
+      cardVisible={deletionCardVisible}
+      bind:dialogOpen={deletionDialogOpen}
+      onDismiss={dismissDeletion}
+    />
+    <BundleImportActivity
+      activity={bundleImportActivity}
+      bind:dialogOpen={bundleImportDialogOpen}
+      onAdd={() => void addBundle()}
+      onAbandon={abandonBundlePreview}
+      onDismiss={dismissBundleImport}
+    />
+  </div>
 </Tooltip.Provider>
 
 <AlertDialog.Root bind:open={discardDialogOpen}>

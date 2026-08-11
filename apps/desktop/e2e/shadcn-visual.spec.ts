@@ -598,6 +598,57 @@ for (const deletionCase of [
   });
 }
 
+for (const deletionActivityCase of [
+  {
+    name: "deletion-activity-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "deletion-activity-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${deletionActivityCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/?deckDeletion=progress-visual",
+      screen: "Decks",
+      theme: deletionActivityCase.theme,
+      viewport: deletionActivityCase.viewport,
+    });
+    await page
+      .getByRole("button", { name: "Actions for Travel phrases" })
+      .click();
+    await page.getByRole("menuitem", { name: "Delete deck" }).click();
+    await page
+      .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
+      .getByRole("button", { name: "Delete deck" })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: "Deleting “Travel phrases”",
+    });
+    const activity = page.getByTestId("deletion-activity");
+    await expect(activity).toContainText("1,240 / 2,999");
+    await dialog.getByRole("button", { name: "Close" }).last().click();
+    await navigatePrimary(page, "Settings");
+    await expect(activity).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${deletionActivityCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+    await page.evaluate(() =>
+      localStorage.setItem("meiki-e2e-finish-deck-deletion", "true"),
+    );
+  });
+}
+
 for (const revealCase of [
   {
     name: "study-reveal-desktop-light-cjk",

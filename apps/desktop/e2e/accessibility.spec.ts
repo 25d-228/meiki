@@ -233,7 +233,9 @@ test("deck selection and one batch confirmation are keyboard accessible", async 
   });
   await confirm.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByText("Deleted 1 deck.")).toBeVisible();
+  await expect(
+    page.getByTestId("deletion-activity").getByText("Deleted 1 deck."),
+  ).toBeVisible();
 });
 
 for (const theme of ["light", "dark"] as const) {

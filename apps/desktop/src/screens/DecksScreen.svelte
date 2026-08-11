@@ -20,10 +20,12 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
   import type { DeckSummaryDto } from "../lib/generated/DeckSummaryDto";
-  import type { DeleteDeckResultDto } from "../lib/generated/DeleteDeckResultDto";
-  import type { DeleteDecksResultDto } from "../lib/generated/DeleteDecksResultDto";
   import type { BundleRemovalPreviewDto } from "../lib/generated/BundleRemovalPreviewDto";
-  import type { BundleRemovalProgressDto } from "../lib/generated/BundleRemovalProgressDto";
+  import type {
+    BundleDeletion,
+    MultipleDeckDeletion,
+    SingleDeckDeletion,
+  } from "../lib/deletion-activity";
   import { localDayBounds } from "../lib/local-day";
   import {
     clearStudyQueue,
@@ -41,11 +43,15 @@
     onChooseBundle: () => void;
     bundleImportRefresh: number;
     bundleImportRunning: boolean;
+    deletionRefresh: number;
+    deletionRunning: boolean;
+    onDeleteDeck: (deletion: SingleDeckDeletion) => void;
+    onDeleteDecks: (deletion: MultipleDeckDeletion) => void;
+    onRemoveBundle: (deletion: BundleDeletion) => void;
   };
 
   type DeckView = "grid" | "list";
 
-  const selectedTodayDeckKey = "meiki-today-deck";
   const deckViewPreferenceKey = "meiki-decks-view";
   const allDecksId = "__all_decks__";
   const defaultDeckId = "default-deck";
@@ -57,6 +63,11 @@
     onChooseBundle,
     bundleImportRefresh,
     bundleImportRunning,
+    deletionRefresh,
+    deletionRunning,
+    onDeleteDeck,
+    onDeleteDecks,
+    onRemoveBundle,
   }: Props = $props();
   let decks = $state<DeckSummaryDto[]>([]);
   let activeQueue = $state<StudyQueueSession | null>(null);
@@ -70,11 +81,7 @@
   let exportingBundleLanguage = $state("");
   let bundleActionError = $state("");
   let bundleRemovalConfirmationOpen = $state(false);
-  let bundleRemovalProgressDialogOpen = $state(false);
   let selectedBundle = $state<BundleRemovalPreviewDto | null>(null);
-  let removingBundle = $state(false);
-  let bundleRemovalProgress = $state<BundleRemovalProgressDto | null>(null);
-  let bundleRemovalError = $state("");
   let error = $state("");
   let notice = $state("");
   let retryStudyDeck = $state<DeckSummaryDto | null>(null);
@@ -87,6 +94,7 @@
   let batchDeleteTargets = $state<DeckSummaryDto[]>([]);
   let batchDeleteFlowOpen = $state(false);
   let loadedBundleImportRefresh = $state<number | null>(null);
+  let loadedDeletionRefresh = $state<number | null>(null);
 
   onMount(() => {
     onDeckContextChange("All decks");
@@ -109,6 +117,22 @@
     }
     if (bundleImportRefresh === loadedBundleImportRefresh) return;
     loadedBundleImportRefresh = bundleImportRefresh;
+    void loadDecks();
+  });
+
+  $effect(() => {
+    if (loadedDeletionRefresh === null) {
+      loadedDeletionRefresh = deletionRefresh;
+      return;
+    }
+    if (deletionRefresh === loadedDeletionRefresh) return;
+    loadedDeletionRefresh = deletionRefresh;
+    clearSelection();
+    deleteTarget = null;
+    batchDeleteFlowOpen = false;
+    batchDeleteDeckIds = [];
+    batchDeleteTargets = [];
+    selectedBundle = null;
     void loadDecks();
   });
 
@@ -160,7 +184,7 @@
   }
 
   function openDeleteDeck(deck: DeckSummaryDto): void {
-    if (deck.id === defaultDeckId) return;
+    if (deck.id === defaultDeckId || deletionRunning) return;
     deleteTarget = deck;
     deleteFlowOpen = true;
   }
@@ -188,62 +212,12 @@
   }
 
   function confirmBatchDeletion(): void {
-    if (selectedDeckIds.length === 0) return;
+    if (selectedDeckIds.length === 0 || deletionRunning) return;
     batchDeleteDeckIds = [...selectedDeckIds];
     batchDeleteTargets = decks.filter((deck) =>
       selectedDeckIds.includes(deck.id),
     );
     batchDeleteFlowOpen = true;
-  }
-
-  async function handleDeckDeletionCommitted(
-    result: DeleteDeckResultDto,
-  ): Promise<void> {
-    const savedQueue = readStudyQueue();
-    if (savedQueue?.deckId === result.deleted_deck_id) {
-      clearStudyQueue();
-      clearStudySession();
-      activeQueue = null;
-    }
-    if (localStorage.getItem(selectedTodayDeckKey) === result.deleted_deck_id) {
-      localStorage.setItem(selectedTodayDeckKey, allDecksId);
-    }
-    clearSelection();
-    batchDeleteFlowOpen = false;
-    batchDeleteDeckIds = [];
-    batchDeleteTargets = [];
-    await loadDecks();
-  }
-
-  function finishDeckDeletion(result: DeleteDeckResultDto): void {
-    const deletedName =
-      deleteTarget?.id === result.deleted_deck_id ? deleteTarget.name : "deck";
-    deleteTarget = null;
-    notice = `Deleted ${deletedName}.`;
-  }
-
-  async function handleBatchDeletionCommitted(
-    result: DeleteDecksResultDto,
-  ): Promise<void> {
-    const deletedDeckIds = new Set(result.deleted_deck_ids);
-    const savedQueue = readStudyQueue();
-    if (savedQueue && deletedDeckIds.has(savedQueue.deckId)) {
-      clearStudyQueue();
-      clearStudySession();
-      activeQueue = null;
-    }
-    const selectedTodayDeck = localStorage.getItem(selectedTodayDeckKey);
-    if (selectedTodayDeck && deletedDeckIds.has(selectedTodayDeck)) {
-      localStorage.setItem(selectedTodayDeckKey, allDecksId);
-    }
-    clearSelection();
-    await loadDecks();
-  }
-
-  function finishBatchDeletion(result: DeleteDecksResultDto): void {
-    notice = `Deleted ${result.deleted_deck_ids.length.toLocaleString()} ${result.deleted_deck_ids.length === 1 ? "deck" : "decks"}.`;
-    batchDeleteDeckIds = [];
-    batchDeleteTargets = [];
   }
 
   function confirmBundleRemoval(bundle: BundleRemovalPreviewDto): void {
@@ -271,48 +245,15 @@
     }
   }
 
-  async function removeBundle(): Promise<void> {
-    if (!selectedBundle || removingBundle) return;
+  function removeBundle(): void {
+    if (!selectedBundle || deletionRunning) return;
     const bundle = selectedBundle;
     bundleRemovalConfirmationOpen = false;
-    bundleRemovalProgressDialogOpen = true;
-    removingBundle = true;
-    bundleRemovalError = "";
     notice = "";
-    const deckIdsBeforeRemoval = new Set(decks.map((deck) => deck.id));
-    bundleRemovalProgress = {
-      removed_decks: 0,
-      total_decks: bundle.decks,
-      processed_cards: 0,
-      total_cards: bundle.cards,
-    };
-    try {
-      const result = await api.removeBundle(
-        {
-          language_tag: bundle.language_tag,
-          expected_decks: bundle.decks,
-          expected_cards: bundle.cards,
-          now_ms: Date.now(),
-        },
-        (progress) => (bundleRemovalProgress = progress),
-      );
-      await loadDecks();
-      const selectedTodayDeck = localStorage.getItem(selectedTodayDeckKey);
-      if (
-        selectedTodayDeck &&
-        deckIdsBeforeRemoval.has(selectedTodayDeck) &&
-        !decks.some((deck) => deck.id === selectedTodayDeck)
-      ) {
-        localStorage.setItem(selectedTodayDeckKey, allDecksId);
-      }
-      bundleRemovalProgressDialogOpen = false;
-      selectedBundle = null;
-      notice = `Removed ${languageName(result.language_tag)} with ${result.removed_decks.toLocaleString()} ${result.removed_decks === 1 ? "deck" : "decks"}.`;
-    } catch (cause) {
-      bundleRemovalError = message(cause);
-    } finally {
-      removingBundle = false;
-    }
+    onRemoveBundle({
+      bundle,
+      deckIdsBeforeRemoval: decks.map((deck) => deck.id),
+    });
   }
 
   async function beginStudy(deck: DeckSummaryDto): Promise<void> {
@@ -430,6 +371,7 @@
       >
         <DropdownMenu.Item
           textValue="Delete deck"
+          disabled={deletionRunning}
           class="flex cursor-default items-center gap-2 rounded-none px-2 py-1.5 text-sm text-destructive outline-none select-none data-highlighted:bg-destructive/10"
           onSelect={() => openDeleteDeck(deck)}
         >
@@ -549,7 +491,7 @@
         <Button
           size="sm"
           variant="destructive"
-          disabled={selectedDeckIds.length === 0}
+          disabled={selectedDeckIds.length === 0 || deletionRunning}
           onclick={confirmBatchDeletion}>Delete selected</Button
         >
         <Button size="sm" variant="outline" onclick={clearSelection}
@@ -665,8 +607,8 @@
         .filter((deck) => deck.id !== deleteTarget?.id)
         .map(({ id, name }) => ({ id, name })),
     ]}
-    onCommitted={handleDeckDeletionCommitted}
-    onFinished={finishDeckDeletion}
+    {deletionRunning}
+    onDelete={onDeleteDeck}
   />
 {/if}
 
@@ -675,8 +617,8 @@
     bind:open={batchDeleteFlowOpen}
     deckIds={batchDeleteDeckIds}
     decks={batchDeleteTargets}
-    onCommitted={handleBatchDeletionCommitted}
-    onFinished={finishBatchDeletion}
+    {deletionRunning}
+    onDelete={onDeleteDecks}
   />
 {/if}
 
@@ -738,7 +680,7 @@
         <div>
           <Button
             variant="outline"
-            disabled={Boolean(exportingBundleLanguage)}
+            disabled={Boolean(exportingBundleLanguage) || deletionRunning}
             onclick={() => void exportBundle(bundle)}
           >
             {exportingBundleLanguage === bundle.language_tag
@@ -747,7 +689,7 @@
           </Button>
           <Button
             variant="outline"
-            disabled={Boolean(exportingBundleLanguage)}
+            disabled={Boolean(exportingBundleLanguage) || deletionRunning}
             onclick={() => confirmBundleRemoval(bundle)}
           >
             Remove {languageName(bundle.language_tag)}
@@ -788,66 +730,12 @@
       <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
       <AlertDialog.Action
         class="bg-destructive/10 text-destructive hover:bg-destructive/20"
-        onclick={() => void removeBundle()}>Remove bundle</AlertDialog.Action
+        disabled={deletionRunning}
+        onclick={removeBundle}>Remove bundle</AlertDialog.Action
       >
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>
-
-<Dialog.Root bind:open={bundleRemovalProgressDialogOpen}>
-  <Dialog.Content
-    class="sm:max-w-xl"
-    showCloseButton={!removingBundle}
-    onEscapeKeydown={(event) => removingBundle && event.preventDefault()}
-    onInteractOutside={(event) => removingBundle && event.preventDefault()}
-  >
-    <Dialog.Header>
-      <Dialog.Title>Removing bundle</Dialog.Title>
-      <Dialog.Description>
-        The collection is updated only after every deck is ready.
-      </Dialog.Description>
-    </Dialog.Header>
-    {#if bundleRemovalError}
-      <Alert.Root variant="destructive" role="alert">
-        <Alert.Title>The bundle was not removed</Alert.Title>
-        <Alert.Description>{bundleRemovalError}</Alert.Description>
-      </Alert.Root>
-    {:else if bundleRemovalProgress}
-      <div class="bundle-removal-progress" role="status" aria-live="polite">
-        <strong>Removing bundle content</strong>
-        <label>
-          Decks
-          <progress
-            max={Math.max(1, bundleRemovalProgress.total_decks)}
-            value={bundleRemovalProgress.removed_decks}
-          ></progress>
-          <span>
-            {bundleRemovalProgress.removed_decks.toLocaleString()} / {bundleRemovalProgress.total_decks.toLocaleString()}
-          </span>
-        </label>
-        <label>
-          Cards
-          <progress
-            max={Math.max(1, bundleRemovalProgress.total_cards)}
-            value={bundleRemovalProgress.processed_cards}
-          ></progress>
-          <span>
-            {bundleRemovalProgress.processed_cards.toLocaleString()} / {bundleRemovalProgress.total_cards.toLocaleString()}
-          </span>
-        </label>
-      </div>
-    {/if}
-    {#if !removingBundle}
-      <Dialog.Footer>
-        <Button
-          variant="outline"
-          onclick={() => (bundleRemovalProgressDialogOpen = false)}
-          >Close</Button
-        >
-      </Dialog.Footer>
-    {/if}
-  </Dialog.Content>
-</Dialog.Root>
 
 <style>
   .screen-actions {
@@ -971,9 +859,7 @@
   }
 
   .bundle-action-list,
-  .bundle-action-list > div,
-  .bundle-removal-progress,
-  .bundle-removal-progress label {
+  .bundle-action-list > div {
     display: grid;
     gap: 0.5rem;
   }
@@ -984,14 +870,9 @@
     text-align: left;
   }
 
-  .bundle-action-list span,
-  .bundle-removal-progress span {
+  .bundle-action-list span {
     color: var(--muted-foreground);
     font-size: 0.8rem;
-  }
-
-  .bundle-removal-progress progress {
-    width: 100%;
   }
 
   @media (max-width: 760px) {
