@@ -903,6 +903,8 @@ export async function installMockApi(page: Page): Promise<void> {
         };
       }
       if (command === "remove_bundle") {
+        const mediaCleanupFailure =
+          params.get("bundleDeletion") === "postcommit-failure";
         const cardTotals = [300, 1_100, 2_100, 3_700, 6_700, 9_700];
         for (const [index, processedCards] of cardTotals.entries()) {
           window.__MEIKI_TEST_BUNDLE_REMOVAL_PROGRESS__?.({
@@ -911,7 +913,9 @@ export async function installMockApi(page: Page): Promise<void> {
             processed_cards: processedCards,
             total_cards: 9_700,
           });
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          if (!mediaCleanupFailure) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
         }
         bundleRemoved = true;
         localStorage.setItem("meiki-e2e-bundle-removed", "true");
@@ -919,6 +923,9 @@ export async function installMockApi(page: Page): Promise<void> {
           language_tag: "ja-JP",
           removed_decks: 6,
           affected_cards: 9_700,
+          media_cleanup_warning: mediaCleanupFailure
+            ? "Bundle removed, but some unused audio could not be cleaned up."
+            : null,
         };
       }
       throw new Error(`No DTO fixture for command: ${command}`);

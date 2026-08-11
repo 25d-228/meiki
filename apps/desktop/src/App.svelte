@@ -513,6 +513,14 @@
       );
       return;
     }
+    if (result.media_cleanup_warning) {
+      finishDeletion(
+        operationId,
+        "warning",
+        `${language} was removed, but some unused audio could not be cleaned up.`,
+      );
+      return;
+    }
     finishDeletion(
       operationId,
       "success",

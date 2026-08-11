@@ -140,6 +140,73 @@ test("bundle removal continues after Close dismisses its details", async ({
   );
 });
 
+test("bundle media cleanup failure remains a committed warning", async ({
+  page,
+}) => {
+  await page.clock.install({ time: new Date("2026-08-11T00:00:00Z") });
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "meiki-active-study-queue",
+      JSON.stringify({
+        version: 2,
+        deckId: "deck:ja-JP:05",
+        entries: [
+          {
+            card_id: "due-card",
+            card_content_version: 0,
+            schedule_version: 0,
+          },
+        ],
+        position: 0,
+        startedAtMs: 1_700_000_000_000,
+        pendingReview: null,
+      }),
+    );
+    sessionStorage.setItem(
+      "meiki-active-study-session",
+      "removed bundle session",
+    );
+    localStorage.setItem("meiki-today-deck", "deck:ja-JP:05");
+  });
+  await page.goto(
+    "/?bundleRemoval=installed&bundleDeletion=postcommit-failure",
+  );
+  await openDecks(page);
+  await page.clock.pauseAt(new Date("2026-08-11T00:01:00Z"));
+  await startBundleRemoval(page);
+
+  const card = page.getByTestId("deletion-activity");
+  const details = page.getByRole("dialog", { name: "Bundle removed" });
+  const warning =
+    "Japanese was removed, but some unused audio could not be cleaned up.";
+  await expect(card).toContainText(warning);
+  await expect(details).toContainText(warning);
+  await expect(details).not.toContainText("Your collection was left unchanged");
+  await expect(page.getByTestId("deck-deck:ja-JP:05")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Bundle actions" }),
+  ).toHaveCount(0);
+  expect(
+    await page.evaluate(() => ({
+      queue: localStorage.getItem("meiki-active-study-queue"),
+      session: sessionStorage.getItem("meiki-active-study-session"),
+      today: localStorage.getItem("meiki-today-deck"),
+    })),
+  ).toEqual({ queue: null, session: null, today: "__all_decks__" });
+
+  await page.clock.runFor(200);
+  await details.getByRole("button", { name: "Close" }).last().click();
+  await page.clock.runFor(200);
+  await card.getByRole("button", { name: "Open deletion details" }).click();
+  await expect(details).toContainText(warning);
+
+  await page.clock.fastForward(2_599);
+  await expect(card).toBeVisible();
+  await page.clock.fastForward(1);
+  await expect(card).toBeHidden();
+  await expect(details).toBeVisible();
+});
+
 test("running deletion remains visible through every primary screen", async ({
   page,
 }) => {
