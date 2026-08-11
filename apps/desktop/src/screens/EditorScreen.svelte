@@ -1194,7 +1194,7 @@
 
   .segment-order {
     display: grid;
-    gap: 0.25rem;
+    gap: 0.5rem;
   }
 
   .cloze-chip {

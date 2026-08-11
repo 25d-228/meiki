@@ -355,7 +355,7 @@
         Find, edit, move, suspend, or recover cards in this deck.
       </p>
     </div>
-    <div class="flex flex-wrap gap-2">
+    <div class="deck-management-actions flex flex-wrap gap-2">
       {#if vimKeybindingsEnabled}
         <span
           class="vim-mode-indicator"

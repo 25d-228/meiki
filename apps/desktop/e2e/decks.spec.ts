@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
 
+const minimumActionGapPixels = 8;
+
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
   await page.goto("/");
@@ -561,9 +563,9 @@ test("keeps a visible gap between Grid navigation actions", async ({
     if (!openBounds || !studyBounds) {
       throw new Error("Grid navigation action geometry is unavailable");
     }
-    expect(studyBounds.x - (openBounds.x + openBounds.width)).toBeGreaterThan(
-      0,
-    );
+    expect(
+      studyBounds.x - (openBounds.x + openBounds.width),
+    ).toBeGreaterThanOrEqual(minimumActionGapPixels);
   }
 });
 
