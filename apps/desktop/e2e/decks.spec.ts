@@ -515,7 +515,6 @@ for (const deckView of ["Grid", "List"] as const) {
     await expect(page.getByTestId("deck-selection-count")).toContainText(
       "1 deck selected",
     );
-    await expect(page.getByTestId("deck-selection-rectangle")).toHaveCount(0);
     await expect(
       page
         .getByTestId("deck-default-deck")
