@@ -264,6 +264,7 @@ for (const studyKeyboardCase of [
 ] as const) {
   test(`visual regression: ${studyKeyboardCase.name}`, async ({ page }) => {
     await page.addInitScript((platform) => {
+      localStorage.setItem("meiki-study-front-answer", "true");
       localStorage.setItem("meiki-study-visual-keyboard", "true");
       localStorage.setItem("meiki-typing-platform", platform);
     }, studyKeyboardCase.platform);
@@ -273,7 +274,12 @@ for (const studyKeyboardCase of [
       theme: studyKeyboardCase.theme,
       viewport: studyKeyboardCase.viewport,
     });
+    await expect(page.getByTestId("study-front-answer")).toBeVisible();
     await expect(page.getByTestId("study-visual-keyboard")).toBeVisible();
+    await expect(
+      page.getByText("Visual keyboard", { exact: true }),
+    ).toHaveCount(0);
+    await expect(page.getByTestId("study-keyboard-guidance")).toHaveCount(0);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,

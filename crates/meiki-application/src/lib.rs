@@ -254,6 +254,7 @@ pub struct StudyCardDto {
     pub card_content_version: u32,
     pub schedule_version: u32,
     pub prompt: String,
+    pub expected_answer: String,
     pub language_tag: Option<String>,
     pub direction: DirectionDto,
     pub due_at: String,
@@ -1076,6 +1077,7 @@ impl ApplicationService {
             card_content_version: desktop_u32(stored.card.content_version, "card content version")?,
             schedule_version: desktop_u32(stored.schedule.version, "schedule version")?,
             prompt: render_source(&stored.source_item, Some(&stored.cloze.id)),
+            expected_answer: stored.cloze.answer.clone(),
             language_tag: stored
                 .cloze
                 .language_tag
@@ -1820,6 +1822,7 @@ mod tests {
         let service = ApplicationService::new(&path);
         let card = service.seed_test_collection(1_000).unwrap();
         assert_eq!(card.prompt, "日曜日は図書館に[…]");
+        assert_eq!(card.expected_answer, "行きます");
 
         let reveal = service
             .check_answer(&CheckAnswerRequest {

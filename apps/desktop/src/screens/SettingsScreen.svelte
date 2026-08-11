@@ -21,9 +21,11 @@
   } from "../lib/media";
   import type { ThemeMode } from "../lib/ui";
   import {
+    readStudyFrontAnswerPreference,
     readStudyVisualKeyboardPreference,
+    writeStudyFrontAnswerPreference,
     writeStudyVisualKeyboardPreference,
-  } from "../lib/study-visual-keyboard";
+  } from "../lib/study-preferences";
   import {
     readVimKeybindings,
     writeVimKeybindings,
@@ -48,6 +50,7 @@
   let policyPreview = $state<SchedulerPolicyPreviewDto | null>(null);
   let previewedRequest = $state<UpdateSchedulerSettingsRequest | null>(null);
   let autoplayPromptAudio = $state(true);
+  let studyFrontAnswerEnabled = $state(false);
   let studyVisualKeyboardEnabled = $state(false);
   let vimKeybindingsEnabled = $state(false);
   let busy = $state(false);
@@ -56,6 +59,7 @@
 
   onMount(() => {
     autoplayPromptAudio = readPromptAudioAutoplay();
+    studyFrontAnswerEnabled = readStudyFrontAnswerPreference();
     studyVisualKeyboardEnabled = readStudyVisualKeyboardPreference();
     vimKeybindingsEnabled = readVimKeybindings();
     void loadSettings();
@@ -178,6 +182,11 @@
   function updateStudyVisualKeyboard(enabled: boolean): void {
     studyVisualKeyboardEnabled = enabled;
     writeStudyVisualKeyboardPreference(enabled);
+  }
+
+  function updateStudyFrontAnswer(enabled: boolean): void {
+    studyFrontAnswerEnabled = enabled;
+    writeStudyFrontAnswerPreference(enabled);
   }
 
   async function importParameters(): Promise<void> {
@@ -552,11 +561,26 @@
 
       <div class="setting-row">
         <div>
+          <strong>Show answer on card front</strong>
+          <p>Shows the expected cloze answer near the response field.</p>
+        </div>
+        <label class="toggle" for="study-front-answer">
+          <Switch
+            id="study-front-answer"
+            aria-label="Show answer on card front"
+            checked={studyFrontAnswerEnabled}
+            onCheckedChange={updateStudyFrontAnswer}
+          />
+          <span>{studyFrontAnswerEnabled ? "On" : "Off"}</span>
+        </label>
+      </div>
+
+      <Separator />
+
+      <div class="setting-row">
+        <div>
           <strong>Show visual keyboard during Study</strong>
-          <p>
-            Shows only your physical keys and input-method state while the card
-            front is visible.
-          </p>
+          <p>Shows the keyboard while the card front is visible.</p>
         </div>
         <label class="toggle" for="study-visual-keyboard">
           <Switch

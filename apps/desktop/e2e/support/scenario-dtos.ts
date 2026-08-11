@@ -157,6 +157,8 @@ function studyCard(value: StudyContent, cardId = "due-card") {
     schedule_version: 0,
     prompt:
       cardId === "new-card" ? `Second card · ${value.prompt}` : value.prompt,
+    expected_answer:
+      cardId === "new-card" ? `${value.answer} · second` : value.answer,
     language_tag: value.languageTag,
     direction: value.direction,
     due_at: dueAt,
