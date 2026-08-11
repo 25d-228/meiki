@@ -7,7 +7,7 @@
   import RiListUnordered from "remixicon-svelte/icons/list-unordered";
   import RiMore2Line from "remixicon-svelte/icons/more-2-line";
   import { onMount } from "svelte";
-  import { SvelteDate } from "svelte/reactivity";
+  import { SvelteDate, SvelteSet } from "svelte/reactivity";
 
   import DeckBatchDeletionFlow from "../components/DeckBatchDeletionFlow.svelte";
   import DeckDeletionFlow from "../components/DeckDeletionFlow.svelte";
@@ -52,9 +52,53 @@
 
   type DeckView = "grid" | "list";
 
+  type Rectangle = {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  };
+
+  type SelectionRectangle = {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
+
+  type PointerSelection = {
+    pointerId: number;
+    startX: number;
+    startY: number;
+    currentClientX: number;
+    currentClientY: number;
+    snapshot: SvelteSet<string>;
+    mode: "replace" | "add" | "toggle";
+    scrollContainer: HTMLElement;
+    active: boolean;
+  };
+
   const deckViewPreferenceKey = "meiki-decks-view";
   const allDecksId = "__all_decks__";
   const defaultDeckId = "default-deck";
+  const pointerMovementThreshold = 6;
+  const edgeScrollDistance = 48;
+  const maximumEdgeScrollSpeed = 18;
+  const interactiveOriginSelector = [
+    "button",
+    "a[href]",
+    "input",
+    "select",
+    "textarea",
+    "label",
+    '[contenteditable]:not([contenteditable="false"])',
+    '[tabindex]:not([tabindex="-1"])',
+    '[role="button"]',
+    '[role="checkbox"]',
+    '[role="link"]',
+    '[role="menuitem"]',
+    "[data-deck-selection-interactive]",
+  ].join(",");
 
   let {
     onStudy,
@@ -88,13 +132,17 @@
   let deleteTarget = $state<DeckSummaryDto | null>(null);
   let deleteFlowOpen = $state(false);
   let deckView = $state<DeckView>("grid");
-  let selectionMode = $state(false);
   let selectedDeckIds = $state<string[]>([]);
+  let selectionRectangle = $state<SelectionRectangle | null>(null);
+  let pointerSelectionActive = $state(false);
   let batchDeleteDeckIds = $state<string[]>([]);
   let batchDeleteTargets = $state<DeckSummaryDto[]>([]);
   let batchDeleteFlowOpen = $state(false);
   let loadedBundleImportRefresh = $state<number | null>(null);
   let loadedDeletionRefresh = $state<number | null>(null);
+  let deckInteractionArea: HTMLDivElement;
+  let pointerSelection: PointerSelection | null = null;
+  let edgeScrollFrame: number | null = null;
 
   onMount(() => {
     onDeckContextChange("All decks");
@@ -107,7 +155,12 @@
     } else if (storedQueue) {
       clearStudyQueue();
     }
+    window.addEventListener("blur", cancelPointerSelection);
     void loadDecks();
+    return () => {
+      window.removeEventListener("blur", cancelPointerSelection);
+      stopPointerSelection();
+    };
   });
 
   $effect(() => {
@@ -194,14 +247,8 @@
     localStorage.setItem(deckViewPreferenceKey, view);
   }
 
-  function enterSelectionMode(): void {
-    selectedDeckIds = [];
-    selectionMode = true;
-  }
-
   function clearSelection(): void {
     selectedDeckIds = [];
-    selectionMode = false;
   }
 
   function toggleDeckSelection(deckId: string): void {
@@ -209,6 +256,362 @@
     selectedDeckIds = selectedDeckIds.includes(deckId)
       ? selectedDeckIds.filter((selectedDeckId) => selectedDeckId !== deckId)
       : [...selectedDeckIds, deckId];
+  }
+
+  function beginPointerSelection(event: PointerEvent): void {
+    if (
+      event.pointerType !== "mouse" ||
+      event.button !== 0 ||
+      !event.isPrimary ||
+      !(event.currentTarget instanceof HTMLDivElement) ||
+      (event.target instanceof Element &&
+        event.target.closest(interactiveOriginSelector))
+    ) {
+      return;
+    }
+    stopPointerSelection();
+    const area = event.currentTarget;
+    const areaBounds = area.getBoundingClientRect();
+    const toggleModifier = isMacPointerPlatform()
+      ? event.metaKey
+      : event.ctrlKey;
+    pointerSelection = {
+      pointerId: event.pointerId,
+      startX: event.clientX - areaBounds.left + area.scrollLeft,
+      startY: event.clientY - areaBounds.top + area.scrollTop,
+      currentClientX: event.clientX,
+      currentClientY: event.clientY,
+      snapshot: new SvelteSet(selectedDeckIds),
+      mode: toggleModifier ? "toggle" : event.shiftKey ? "add" : "replace",
+      scrollContainer: nearestScrollableContainer(area),
+      active: false,
+    };
+    area.setPointerCapture(event.pointerId);
+  }
+
+  function updatePointerSelection(event: PointerEvent): void {
+    const selection = pointerSelection;
+    if (!selection || selection.pointerId !== event.pointerId) return;
+    selection.currentClientX = event.clientX;
+    selection.currentClientY = event.clientY;
+    if (!selection.active) {
+      const areaBounds = deckInteractionArea.getBoundingClientRect();
+      const currentX =
+        event.clientX - areaBounds.left + deckInteractionArea.scrollLeft;
+      const currentY =
+        event.clientY - areaBounds.top + deckInteractionArea.scrollTop;
+      if (
+        Math.hypot(currentX - selection.startX, currentY - selection.startY) <
+        pointerMovementThreshold
+      ) {
+        return;
+      }
+      selection.active = true;
+      pointerSelectionActive = true;
+    }
+    event.preventDefault();
+    updatePointerSelectionGeometry();
+    scheduleEdgeScroll();
+  }
+
+  function finishPointerSelection(event: PointerEvent): void {
+    if (pointerSelection?.pointerId !== event.pointerId) return;
+    if (pointerSelection.active) event.preventDefault();
+    stopPointerSelection();
+  }
+
+  function cancelPointerSelection(): void {
+    stopPointerSelection();
+  }
+
+  function stopPointerSelection(): void {
+    const pointerId = pointerSelection?.pointerId;
+    pointerSelection = null;
+    if (
+      pointerId !== undefined &&
+      deckInteractionArea?.hasPointerCapture(pointerId)
+    ) {
+      deckInteractionArea.releasePointerCapture(pointerId);
+    }
+    pointerSelectionActive = false;
+    selectionRectangle = null;
+    if (edgeScrollFrame !== null) {
+      cancelAnimationFrame(edgeScrollFrame);
+      edgeScrollFrame = null;
+    }
+  }
+
+  function updatePointerSelectionGeometry(): void {
+    const selection = pointerSelection;
+    if (!selection?.active) return;
+    const areaBounds = deckInteractionArea.getBoundingClientRect();
+    const visibleBounds = visibleInteractionBounds(selection.scrollContainer);
+    if (!visibleBounds) return;
+    const currentClientX = clamp(
+      selection.currentClientX,
+      visibleBounds.left,
+      visibleBounds.right,
+    );
+    const currentClientY = clamp(
+      selection.currentClientY,
+      visibleBounds.top,
+      visibleBounds.bottom,
+    );
+    const currentX = clamp(
+      currentClientX - areaBounds.left + deckInteractionArea.scrollLeft,
+      0,
+      deckInteractionArea.scrollWidth,
+    );
+    const currentY = clamp(
+      currentClientY - areaBounds.top + deckInteractionArea.scrollTop,
+      0,
+      deckInteractionArea.scrollHeight,
+    );
+    selectionRectangle = {
+      left: Math.min(selection.startX, currentX),
+      top: Math.min(selection.startY, currentY),
+      width: Math.abs(currentX - selection.startX),
+      height: Math.abs(currentY - selection.startY),
+    };
+    updateIntersectedDecks(selection, areaBounds, visibleBounds);
+  }
+
+  function updateIntersectedDecks(
+    selection: PointerSelection,
+    areaBounds: DOMRect,
+    visibleBounds: Rectangle,
+  ): void {
+    if (!selectionRectangle) return;
+    const rectangleBounds = {
+      left:
+        areaBounds.left +
+        selectionRectangle.left -
+        deckInteractionArea.scrollLeft,
+      top:
+        areaBounds.top + selectionRectangle.top - deckInteractionArea.scrollTop,
+      right:
+        areaBounds.left +
+        selectionRectangle.left +
+        selectionRectangle.width -
+        deckInteractionArea.scrollLeft,
+      bottom:
+        areaBounds.top +
+        selectionRectangle.top +
+        selectionRectangle.height -
+        deckInteractionArea.scrollTop,
+    };
+    const intersections = new SvelteSet<string>();
+    for (const element of deckInteractionArea.querySelectorAll<HTMLElement>(
+      "[data-deck-selection-id]",
+    )) {
+      const deckId = element.dataset.deckSelectionId;
+      const visibleDeckBounds = intersectRectangles(
+        rectangleFromDomRect(element.getBoundingClientRect()),
+        visibleBounds,
+      );
+      if (
+        deckId &&
+        deckId !== defaultDeckId &&
+        visibleDeckBounds &&
+        rectanglesIntersect(rectangleBounds, visibleDeckBounds)
+      ) {
+        intersections.add(deckId);
+      }
+    }
+    const nextSelection = new SvelteSet(
+      selection.mode === "replace" ? [] : selection.snapshot,
+    );
+    for (const deckId of intersections) {
+      if (selection.mode === "toggle" && selection.snapshot.has(deckId)) {
+        nextSelection.delete(deckId);
+      } else {
+        nextSelection.add(deckId);
+      }
+    }
+    selectedDeckIds = decks
+      .map((deck) => deck.id)
+      .filter(
+        (deckId) => nextSelection.has(deckId) && deckId !== defaultDeckId,
+      );
+  }
+
+  function scheduleEdgeScroll(): void {
+    if (edgeScrollFrame !== null || !pointerSelection?.active) return;
+    const { x, y } = edgeScrollVelocity(pointerSelection);
+    if (x === 0 && y === 0) return;
+    edgeScrollFrame = requestAnimationFrame(runEdgeScroll);
+  }
+
+  function runEdgeScroll(): void {
+    edgeScrollFrame = null;
+    const selection = pointerSelection;
+    if (!selection?.active) return;
+    const { x, y } = edgeScrollVelocity(selection);
+    if (x === 0 && y === 0) return;
+    const beforeLeft = selection.scrollContainer.scrollLeft;
+    const beforeTop = selection.scrollContainer.scrollTop;
+    selection.scrollContainer.scrollBy(x, y);
+    if (
+      beforeLeft === selection.scrollContainer.scrollLeft &&
+      beforeTop === selection.scrollContainer.scrollTop
+    ) {
+      return;
+    }
+    updatePointerSelectionGeometry();
+    scheduleEdgeScroll();
+  }
+
+  function edgeScrollVelocity(selection: PointerSelection): {
+    x: number;
+    y: number;
+  } {
+    const container = selection.scrollContainer;
+    const bounds = visibleInteractionBounds(container);
+    if (!bounds) return { x: 0, y: 0 };
+    const maximumScrollLeft = container.scrollWidth - container.clientWidth;
+    const maximumScrollTop = container.scrollHeight - container.clientHeight;
+    return {
+      x:
+        maximumScrollLeft > 0
+          ? edgeScrollSpeed(
+              selection.currentClientX,
+              bounds.left,
+              bounds.right,
+              container.scrollLeft,
+              maximumScrollLeft,
+            )
+          : 0,
+      y:
+        maximumScrollTop > 0
+          ? edgeScrollSpeed(
+              selection.currentClientY,
+              bounds.top,
+              bounds.bottom,
+              container.scrollTop,
+              maximumScrollTop,
+            )
+          : 0,
+    };
+  }
+
+  function edgeScrollSpeed(
+    position: number,
+    start: number,
+    end: number,
+    currentScroll: number,
+    maximumScroll: number,
+  ): number {
+    if (position < start + edgeScrollDistance && currentScroll > 0) {
+      const intensity = clamp(
+        (start + edgeScrollDistance - position) / edgeScrollDistance,
+        0,
+        1,
+      );
+      return -maximumEdgeScrollSpeed * intensity;
+    }
+    if (position > end - edgeScrollDistance && currentScroll < maximumScroll) {
+      const intensity = clamp(
+        (position - (end - edgeScrollDistance)) / edgeScrollDistance,
+        0,
+        1,
+      );
+      return maximumEdgeScrollSpeed * intensity;
+    }
+    return 0;
+  }
+
+  function nearestScrollableContainer(area: HTMLElement): HTMLElement {
+    let ancestor = area.parentElement;
+    while (ancestor) {
+      const style = getComputedStyle(ancestor);
+      const scrollsHorizontally =
+        allowsScrolling(style.overflowX) &&
+        ancestor.scrollWidth > ancestor.clientWidth;
+      const scrollsVertically =
+        allowsScrolling(style.overflowY) &&
+        ancestor.scrollHeight > ancestor.clientHeight;
+      if (scrollsHorizontally || scrollsVertically) return ancestor;
+      ancestor = ancestor.parentElement;
+    }
+    return document.scrollingElement as HTMLElement;
+  }
+
+  function allowsScrolling(overflow: string): boolean {
+    return (
+      overflow === "auto" || overflow === "scroll" || overflow === "overlay"
+    );
+  }
+
+  function visibleInteractionBounds(
+    scrollContainer: HTMLElement,
+  ): Rectangle | null {
+    const areaBounds = rectangleFromDomRect(
+      deckInteractionArea.getBoundingClientRect(),
+    );
+    const viewportBounds = {
+      left: 0,
+      top: 0,
+      right: window.innerWidth,
+      bottom: window.innerHeight,
+    };
+    const scrollBounds =
+      scrollContainer === document.scrollingElement
+        ? viewportBounds
+        : rectangleFromDomRect(scrollContainer.getBoundingClientRect());
+    const visibleScrollBounds = intersectRectangles(
+      scrollBounds,
+      viewportBounds,
+    );
+    return visibleScrollBounds
+      ? intersectRectangles(areaBounds, visibleScrollBounds)
+      : null;
+  }
+
+  function rectangleFromDomRect(rectangle: DOMRect): Rectangle {
+    return {
+      left: rectangle.left,
+      top: rectangle.top,
+      right: rectangle.right,
+      bottom: rectangle.bottom,
+    };
+  }
+
+  function intersectRectangles(
+    first: Rectangle,
+    second: Rectangle,
+  ): Rectangle | null {
+    const intersection = {
+      left: Math.max(first.left, second.left),
+      top: Math.max(first.top, second.top),
+      right: Math.min(first.right, second.right),
+      bottom: Math.min(first.bottom, second.bottom),
+    };
+    return intersection.left < intersection.right &&
+      intersection.top < intersection.bottom
+      ? intersection
+      : null;
+  }
+
+  function rectanglesIntersect(first: Rectangle, second: Rectangle): boolean {
+    return (
+      first.left < second.right &&
+      first.right > second.left &&
+      first.top < second.bottom &&
+      first.bottom > second.top
+    );
+  }
+
+  function clamp(value: number, minimum: number, maximum: number): number {
+    return Math.min(maximum, Math.max(minimum, value));
+  }
+
+  function isMacPointerPlatform(): boolean {
+    const runtimeNavigator = navigator as Navigator & {
+      userAgentData?: { platform?: string };
+    };
+    return /^mac/i.test(
+      runtimeNavigator.userAgentData?.platform || runtimeNavigator.platform,
+    );
   }
 
   function confirmBatchDeletion(): void {
@@ -386,6 +789,7 @@
 {#snippet deckSelectionControl(deck: DeckSummaryDto)}
   {@const selected = selectedDeckIds.includes(deck.id)}
   <Button
+    class="deck-selection-control"
     size="icon-sm"
     variant={selected ? "default" : "outline"}
     role="checkbox"
@@ -478,7 +882,7 @@
         List
       </Button>
     </div>
-    {#if selectionMode}
+    {#if selectedDeckIds.length > 0}
       <div class="deck-selection-toolbar" aria-label="Deck selection actions">
         <span
           role="status"
@@ -498,86 +902,107 @@
           >Clear selection</Button
         >
       </div>
-    {:else}
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={!decks.some((deck) => deck.id !== defaultDeckId)}
-        onclick={enterSelectionMode}>Select</Button
-      >
     {/if}
   </div>
 
-  {#if deckView === "grid"}
-    <div class="deck-grid" data-testid="deck-grid" aria-busy={loading}>
-      {#if loading && decks.length === 0}
-        <Card.Root class="p-6">
-          <p class="text-muted-foreground">Loading decks…</p>
-        </Card.Root>
-      {:else}
-        {#each decks as deck (deck.id)}
-          <Card.Root
-            class={selectionMode && selectedDeckIds.includes(deck.id)
-              ? "gap-5 p-5 ring-2 ring-primary"
-              : "gap-5 p-5"}
-            data-testid={`deck-${deck.id}`}
-          >
-            <Card.Header class="p-0">
-              <Card.Title class="[overflow-wrap:anywhere]" data-deck-name
-                >{deck.name}</Card.Title
-              >
-              <Card.Description>
-                {deck.total_cards}
-                {deck.total_cards === 1 ? "card" : "cards"}
-              </Card.Description>
-              {#if deck.id !== defaultDeckId}
-                <Card.Action>
-                  <div class="deck-card-actions">
-                    {#if selectionMode}
-                      {@render deckSelectionControl(deck)}
-                    {/if}
-                    {@render deckActionsMenu(deck)}
-                  </div>
-                </Card.Action>
-              {/if}
-            </Card.Header>
-            {@render deckCounts(deck)}
-            <Card.Footer class="justify-end p-0">
-              {@render deckNavigationActions(deck)}
-            </Card.Footer>
+  <div
+    class="deck-selection-area"
+    role="group"
+    aria-label="Deck selection area"
+    data-dragging={pointerSelectionActive}
+    data-testid="deck-selection-area"
+    bind:this={deckInteractionArea}
+    onpointerdown={beginPointerSelection}
+    onpointermove={updatePointerSelection}
+    onpointerup={finishPointerSelection}
+    onpointercancel={finishPointerSelection}
+    onlostpointercapture={finishPointerSelection}
+  >
+    {#if deckView === "grid"}
+      <div class="deck-grid" data-testid="deck-grid" aria-busy={loading}>
+        {#if loading && decks.length === 0}
+          <Card.Root class="p-6">
+            <p class="text-muted-foreground">Loading decks…</p>
           </Card.Root>
-        {/each}
-      {/if}
-    </div>
-  {:else}
-    <div class="deck-list" data-testid="deck-list" aria-busy={loading}>
-      {#if loading && decks.length === 0}
-        <Card.Root class="p-6">
-          <p class="text-muted-foreground">Loading decks…</p>
-        </Card.Root>
-      {:else}
-        {#each decks as deck (deck.id)}
-          <article
-            class="deck-list-row"
-            data-selected={selectionMode && selectedDeckIds.includes(deck.id)}
-            data-testid={`deck-${deck.id}`}
-          >
-            <h2 class="deck-list-name" data-deck-name>{deck.name}</h2>
-            {@render deckCounts(deck)}
-            <div class="deck-list-actions">
-              {@render deckNavigationActions(deck)}
-              {#if deck.id !== defaultDeckId}
-                {#if selectionMode}
-                  {@render deckSelectionControl(deck)}
+        {:else}
+          {#each decks as deck (deck.id)}
+            <Card.Root
+              class={selectedDeckIds.includes(deck.id)
+                ? "gap-5 p-5 ring-2 ring-primary"
+                : "gap-5 p-5"}
+              data-deck-selection-id={deck.id === defaultDeckId
+                ? undefined
+                : deck.id}
+              data-selected={selectedDeckIds.includes(deck.id)}
+              data-testid={`deck-${deck.id}`}
+            >
+              <Card.Header class="p-0">
+                <Card.Title class="[overflow-wrap:anywhere]" data-deck-name
+                  >{deck.name}</Card.Title
+                >
+                <Card.Description>
+                  {deck.total_cards}
+                  {deck.total_cards === 1 ? "card" : "cards"}
+                </Card.Description>
+                {#if deck.id !== defaultDeckId}
+                  <Card.Action>
+                    <div class="deck-card-actions">
+                      {@render deckSelectionControl(deck)}
+                      {@render deckActionsMenu(deck)}
+                    </div>
+                  </Card.Action>
                 {/if}
-                {@render deckActionsMenu(deck)}
-              {/if}
-            </div>
-          </article>
-        {/each}
-      {/if}
-    </div>
-  {/if}
+              </Card.Header>
+              {@render deckCounts(deck)}
+              <Card.Footer class="justify-end p-0">
+                {@render deckNavigationActions(deck)}
+              </Card.Footer>
+            </Card.Root>
+          {/each}
+        {/if}
+      </div>
+    {:else}
+      <div class="deck-list" data-testid="deck-list" aria-busy={loading}>
+        {#if loading && decks.length === 0}
+          <Card.Root class="p-6">
+            <p class="text-muted-foreground">Loading decks…</p>
+          </Card.Root>
+        {:else}
+          {#each decks as deck (deck.id)}
+            <article
+              class="deck-list-row"
+              data-deck-selection-id={deck.id === defaultDeckId
+                ? undefined
+                : deck.id}
+              data-selected={selectedDeckIds.includes(deck.id)}
+              data-testid={`deck-${deck.id}`}
+            >
+              <h2 class="deck-list-name" data-deck-name>{deck.name}</h2>
+              {@render deckCounts(deck)}
+              <div class="deck-list-actions">
+                {@render deckNavigationActions(deck)}
+                {#if deck.id !== defaultDeckId}
+                  {@render deckSelectionControl(deck)}
+                  {@render deckActionsMenu(deck)}
+                {/if}
+              </div>
+            </article>
+          {/each}
+        {/if}
+      </div>
+    {/if}
+    {#if selectionRectangle}
+      <div
+        class="deck-selection-rectangle"
+        data-testid="deck-selection-rectangle"
+        style:left={`${selectionRectangle.left}px`}
+        style:top={`${selectionRectangle.top}px`}
+        style:width={`${selectionRectangle.width}px`}
+        style:height={`${selectionRectangle.height}px`}
+        aria-hidden="true"
+      ></div>
+    {/if}
+  </div>
 
   {#if !loading && decks.length === 0}
     <div class="empty-state">
@@ -750,6 +1175,24 @@
     gap: 1rem;
   }
 
+  .deck-selection-area {
+    position: relative;
+    min-width: 0;
+  }
+
+  .deck-selection-area[data-dragging="true"] {
+    cursor: crosshair;
+    user-select: none;
+  }
+
+  .deck-selection-rectangle {
+    position: absolute;
+    z-index: 10;
+    border: 1px solid var(--primary);
+    background: color-mix(in oklch, var(--primary) 14%, transparent);
+    pointer-events: none;
+  }
+
   .deck-toolbar,
   .deck-view-toolbar,
   .deck-selection-toolbar,
@@ -776,6 +1219,16 @@
 
   .deck-card-actions {
     justify-content: flex-end;
+  }
+
+  :global(.deck-selection-control[aria-checked="false"]) {
+    opacity: 0.62;
+  }
+
+  :global(.deck-selection-control:hover),
+  :global(.deck-selection-control:focus-visible),
+  :global(.deck-selection-control[aria-checked="true"]) {
+    opacity: 1;
   }
 
   .deck-list {

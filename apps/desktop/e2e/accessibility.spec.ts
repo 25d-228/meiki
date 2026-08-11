@@ -183,12 +183,6 @@ test("deck selection and one batch confirmation are keyboard accessible", async 
 }) => {
   await page.goto("/?decks=batch");
   await navigate(page, "Decks");
-  const enterSelection = page.getByRole("button", {
-    name: "Select",
-    exact: true,
-  });
-  await enterSelection.focus();
-  await page.keyboard.press("Enter");
   const travel = page.getByRole("checkbox", {
     name: "Select Travel phrases",
   });
