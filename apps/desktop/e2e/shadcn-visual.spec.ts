@@ -246,6 +246,48 @@ for (const vimCase of [
   });
 }
 
+for (const studyKeyboardCase of [
+  {
+    name: "study-keyboard-korean-desktop-light",
+    route: "/?fixture=korean",
+    theme: "light",
+    viewport: "desktop",
+    platform: "windows",
+  },
+  {
+    name: "study-keyboard-spanish-narrow-dark",
+    route: "/?studyLanguage=es",
+    theme: "dark",
+    viewport: "narrow",
+    platform: "macos",
+  },
+] as const) {
+  test(`visual regression: ${studyKeyboardCase.name}`, async ({ page }) => {
+    await page.addInitScript((platform) => {
+      localStorage.setItem("meiki-study-visual-keyboard", "true");
+      localStorage.setItem("meiki-typing-platform", platform);
+    }, studyKeyboardCase.platform);
+    await prepare(page, {
+      route: studyKeyboardCase.route,
+      screen: "Study",
+      theme: studyKeyboardCase.theme,
+      viewport: studyKeyboardCase.viewport,
+    });
+    await expect(page.getByTestId("study-visual-keyboard")).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${studyKeyboardCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      fullPage: true,
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 for (const typingCase of [
   {
     name: "typing-practice-desktop-light",

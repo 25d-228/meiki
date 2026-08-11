@@ -331,13 +331,22 @@ export async function installMockApi(page: Page): Promise<void> {
             })),
           };
         }
-        return clone(
+        const selectedCard = clone(
           (args as { cardId?: string })?.cardId === "new-card"
             ? study.second
             : study.first,
         );
+        if (!params.has("studyLanguage")) return selectedCard;
+        const languageTag = params.get("studyLanguage");
+        return {
+          ...selectedCard,
+          language_tag: languageTag === "missing" ? null : languageTag,
+        };
       }
       if (command === "check_answer") {
+        if (params.get("check") === "loading") {
+          await new Promise((resolve) => setTimeout(resolve, 350));
+        }
         if (params.get("answer") === "wrong") return clone(dtos.wrongReveal);
         if (params.get("media") === "real-mp3") {
           return {
@@ -355,6 +364,9 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(study.reveal);
       }
       if (command === "grade_review") {
+        if (params.get("grade") === "loading") {
+          await new Promise((resolve) => setTimeout(resolve, 750));
+        }
         const request = (
           args as {
             request: {

@@ -8,7 +8,11 @@
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
-  import type { InstructionPlatform, TypingLesson } from "$lib/typing-lessons";
+  import {
+    typingCodeLabel,
+    type InstructionPlatform,
+    type TypingLesson,
+  } from "$lib/typing-lessons";
   import { type VimMode, vimCommandAllowed } from "$lib/vim-keybindings";
   import TypingKeyboard from "./TypingKeyboard.svelte";
 
@@ -93,34 +97,9 @@
     );
   }
 
-  function codeLabel(code: string): string {
-    if (code.startsWith("Key")) return code.slice(3);
-    if (code.startsWith("Digit")) return code.slice(5);
-    const labels: Record<string, string> = {
-      AltLeft: "Option",
-      AltRight: "AltGr",
-      Backquote: "`",
-      Backslash: "\\",
-      BracketLeft: "[",
-      BracketRight: "]",
-      CapsLock: "Caps Lock",
-      Comma: ",",
-      Equal: "=",
-      Minus: "-",
-      Period: ".",
-      Quote: "'",
-      Semicolon: ";",
-      ShiftLeft: "Shift",
-      ShiftRight: "Shift",
-      Slash: "/",
-      Space: "Space",
-    };
-    return labels[code] ?? code;
-  }
-
   function initialStatus(): string {
     return expectedCodes[0]
-      ? `Expected ${codeLabel(expectedCodes[0])}.`
+      ? `Expected ${typingCodeLabel(expectedCodes[0])}.`
       : `Enter ${lesson.target}, then press Enter to check.`;
   }
 
@@ -135,15 +114,15 @@
     if (!expectedCode) {
       feedback = "";
       liveStatus = compositionActive
-        ? `Composing. Pressed ${codeLabel(code)}. No answer has been checked.`
-        : `Pressed ${codeLabel(code)}.`;
+        ? `Composing. Pressed ${typingCodeLabel(code)}. No answer has been checked.`
+        : `Pressed ${typingCodeLabel(code)}.`;
       return;
     }
     if (code !== expectedCode) {
       incorrectCode = code;
       result =
         lesson.mode === "committed" && compositionActive ? "idle" : "incorrect";
-      feedback = `Pressed ${codeLabel(code)}. Expected ${codeLabel(expectedCode)}. Try again.${compositionActive ? " Composition remains unchecked." : ""}`;
+      feedback = `Pressed ${typingCodeLabel(code)}. Expected ${typingCodeLabel(expectedCode)}. Try again.${compositionActive ? " Composition remains unchecked." : ""}`;
       liveStatus = feedback;
       return;
     }
@@ -162,7 +141,7 @@
       return;
     }
     result = "idle";
-    feedback = `Correct position. Next: ${codeLabel(expectedCodes[expectedIndex])}.${compositionActive ? " Composition remains unchecked." : ""}`;
+    feedback = `Correct position. Next: ${typingCodeLabel(expectedCodes[expectedIndex])}.${compositionActive ? " Composition remains unchecked." : ""}`;
     liveStatus = feedback;
   }
 
@@ -342,7 +321,7 @@
       <dt>Expected physical sequence</dt>
       <dd data-testid="typing-expected-sequence">
         {expectedCodes.length > 0
-          ? expectedCodes.map(codeLabel).join(" → ")
+          ? expectedCodes.map(typingCodeLabel).join(" → ")
           : "Varies with your input source"}
       </dd>
     </div>
@@ -350,7 +329,7 @@
       <dt>Physical keys</dt>
       <dd data-testid="typing-physical-trail">
         {physicalTrail.length > 0
-          ? physicalTrail.map(codeLabel).join(" → ")
+          ? physicalTrail.map(typingCodeLabel).join(" → ")
           : "None yet"}
       </dd>
     </div>

@@ -27,6 +27,8 @@ export type TypingLesson = {
   instructions: Record<InstructionPlatform, string>;
 };
 
+export const instructionPlatformPreferenceKey = "meiki-typing-platform";
+
 export const typingTracks: TypingTrack[] = [
   { language: "korean", selectionLabel: "Korean — 2-set Hangul" },
   { language: "japanese", selectionLabel: "Japanese — Romaji input" },
@@ -34,7 +36,7 @@ export const typingTracks: TypingTrack[] = [
   { language: "spanish", selectionLabel: "Spanish — Dead-key accents" },
 ];
 
-const koreanKeyLegends: Record<string, TypingKeyLegend> = {
+export const koreanKeyLegends: Record<string, TypingKeyLegend> = {
   KeyQ: { shifted: "ㅃ", base: "ㅂ" },
   KeyW: { shifted: "ㅉ", base: "ㅈ" },
   KeyE: { shifted: "ㄸ", base: "ㄷ" },
@@ -1033,4 +1035,35 @@ export function detectInstructionPlatform(
   if (/^mac/i.test(platform)) return "macos";
   if (/^win/i.test(platform)) return "windows";
   return null;
+}
+
+export function isInstructionPlatform(
+  value: string | null,
+): value is InstructionPlatform {
+  return value === "windows" || value === "macos";
+}
+
+export function typingCodeLabel(code: string): string {
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) return code.slice(5);
+  const labels: Record<string, string> = {
+    AltLeft: "Option",
+    AltRight: "AltGr",
+    Backquote: "`",
+    Backslash: "\\",
+    BracketLeft: "[",
+    BracketRight: "]",
+    CapsLock: "Caps Lock",
+    Comma: ",",
+    Equal: "=",
+    Minus: "-",
+    Period: ".",
+    Quote: "'",
+    Semicolon: ";",
+    ShiftLeft: "Shift",
+    ShiftRight: "Shift",
+    Slash: "/",
+    Space: "Space",
+  };
+  return labels[code] ?? code;
 }
