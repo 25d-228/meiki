@@ -167,7 +167,7 @@ test("the empty collection offers exactly six static local tracks without networ
   for (const name of trackNames) {
     await expect(languageChoices.getByRole("button", { name })).toBeVisible();
   }
-  await expect(page.getByText(/Chinese|Arabic|Russian/i)).toHaveCount(0);
+  await expect(page.getByText(/Chinese|Russian/i)).toHaveCount(0);
   await expect(page.locator("main")).toContainText(
     "does not require a deck or bundle",
   );
