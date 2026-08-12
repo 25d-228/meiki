@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { typingLessons, type TypingLanguage } from "../src/lib/typing-lessons";
+import { typingLessons, typingTracks } from "../src/lib/typing-lessons";
 import { installMockApi } from "./support/mock-api";
 
 const frenchLessonIds = [
@@ -35,15 +35,47 @@ const spanishLessonIds = [
   "typing-spanish-short-sentence",
 ] as const;
 
+const germanLessonIds = [
+  "typing-german-diaeresis-a",
+  "typing-german-diaeresis-o",
+  "typing-german-diaeresis-u",
+  "typing-german-sharp-s",
+  "typing-german-short-words",
+  "typing-german-short-sentence",
+] as const;
+
+const portugueseLessonIds = [
+  "typing-portuguese-acute-a",
+  "typing-portuguese-grave-a",
+  "typing-portuguese-circumflex-a",
+  "typing-portuguese-tilde-a",
+  "typing-portuguese-cedilla-c",
+  "typing-portuguese-acute-e",
+  "typing-portuguese-circumflex-e",
+  "typing-portuguese-acute-i",
+  "typing-portuguese-acute-o",
+  "typing-portuguese-circumflex-o",
+  "typing-portuguese-tilde-o",
+  "typing-portuguese-acute-u",
+  "typing-portuguese-short-words",
+  "typing-portuguese-short-sentence",
+] as const;
+
 const lessonIds = {
   french: frenchLessonIds,
   spanish: spanishLessonIds,
+  german: germanLessonIds,
+  portuguese: portugueseLessonIds,
 } as const;
 
 const trackLabels = {
   french: "French — Dead-key accents",
   spanish: "Spanish — Dead-key accents",
+  german: "German — Umlauts and ß",
+  portuguese: "Portuguese — Dead-key accents",
 } as const;
+
+type DeadKeyLanguage = keyof typeof lessonIds;
 
 const characterMappings = [
   {
@@ -172,6 +204,320 @@ const characterMappings = [
     windows: ["AltRight", "Digit1"],
     macos: ["AltLeft", "Digit1"],
   },
+  {
+    id: "typing-german-diaeresis-a",
+    target: "ä",
+    windows: ["ShiftLeft", "Quote", "KeyA"],
+    macos: ["AltLeft", "KeyU", "KeyA"],
+  },
+  {
+    id: "typing-german-diaeresis-o",
+    target: "ö",
+    windows: ["ShiftLeft", "Quote", "KeyO"],
+    macos: ["AltLeft", "KeyU", "KeyO"],
+  },
+  {
+    id: "typing-german-diaeresis-u",
+    target: "ü",
+    windows: ["ShiftLeft", "Quote", "KeyU"],
+    macos: ["AltLeft", "KeyU", "KeyU"],
+  },
+  {
+    id: "typing-german-sharp-s",
+    target: "ß",
+    windows: ["AltRight", "KeyS"],
+    macos: ["AltLeft", "KeyS"],
+  },
+  {
+    id: "typing-portuguese-acute-a",
+    target: "á",
+    windows: ["Quote", "KeyA"],
+    macos: ["AltLeft", "KeyE", "KeyA"],
+  },
+  {
+    id: "typing-portuguese-grave-a",
+    target: "à",
+    windows: ["Backquote", "KeyA"],
+    macos: ["AltLeft", "Backquote", "KeyA"],
+  },
+  {
+    id: "typing-portuguese-circumflex-a",
+    target: "â",
+    windows: ["ShiftLeft", "Digit6", "KeyA"],
+    macos: ["AltLeft", "KeyI", "KeyA"],
+  },
+  {
+    id: "typing-portuguese-tilde-a",
+    target: "ã",
+    windows: ["ShiftLeft", "Backquote", "KeyA"],
+    macos: ["AltLeft", "KeyN", "KeyA"],
+  },
+  {
+    id: "typing-portuguese-cedilla-c",
+    target: "ç",
+    windows: ["AltRight", "Comma"],
+    macos: ["AltLeft", "KeyC"],
+  },
+  {
+    id: "typing-portuguese-acute-e",
+    target: "é",
+    windows: ["Quote", "KeyE"],
+    macos: ["AltLeft", "KeyE", "KeyE"],
+  },
+  {
+    id: "typing-portuguese-circumflex-e",
+    target: "ê",
+    windows: ["ShiftLeft", "Digit6", "KeyE"],
+    macos: ["AltLeft", "KeyI", "KeyE"],
+  },
+  {
+    id: "typing-portuguese-acute-i",
+    target: "í",
+    windows: ["Quote", "KeyI"],
+    macos: ["AltLeft", "KeyE", "KeyI"],
+  },
+  {
+    id: "typing-portuguese-acute-o",
+    target: "ó",
+    windows: ["Quote", "KeyO"],
+    macos: ["AltLeft", "KeyE", "KeyO"],
+  },
+  {
+    id: "typing-portuguese-circumflex-o",
+    target: "ô",
+    windows: ["ShiftLeft", "Digit6", "KeyO"],
+    macos: ["AltLeft", "KeyI", "KeyO"],
+  },
+  {
+    id: "typing-portuguese-tilde-o",
+    target: "õ",
+    windows: ["ShiftLeft", "Backquote", "KeyO"],
+    macos: ["AltLeft", "KeyN", "KeyO"],
+  },
+  {
+    id: "typing-portuguese-acute-u",
+    target: "ú",
+    windows: ["Quote", "KeyU"],
+    macos: ["AltLeft", "KeyE", "KeyU"],
+  },
+] as const;
+
+const newPhraseMappings = [
+  {
+    id: "typing-german-short-words",
+    target: "grüß dich",
+    windows: [
+      "KeyG",
+      "KeyR",
+      "ShiftLeft",
+      "Quote",
+      "KeyU",
+      "AltRight",
+      "KeyS",
+      "Space",
+      "KeyD",
+      "KeyI",
+      "KeyC",
+      "KeyH",
+    ],
+    macos: [
+      "KeyG",
+      "KeyR",
+      "AltLeft",
+      "KeyU",
+      "KeyU",
+      "AltLeft",
+      "KeyS",
+      "Space",
+      "KeyD",
+      "KeyI",
+      "KeyC",
+      "KeyH",
+    ],
+  },
+  {
+    id: "typing-german-short-sentence",
+    target: "Schöne Grüße aus München.",
+    windows: [
+      "ShiftLeft",
+      "KeyS",
+      "KeyC",
+      "KeyH",
+      "ShiftLeft",
+      "Quote",
+      "KeyO",
+      "KeyN",
+      "KeyE",
+      "Space",
+      "ShiftLeft",
+      "KeyG",
+      "KeyR",
+      "ShiftLeft",
+      "Quote",
+      "KeyU",
+      "AltRight",
+      "KeyS",
+      "KeyE",
+      "Space",
+      "KeyA",
+      "KeyU",
+      "KeyS",
+      "Space",
+      "ShiftLeft",
+      "KeyM",
+      "ShiftLeft",
+      "Quote",
+      "KeyU",
+      "KeyN",
+      "KeyC",
+      "KeyH",
+      "KeyE",
+      "KeyN",
+      "Period",
+    ],
+    macos: [
+      "ShiftLeft",
+      "KeyS",
+      "KeyC",
+      "KeyH",
+      "AltLeft",
+      "KeyU",
+      "KeyO",
+      "KeyN",
+      "KeyE",
+      "Space",
+      "ShiftLeft",
+      "KeyG",
+      "KeyR",
+      "AltLeft",
+      "KeyU",
+      "KeyU",
+      "AltLeft",
+      "KeyS",
+      "KeyE",
+      "Space",
+      "KeyA",
+      "KeyU",
+      "KeyS",
+      "Space",
+      "ShiftLeft",
+      "KeyM",
+      "AltLeft",
+      "KeyU",
+      "KeyU",
+      "KeyN",
+      "KeyC",
+      "KeyH",
+      "KeyE",
+      "KeyN",
+      "Period",
+    ],
+  },
+  {
+    id: "typing-portuguese-short-words",
+    target: "ação pão",
+    windows: [
+      "KeyA",
+      "AltRight",
+      "Comma",
+      "ShiftLeft",
+      "Backquote",
+      "KeyA",
+      "KeyO",
+      "Space",
+      "KeyP",
+      "ShiftLeft",
+      "Backquote",
+      "KeyA",
+      "KeyO",
+    ],
+    macos: [
+      "KeyA",
+      "AltLeft",
+      "KeyC",
+      "AltLeft",
+      "KeyN",
+      "KeyA",
+      "KeyO",
+      "Space",
+      "KeyP",
+      "AltLeft",
+      "KeyN",
+      "KeyA",
+      "KeyO",
+    ],
+  },
+  {
+    id: "typing-portuguese-short-sentence",
+    target: "Você está em São Paulo.",
+    windows: [
+      "ShiftLeft",
+      "KeyV",
+      "KeyO",
+      "KeyC",
+      "ShiftLeft",
+      "Digit6",
+      "KeyE",
+      "Space",
+      "KeyE",
+      "KeyS",
+      "KeyT",
+      "Quote",
+      "KeyA",
+      "Space",
+      "KeyE",
+      "KeyM",
+      "Space",
+      "ShiftLeft",
+      "KeyS",
+      "ShiftLeft",
+      "Backquote",
+      "KeyA",
+      "KeyO",
+      "Space",
+      "ShiftLeft",
+      "KeyP",
+      "KeyA",
+      "KeyU",
+      "KeyL",
+      "KeyO",
+      "Period",
+    ],
+    macos: [
+      "ShiftLeft",
+      "KeyV",
+      "KeyO",
+      "KeyC",
+      "AltLeft",
+      "KeyI",
+      "KeyE",
+      "Space",
+      "KeyE",
+      "KeyS",
+      "KeyT",
+      "AltLeft",
+      "KeyE",
+      "KeyA",
+      "Space",
+      "KeyE",
+      "KeyM",
+      "Space",
+      "ShiftLeft",
+      "KeyS",
+      "AltLeft",
+      "KeyN",
+      "KeyA",
+      "KeyO",
+      "Space",
+      "ShiftLeft",
+      "KeyP",
+      "KeyA",
+      "KeyU",
+      "KeyL",
+      "KeyO",
+      "Period",
+    ],
+  },
 ] as const;
 
 test.beforeEach(async ({ page }) => {
@@ -211,7 +557,7 @@ async function openTyping(page: Page): Promise<void> {
 
 async function openLesson(
   page: Page,
-  language: "french" | "spanish",
+  language: DeadKeyLanguage,
   lessonIndex: number,
   runtimePlatform: "Win32" | "MacIntel",
 ): Promise<Locator> {
@@ -378,6 +724,72 @@ test("French and Spanish definitions preserve every required target and exact pl
   );
 });
 
+test("German and Portuguese definitions append exact ordered local lessons and platform mappings", () => {
+  expect(
+    typingTracks.map(({ language, selectionLabel }) => [
+      language,
+      selectionLabel,
+    ]),
+  ).toEqual([
+    ["korean", "Korean — 2-set Hangul"],
+    ["japanese", "Japanese — Romaji input"],
+    ["french", "French — Dead-key accents"],
+    ["spanish", "Spanish — Dead-key accents"],
+    ["german", "German — Umlauts and ß"],
+    ["portuguese", "Portuguese — Dead-key accents"],
+  ]);
+  expect(germanLessonIds.map((id) => lesson(id).target)).toEqual([
+    "ä",
+    "ö",
+    "ü",
+    "ß",
+    "grüß dich",
+    "Schöne Grüße aus München.",
+  ]);
+  expect(portugueseLessonIds.map((id) => lesson(id).target)).toEqual([
+    "á",
+    "à",
+    "â",
+    "ã",
+    "ç",
+    "é",
+    "ê",
+    "í",
+    "ó",
+    "ô",
+    "õ",
+    "ú",
+    "ação pão",
+    "Você está em São Paulo.",
+  ]);
+  expect(germanLessonIds.map((id) => lesson(id).languageTag)).toEqual(
+    germanLessonIds.map(() => "de"),
+  );
+  expect(portugueseLessonIds.map((id) => lesson(id).languageTag)).toEqual(
+    portugueseLessonIds.map(() => "pt"),
+  );
+
+  for (const mapping of characterMappings.filter(({ id }) =>
+    /^typing-(german|portuguese)-/.test(id),
+  )) {
+    const mappedLesson = lesson(mapping.id);
+    expect(mappedLesson.target).toBe(mapping.target);
+    expect(mappedLesson.sharedPhysicalCodes).toEqual([]);
+    expect(mappedLesson.platformPhysicalCodes.windows).toEqual(mapping.windows);
+    expect(mappedLesson.platformPhysicalCodes.macos).toEqual(mapping.macos);
+    expect(mappedLesson.keyLegends).toEqual({});
+  }
+
+  for (const mapping of newPhraseMappings) {
+    const mappedLesson = lesson(mapping.id);
+    expect(mappedLesson.target).toBe(mapping.target);
+    expect(mappedLesson.expectedText).toBe(mapping.target);
+    expect(mappedLesson.sharedPhysicalCodes).toEqual([]);
+    expect(mappedLesson.platformPhysicalCodes.windows).toEqual(mapping.windows);
+    expect(mappedLesson.platformPhysicalCodes.macos).toEqual(mapping.macos);
+  }
+});
+
 test("Option, AltGr, and Shift chords show the held modifier beside the expected key until keyup", async ({
   page,
 }) => {
@@ -426,6 +838,119 @@ test("Option, AltGr, and Shift chords show the held modifier beside the expected
     "true",
   );
   await dispatchKey(input, "keyup", "ShiftLeft");
+});
+
+test("German Windows umlaut keeps Shift held and accepts the committed character", async ({
+  page,
+}) => {
+  const input = await openLesson(page, "german", 0, "Win32");
+  await dispatchComposition(input, "compositionstart", "");
+  await dispatchComposition(input, "compositionupdate", "¨");
+  await dispatchKey(input, "keydown", "ShiftLeft", { isComposing: true });
+  await expect(page.getByTestId("typing-key-ShiftLeft")).toHaveAttribute(
+    "data-held",
+    "true",
+  );
+  await expect(page.getByTestId("typing-key-Quote")).toHaveAttribute(
+    "data-expected",
+    "true",
+  );
+  await dispatchKey(input, "keyup", "ShiftLeft", { isComposing: true });
+  await pressSequence(input, ["Quote", "KeyA"]);
+  await input.evaluate((element) => {
+    (element as HTMLInputElement).value = "ä";
+  });
+  await dispatchComposition(input, "compositionend", "ä");
+  await input.press("Enter");
+  await expect(page.locator("#typing-live-status")).toHaveText("Correct — ä");
+});
+
+for (const chord of [
+  {
+    name: "German ß on macOS",
+    language: "german",
+    lessonIndex: 3,
+    runtimePlatform: "MacIntel",
+    modifier: "AltLeft",
+    expectedCode: "KeyS",
+    target: "ß",
+  },
+  {
+    name: "Portuguese ç on Windows",
+    language: "portuguese",
+    lessonIndex: 4,
+    runtimePlatform: "Win32",
+    modifier: "AltRight",
+    expectedCode: "Comma",
+    target: "ç",
+  },
+] as const) {
+  test(`${chord.name} shows its direct modifier chord and accepts committed text`, async ({
+    page,
+  }) => {
+    const input = await openLesson(
+      page,
+      chord.language,
+      chord.lessonIndex,
+      chord.runtimePlatform,
+    );
+    await dispatchComposition(input, "compositionstart", "");
+    await dispatchKey(input, "keydown", chord.modifier, { isComposing: true });
+    await expect(
+      page.getByTestId(`typing-key-${chord.modifier}`),
+    ).toHaveAttribute("data-held", "true");
+    await expect(
+      page.getByTestId(`typing-key-${chord.expectedCode}`),
+    ).toHaveAttribute("data-expected", "true");
+    await dispatchKey(input, "keyup", chord.modifier, { isComposing: true });
+    await pressSequence(input, [chord.expectedCode]);
+    await input.evaluate((element, target) => {
+      (element as HTMLInputElement).value = target;
+    }, chord.target);
+    await dispatchComposition(input, "compositionend", chord.target);
+    await input.press("Enter");
+    await expect(page.locator("#typing-live-status")).toHaveText(
+      `Correct — ${chord.target}`,
+    );
+  });
+}
+
+test("Portuguese composition is not graded early and repeat does not advance its physical sequence", async ({
+  page,
+}) => {
+  const input = await openLesson(page, "portuguese", 0, "MacIntel");
+  const status = page.locator("#typing-live-status");
+  await dispatchComposition(input, "compositionstart", "");
+  await dispatchComposition(input, "compositionupdate", "´");
+  await pressSequence(input, ["AltLeft"]);
+  await dispatchKey(input, "keydown", "KeyE", { isComposing: true });
+  await dispatchKey(input, "keydown", "KeyE", {
+    isComposing: true,
+    repeat: true,
+  });
+  await expect(page.getByTestId("typing-physical-trail")).toHaveText(
+    "Option → E",
+  );
+  await expect(page.getByTestId("typing-key-KeyA")).toHaveAttribute(
+    "data-expected",
+    "true",
+  );
+  await expect(page.getByTestId("typing-composition")).toHaveText("´");
+  await expect(page.getByTestId("typing-committed-output")).toHaveText("None");
+  await expect(status).not.toHaveClass(/incorrect-feedback/);
+  await dispatchKey(input, "keyup", "KeyE", { isComposing: true });
+  await pressSequence(input, ["KeyA"]);
+  await dispatchKey(input, "keydown", "Enter", { isComposing: true });
+  await expect(status).toContainText("only commit the active composition");
+  await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
+  await dispatchKey(input, "keyup", "Enter", { isComposing: true });
+
+  await input.evaluate((element) => {
+    (element as HTMLInputElement).value = "a\u0301";
+  });
+  await dispatchComposition(input, "compositionend", "a\u0301");
+  await input.press("Enter");
+  await expect(status).toHaveText("Correct — á");
 });
 
 test("dead-key composition stays unchecked, preserves repeated codes, compares graphemes, and Retry clears all state", async ({
@@ -518,7 +1043,7 @@ test("Spanish ñ preserves ordinal N progress and does not consume repeat events
   await expect(page.locator("#typing-live-status")).toHaveText("Correct — ñ");
 });
 
-for (const language of ["french", "spanish"] as const) {
+for (const language of ["french", "spanish", "german", "portuguese"] as const) {
   test(`${language} words and sentences validate committed Unicode and retain separate completion`, async ({
     page,
   }) => {
@@ -555,11 +1080,15 @@ for (const language of ["french", "spanish"] as const) {
       )) ?? "[]",
     );
     expect(completed).toEqual(lessonIds[language]);
-    const otherLanguage: TypingLanguage =
-      language === "french" ? "spanish" : "french";
-    expect(
-      completed.some((id: string) => id.startsWith(`typing-${otherLanguage}`)),
-    ).toBe(false);
+    for (const otherLanguage of Object.keys(lessonIds) as DeadKeyLanguage[]) {
+      if (otherLanguage !== language) {
+        expect(
+          completed.some((id: string) =>
+            id.startsWith(`typing-${otherLanguage}`),
+          ),
+        ).toBe(false);
+      }
+    }
   });
 }
 
@@ -569,20 +1098,20 @@ test("Windows and macOS setup copy uses only the required U.S. terminology", asy
   await setRuntimePlatform(page, "Win32");
   await page.goto("/");
   await openTyping(page);
-  await page.getByRole("button", { name: trackLabels.french }).click();
-  await expect(
-    page.getByText("Use United States-International on Windows.", {
-      exact: true,
-    }),
-  ).toBeVisible();
+  for (const language of [
+    "french",
+    "spanish",
+    "german",
+    "portuguese",
+  ] as const) {
+    await page.getByRole("button", { name: trackLabels[language] }).click();
+    await expect(
+      page.getByText("Use United States-International on Windows.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+  }
   await expect(page.getByText(/AZERTY/i)).toHaveCount(0);
-
-  await page.getByRole("button", { name: trackLabels.spanish }).click();
-  await expect(
-    page.getByText("Use United States-International on Windows.", {
-      exact: true,
-    }),
-  ).toBeVisible();
   await expect(page.getByText(/separate Spanish layout/i)).toHaveCount(0);
 
   await page.getByRole("button", { name: "macOS", exact: true }).click();
@@ -632,11 +1161,78 @@ test("French lessons are keyboard operable and perform no runtime backend work",
   ).toEqual([]);
 });
 
-test("long French and Spanish lessons wrap in narrow layouts and remain accessible", async ({
+for (const track of [
+  {
+    language: "german",
+    target: "ä",
+    nextTitle: "Diaeresis ö",
+  },
+  {
+    language: "portuguese",
+    target: "á",
+    nextTitle: "Grave à",
+  },
+] as const) {
+  test(`${track.language} selection, Retry, and Next are keyboard operable without backend work`, async ({
+    page,
+  }) => {
+    await setRuntimePlatform(page, "Win32");
+    await page.goto("/");
+    await openTyping(page);
+    const trackChoice = page.getByRole("button", {
+      name: trackLabels[track.language],
+    });
+    await trackChoice.focus();
+    await page.keyboard.press("Enter");
+    const start = page.getByRole("button", { name: "Start practice" });
+    await start.focus();
+    await page.keyboard.press("Enter");
+    const input = page.getByLabel("Practice input");
+    await input.focus();
+    await page.evaluate(() => {
+      window.__MEIKI_TEST_REQUESTS__ = [];
+    });
+
+    const firstLesson = lesson(lessonIds[track.language][0]);
+    await commitLesson(
+      input,
+      firstLesson.platformPhysicalCodes.windows,
+      track.target,
+    );
+    const retry = page.getByRole("button", { name: "Retry" });
+    await retry.focus();
+    await page.keyboard.press("Enter");
+    await input.focus();
+    await commitLesson(
+      input,
+      firstLesson.platformPhysicalCodes.windows,
+      track.target,
+    );
+    const next = page.getByRole("button", { name: "Next" });
+    await next.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      page.getByRole("heading", { name: track.nextTitle, level: 2 }),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("typing-keyboard").locator("[tabindex]"),
+    ).toHaveCount(0);
+    expect(
+      await page.evaluate(() => window.__MEIKI_TEST_REQUESTS__ ?? []),
+    ).toEqual([]);
+  });
+}
+
+test("dead-key tracks wrap in narrow layouts and remain accessible", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 320, height: 760 });
-  for (const language of ["french", "spanish"] as const) {
+  for (const language of [
+    "french",
+    "spanish",
+    "german",
+    "portuguese",
+  ] as const) {
     await openLesson(
       page,
       language,
@@ -662,10 +1258,12 @@ test("long French and Spanish lessons wrap in narrow layouts and remain accessib
         () => document.documentElement.scrollWidth <= window.innerWidth,
       ),
     ).toBe(true);
+    await expect(
+      page.getByTestId("typing-keyboard").locator("[tabindex]"),
+    ).toHaveCount(0);
+    const accessibility = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+      .analyze();
+    expect(accessibility.violations).toEqual([]);
   }
-
-  const accessibility = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
-    .analyze();
-  expect(accessibility.violations).toEqual([]);
 });

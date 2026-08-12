@@ -316,6 +316,42 @@ for (const studyKeyboardCase of [
   });
 }
 
+for (const typingLandingCase of [
+  {
+    name: "typing-tracks-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "typing-tracks-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${typingLandingCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/",
+      screen: "Typing",
+      theme: typingLandingCase.theme,
+      viewport: typingLandingCase.viewport,
+    });
+    await expect(
+      page.getByRole("group", { name: "Language" }).getByRole("button"),
+    ).toHaveCount(6);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${typingLandingCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      fullPage: true,
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 for (const typingCase of [
   {
     name: "typing-practice-desktop-light",
@@ -364,6 +400,18 @@ for (const typingCase of [
     theme: "dark",
     viewport: "narrow",
     language: "Japanese — Romaji input",
+  },
+  {
+    name: "typing-german-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+    language: "German — Umlauts and ß",
+  },
+  {
+    name: "typing-portuguese-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+    language: "Portuguese — Dead-key accents",
   },
 ] as const) {
   test(`visual regression: ${typingCase.name}`, async ({ page }) => {
