@@ -8,6 +8,8 @@ const trackNames = [
   "Japanese — Romaji input",
   "French — Dead-key accents",
   "Spanish — Dead-key accents",
+  "German — Umlauts and ß",
+  "Portuguese — Dead-key accents",
 ] as const;
 
 test.beforeEach(async ({ page }) => {
@@ -140,7 +142,7 @@ test("desktop and mobile navigation keep Typing between Add and Settings and pre
   ]);
 });
 
-test("the empty collection offers exactly four static local tracks without network or backend work", async ({
+test("the empty collection offers exactly six static local tracks without network or backend work", async ({
   page,
 }) => {
   await page.goto("/?collection=empty");
@@ -161,11 +163,11 @@ test("the empty collection offers exactly four static local tracks without netwo
     .click();
 
   const languageChoices = page.getByRole("group", { name: "Language" });
-  await expect(languageChoices.getByRole("button")).toHaveCount(4);
+  await expect(languageChoices.getByRole("button")).toHaveCount(6);
   for (const name of trackNames) {
     await expect(languageChoices.getByRole("button", { name })).toBeVisible();
   }
-  await expect(page.getByText(/Chinese/i)).toHaveCount(0);
+  await expect(page.getByText(/Chinese|Russian/i)).toHaveCount(0);
   await expect(page.locator("main")).toContainText(
     "does not require a deck or bundle",
   );
@@ -185,7 +187,7 @@ test("two static lessons in one language share one track and advance with separa
   ).toBeVisible();
 
   const languageChoices = page.getByRole("group", { name: "Language" });
-  await expect(languageChoices.getByRole("button")).toHaveCount(4);
+  await expect(languageChoices.getByRole("button")).toHaveCount(6);
   await expect(
     languageChoices.getByRole("button", {
       name: "Korean — 2-set Hangul",
@@ -219,6 +221,42 @@ test("two static lessons in one language share one track and advance with separa
     ),
   ).toEqual(["typing-korean-basic-consonants", "typing-korean-fixture-second"]);
 });
+
+for (const track of [
+  {
+    language: "german",
+    label: "German — Umlauts and ß",
+    firstLesson: "Umlaut ä",
+  },
+  {
+    language: "portuguese",
+    label: "Portuguese — Dead-key accents",
+    firstLesson: "Acute á",
+  },
+] as const) {
+  test(`${track.language} selection persists independently across reload`, async ({
+    page,
+  }) => {
+    await openTyping(page);
+    await page.getByRole("button", { name: track.label }).click();
+
+    expect(
+      await page.evaluate(() => localStorage.getItem("meiki-typing-language")),
+    ).toBe(track.language);
+    await expect(
+      page.getByText(track.firstLesson, { exact: true }),
+    ).toBeVisible();
+
+    await page.reload();
+    await openTyping(page);
+    await expect(
+      page.getByRole("button", { name: track.label }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      page.getByText(track.firstLesson, { exact: true }),
+    ).toBeVisible();
+  });
+}
 
 for (const detected of [
   { runtime: "MacIntel", label: "macOS", stored: "macos" },
