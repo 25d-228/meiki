@@ -1,6 +1,12 @@
 export type InstructionPlatform = "windows" | "macos";
 export type TypingLanguage =
-  "korean" | "japanese" | "french" | "spanish" | "german" | "portuguese";
+  | "korean"
+  | "japanese"
+  | "french"
+  | "spanish"
+  | "german"
+  | "portuguese"
+  | "russian";
 export type TypingDrillMode = "physical" | "committed";
 
 export type TypingTrack = {
@@ -37,6 +43,7 @@ export const typingTracks: TypingTrack[] = [
   { language: "spanish", selectionLabel: "Spanish — Dead-key accents" },
   { language: "german", selectionLabel: "German — Umlauts and ß" },
   { language: "portuguese", selectionLabel: "Portuguese — Dead-key accents" },
+  { language: "russian", selectionLabel: "Russian — ЙЦУКЕН" },
 ];
 
 export const koreanKeyLegends: Record<string, TypingKeyLegend> = {
@@ -68,6 +75,43 @@ export const koreanKeyLegends: Record<string, TypingKeyLegend> = {
   KeyM: { base: "ㅡ" },
 };
 
+const russianKeyLegends: Record<string, TypingKeyLegend> = {
+  Backquote: { shifted: "Ё", base: "ё" },
+  KeyQ: { shifted: "Й", base: "й" },
+  KeyW: { shifted: "Ц", base: "ц" },
+  KeyE: { shifted: "У", base: "у" },
+  KeyR: { shifted: "К", base: "к" },
+  KeyT: { shifted: "Е", base: "е" },
+  KeyY: { shifted: "Н", base: "н" },
+  KeyU: { shifted: "Г", base: "г" },
+  KeyI: { shifted: "Ш", base: "ш" },
+  KeyO: { shifted: "Щ", base: "щ" },
+  KeyP: { shifted: "З", base: "з" },
+  BracketLeft: { shifted: "Х", base: "х" },
+  BracketRight: { shifted: "Ъ", base: "ъ" },
+  KeyA: { shifted: "Ф", base: "ф" },
+  KeyS: { shifted: "Ы", base: "ы" },
+  KeyD: { shifted: "В", base: "в" },
+  KeyF: { shifted: "А", base: "а" },
+  KeyG: { shifted: "П", base: "п" },
+  KeyH: { shifted: "Р", base: "р" },
+  KeyJ: { shifted: "О", base: "о" },
+  KeyK: { shifted: "Л", base: "л" },
+  KeyL: { shifted: "Д", base: "д" },
+  Semicolon: { shifted: "Ж", base: "ж" },
+  Quote: { shifted: "Э", base: "э" },
+  KeyZ: { shifted: "Я", base: "я" },
+  KeyX: { shifted: "Ч", base: "ч" },
+  KeyC: { shifted: "С", base: "с" },
+  KeyV: { shifted: "М", base: "м" },
+  KeyB: { shifted: "И", base: "и" },
+  KeyN: { shifted: "Т", base: "т" },
+  KeyM: { shifted: "Ь", base: "ь" },
+  Comma: { shifted: "Б", base: "б" },
+  Period: { shifted: "Ю", base: "ю" },
+  Slash: { shifted: ",", base: "." },
+};
+
 const koreanInstructions: Record<InstructionPlatform, string> = {
   windows:
     "Use 2-set Korean. On standard US hardware, use Right Alt for 한/영 switching.",
@@ -84,6 +128,13 @@ const japaneseInstructions: Record<InstructionPlatform, string> = {
 const deadKeyInstructions: Record<InstructionPlatform, string> = {
   windows: "Use United States-International on Windows.",
   macos: "Use the standard U.S. layout on macOS.",
+};
+
+const russianInstructions: Record<InstructionPlatform, string> = {
+  windows:
+    "Add Russian on Windows and use the standard Russian keyboard layout.",
+  macos:
+    "Add a Russian input source on macOS that uses the displayed standard ЙЦУКЕН letter positions.",
 };
 
 export const typingLessons: TypingLesson[] = [
@@ -1549,6 +1600,160 @@ export const typingLessons: TypingLesson[] = [
     hint: "Type and commit the sentence Você está em São Paulo.",
     keyLegends: {},
     instructions: deadKeyInstructions,
+  },
+  {
+    id: "typing-russian-top-row",
+    language: "russian",
+    languageTag: "ru",
+    title: "Ё and top row",
+    mode: "physical",
+    target: "ё й ц у к е н г ш щ з х ъ",
+    expectedText: "ёйцукенгшщзхъ",
+    sharedPhysicalCodes: [
+      "Backquote",
+      "KeyQ",
+      "KeyW",
+      "KeyE",
+      "KeyR",
+      "KeyT",
+      "KeyY",
+      "KeyU",
+      "KeyI",
+      "KeyO",
+      "KeyP",
+      "BracketLeft",
+      "BracketRight",
+    ],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "Press the Ё and top-row positions in order. No active Russian input source is required.",
+    keyLegends: russianKeyLegends,
+    instructions: russianInstructions,
+  },
+  {
+    id: "typing-russian-home-row",
+    language: "russian",
+    languageTag: "ru",
+    title: "Home row",
+    mode: "physical",
+    target: "ф ы в а п р о л д ж э",
+    expectedText: "фывапролджэ",
+    sharedPhysicalCodes: [
+      "KeyA",
+      "KeyS",
+      "KeyD",
+      "KeyF",
+      "KeyG",
+      "KeyH",
+      "KeyJ",
+      "KeyK",
+      "KeyL",
+      "Semicolon",
+      "Quote",
+    ],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "Press the home-row positions in order. No active Russian input source is required.",
+    keyLegends: russianKeyLegends,
+    instructions: russianInstructions,
+  },
+  {
+    id: "typing-russian-bottom-row",
+    language: "russian",
+    languageTag: "ru",
+    title: "Bottom row",
+    mode: "physical",
+    target: "я ч с м и т ь б ю",
+    expectedText: "ячсмитьбю",
+    sharedPhysicalCodes: [
+      "KeyZ",
+      "KeyX",
+      "KeyC",
+      "KeyV",
+      "KeyB",
+      "KeyN",
+      "KeyM",
+      "Comma",
+      "Period",
+    ],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "Press the bottom-row positions in order. No active Russian input source is required.",
+    keyLegends: russianKeyLegends,
+    instructions: russianInstructions,
+  },
+  {
+    id: "typing-russian-uppercase-shift",
+    language: "russian",
+    languageTag: "ru",
+    title: "Uppercase with Shift",
+    mode: "committed",
+    target: "Я",
+    expectedText: "Я",
+    sharedPhysicalCodes: ["ShiftLeft", "KeyZ"],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "With Russian input active, hold Shift, press Z, and commit Я.",
+    keyLegends: russianKeyLegends,
+    instructions: russianInstructions,
+  },
+  {
+    id: "typing-russian-short-word",
+    language: "russian",
+    languageTag: "ru",
+    title: "Short Russian word",
+    mode: "committed",
+    target: "привет",
+    expectedText: "привет",
+    sharedPhysicalCodes: ["KeyG", "KeyH", "KeyB", "KeyD", "KeyT", "KeyN"],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "With Russian input active, type G H B D T N and commit привет.",
+    keyLegends: russianKeyLegends,
+    instructions: russianInstructions,
+  },
+  {
+    id: "typing-russian-repeated-letters",
+    language: "russian",
+    languageTag: "ru",
+    title: "Repeated Russian letters",
+    mode: "committed",
+    target: "русский",
+    expectedText: "русский",
+    sharedPhysicalCodes: [
+      "KeyH",
+      "KeyE",
+      "KeyC",
+      "KeyC",
+      "KeyR",
+      "KeyB",
+      "KeyQ",
+    ],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "With Russian input active, type H E C C R B Q and commit русский.",
+    keyLegends: russianKeyLegends,
+    instructions: russianInstructions,
+  },
+  {
+    id: "typing-russian-short-phrase",
+    language: "russian",
+    languageTag: "ru",
+    title: "Short Russian phrase",
+    mode: "committed",
+    target: "Привет мир",
+    expectedText: "Привет мир",
+    sharedPhysicalCodes: [
+      "ShiftLeft",
+      "KeyG",
+      "KeyH",
+      "KeyB",
+      "KeyD",
+      "KeyT",
+      "KeyN",
+      "Space",
+      "KeyV",
+      "KeyB",
+      "KeyH",
+    ],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "With Russian input active, type the displayed physical sequence and commit Привет мир.",
+    keyLegends: russianKeyLegends,
+    instructions: russianInstructions,
   },
 ];
 

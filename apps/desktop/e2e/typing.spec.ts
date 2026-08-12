@@ -10,6 +10,7 @@ const trackNames = [
   "Spanish — Dead-key accents",
   "German — Umlauts and ß",
   "Portuguese — Dead-key accents",
+  "Russian — ЙЦУКЕН",
 ] as const;
 
 test.beforeEach(async ({ page }) => {
@@ -142,7 +143,7 @@ test("desktop and mobile navigation keep Typing between Add and Settings and pre
   ]);
 });
 
-test("the empty collection offers exactly six static local tracks without network or backend work", async ({
+test("the empty collection offers exactly seven static local tracks without network or backend work", async ({
   page,
 }) => {
   await page.goto("/?collection=empty");
@@ -163,11 +164,11 @@ test("the empty collection offers exactly six static local tracks without networ
     .click();
 
   const languageChoices = page.getByRole("group", { name: "Language" });
-  await expect(languageChoices.getByRole("button")).toHaveCount(6);
+  await expect(languageChoices.getByRole("button")).toHaveCount(7);
   for (const name of trackNames) {
     await expect(languageChoices.getByRole("button", { name })).toBeVisible();
   }
-  await expect(page.getByText(/Chinese|Russian/i)).toHaveCount(0);
+  await expect(page.getByText(/Chinese/i)).toHaveCount(0);
   await expect(page.locator("main")).toContainText(
     "does not require a deck or bundle",
   );
@@ -187,7 +188,7 @@ test("two static lessons in one language share one track and advance with separa
   ).toBeVisible();
 
   const languageChoices = page.getByRole("group", { name: "Language" });
-  await expect(languageChoices.getByRole("button")).toHaveCount(6);
+  await expect(languageChoices.getByRole("button")).toHaveCount(7);
   await expect(
     languageChoices.getByRole("button", {
       name: "Korean — 2-set Hangul",
