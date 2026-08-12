@@ -226,7 +226,7 @@ for (const track of [
   {
     language: "german",
     label: "German — Umlauts and ß",
-    firstLesson: "Diaeresis ä",
+    firstLesson: "Umlaut ä",
   },
   {
     language: "portuguese",

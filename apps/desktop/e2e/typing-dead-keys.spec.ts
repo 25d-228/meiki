@@ -1165,7 +1165,7 @@ for (const track of [
   {
     language: "german",
     target: "ä",
-    nextTitle: "Diaeresis ö",
+    nextTitle: "Umlaut ö",
   },
   {
     language: "portuguese",
