@@ -157,6 +157,16 @@ class ReleaseCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("desktop icon source is missing: app-icon.svg", result.stderr)
 
+    def test_windows_line_endings_preserve_approved_icon_sources(self) -> None:
+        tauri_root = self.checkout / "apps/desktop/src-tauri"
+        for filename in ("app-icon.svg", "app-icon-dark.svg"):
+            path = tauri_root / filename
+            canonical_source = path.read_bytes().replace(b"\r\n", b"\n")
+            path.write_bytes(canonical_source.replace(b"\n", b"\r\n"))
+
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_dark_icon_swapped_into_default_source_fails(self) -> None:
         tauri_root = self.checkout / "apps/desktop/src-tauri"
         (tauri_root / "app-icon.svg").write_bytes(

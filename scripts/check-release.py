@@ -71,7 +71,9 @@ def validate_icon_source(
     title = root.find("{http://www.w3.org/2000/svg}title")
     if title is None or title.text != expected_title:
         fail(f"desktop icon source has the wrong title: {filename}")
-    if hashlib.sha256(source).hexdigest() != expected_sha256:
+    # Git may use CRLF in Windows worktrees, so hash canonical repository newlines.
+    canonical_source = source.replace(b"\r\n", b"\n")
+    if hashlib.sha256(canonical_source).hexdigest() != expected_sha256:
         fail(f"desktop icon source differs from the approved artwork: {filename}")
 
 
