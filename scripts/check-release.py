@@ -3,15 +3,43 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
+import struct
 import sys
+import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
 ROOT = Path(os.environ.get("MEIKI_RELEASE_ROOT", DEFAULT_ROOT)).resolve()
+
+EXPECTED_ICON_SOURCES = (
+    (
+        "app-icon.svg",
+        "meiki-icon-light",
+        "ad3d69bc7c6631da75b2998956349d1d1ef5c2bb6f17481471b169c75bff48a2",
+    ),
+    (
+        "app-icon-dark.svg",
+        "meiki-icon-dark",
+        "01192dbc9ec40847838e9de08eede2dfb8b1130520df5fdd33337868fe1fbc93",
+    ),
+)
+EXPECTED_BUNDLE_ICONS = (
+    "icons/32x32.png",
+    "icons/128x128.png",
+    "icons/128x128@2x.png",
+    "icons/icon.icns",
+    "icons/icon.ico",
+)
+EXPECTED_PNG_DIMENSIONS = {
+    "icons/32x32.png": (32, 32),
+    "icons/128x128.png": (128, 128),
+    "icons/128x128@2x.png": (256, 256),
+}
 
 
 def fail(message: str) -> None:
@@ -21,6 +49,47 @@ def fail(message: str) -> None:
 
 def read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def validate_icon_source(
+    tauri_root: Path, filename: str, expected_title: str, expected_sha256: str
+) -> None:
+    path = tauri_root / filename
+    if not path.is_file():
+        fail(f"desktop icon source is missing: {filename}")
+
+    source = path.read_bytes()
+    try:
+        root = ElementTree.fromstring(source)
+    except ElementTree.ParseError as error:
+        fail(f"desktop icon source is not valid SVG: {filename}: {error}")
+
+    if root.tag != "{http://www.w3.org/2000/svg}svg":
+        fail(f"desktop icon source root is not SVG: {filename}")
+    if root.get("viewBox") != "0 0 340 340":
+        fail(f"desktop icon source has the wrong viewBox: {filename}")
+    title = root.find("{http://www.w3.org/2000/svg}title")
+    if title is None or title.text != expected_title:
+        fail(f"desktop icon source has the wrong title: {filename}")
+    if hashlib.sha256(source).hexdigest() != expected_sha256:
+        fail(f"desktop icon source differs from the approved artwork: {filename}")
+
+
+def validate_png_icon(path: Path, expected_dimensions: tuple[int, int]) -> None:
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        fail(f"bundle icon is not a valid PNG: {path.name}")
+    if len(data) < 33 or struct.unpack(">I", data[8:12])[0] != 13:
+        fail(f"bundle icon has an invalid PNG header: {path.name}")
+
+    width, height, bit_depth, color_type = struct.unpack(">IIBB", data[16:26])
+    if (width, height) != expected_dimensions:
+        fail(
+            f"bundle icon has dimensions {(width, height)}, "
+            f"expected {expected_dimensions}: {path.name}"
+        )
+    if (bit_depth, color_type) != (8, 6):
+        fail(f"bundle icon is not 8-bit RGBA: {path.name}")
 
 
 workspace_manifest = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
@@ -178,16 +247,32 @@ if not isinstance(bundle, dict) or bundle.get("active") is not True:
 if bundle.get("targets") != "all":
     fail("Tauri must declare all platform bundle targets")
 
-icons = bundle.get("icon")
-if not isinstance(icons, list) or not icons:
-    fail("Tauri bundle icons are missing")
 tauri_root = ROOT / "apps/desktop/src-tauri"
+for filename, expected_title, expected_sha256 in EXPECTED_ICON_SOURCES:
+    validate_icon_source(tauri_root, filename, expected_title, expected_sha256)
+
+icons = bundle.get("icon")
+if icons != list(EXPECTED_BUNDLE_ICONS):
+    fail("Tauri bundle icons differ from the five desktop icon paths")
 for relative in icons:
-    if not isinstance(relative, str):
-        fail("Tauri icon path is not text")
     icon = tauri_root / relative
     if not icon.is_file() or icon.stat().st_size < 128:
         fail(f"bundle icon is missing or invalid: {relative}")
+
+for relative, dimensions in EXPECTED_PNG_DIMENSIONS.items():
+    validate_png_icon(tauri_root / relative, dimensions)
+
+icns = (tauri_root / "icons/icon.icns").read_bytes()
+if icns[:4] != b"icns" or len(icns) < 128:
+    fail("bundle ICNS icon has an invalid signature or content")
+if struct.unpack(">I", icns[4:8])[0] != len(icns):
+    fail("bundle ICNS icon has an invalid declared length")
+
+ico = (tauri_root / "icons/icon.ico").read_bytes()
+if ico[:4] != b"\x00\x00\x01\x00" or len(ico) < 128:
+    fail("bundle ICO icon has an invalid signature or content")
+if struct.unpack("<H", ico[4:6])[0] == 0:
+    fail("bundle ICO icon contains no image entries")
 
 migrations = sorted((ROOT / "crates/meiki-storage/migrations").glob("*.sql"))
 migration_versions = [int(path.name.split("_", 1)[0]) for path in migrations]

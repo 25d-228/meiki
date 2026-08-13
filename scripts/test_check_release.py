@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -148,6 +149,82 @@ class ReleaseCheckTests(unittest.TestCase):
         result = self.run_check()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("fixed preset", result.stderr)
+
+    def test_missing_default_icon_source_fails(self) -> None:
+        (self.checkout / "apps/desktop/src-tauri/app-icon.svg").unlink()
+
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("desktop icon source is missing: app-icon.svg", result.stderr)
+
+    def test_dark_icon_swapped_into_default_source_fails(self) -> None:
+        tauri_root = self.checkout / "apps/desktop/src-tauri"
+        (tauri_root / "app-icon.svg").write_bytes(
+            (tauri_root / "app-icon-dark.svg").read_bytes()
+        )
+
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "desktop icon source has the wrong title: app-icon.svg",
+            result.stderr,
+        )
+
+    def test_changed_dark_icon_source_fails(self) -> None:
+        icon_path = self.checkout / "apps/desktop/src-tauri/app-icon-dark.svg"
+        icon_path.write_text(
+            icon_path.read_text(encoding="utf-8").replace(
+                "meiki-icon-dark", "meiki-icon-light", 1
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "desktop icon source has the wrong title: app-icon-dark.svg",
+            result.stderr,
+        )
+
+    def test_changed_bundle_icon_paths_fail(self) -> None:
+        config_path = self.checkout / "apps/desktop/src-tauri/tauri.conf.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["bundle"]["icon"].pop()
+        config_path.write_text(
+            json.dumps(config, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("five desktop icon paths", result.stderr)
+
+    def test_wrong_png_dimensions_fail(self) -> None:
+        icon_path = self.checkout / "apps/desktop/src-tauri/icons/32x32.png"
+        icon = bytearray(icon_path.read_bytes())
+        icon[16:20] = struct.pack(">I", 64)
+        icon_path.write_bytes(icon)
+
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected (32, 32): 32x32.png", result.stderr)
+
+    def test_invalid_platform_icon_signatures_fail(self) -> None:
+        icons_root = self.checkout / "apps/desktop/src-tauri/icons"
+        for filename, expected_error in (
+            ("icon.icns", "bundle ICNS icon has an invalid signature"),
+            ("icon.ico", "bundle ICO icon has an invalid signature"),
+        ):
+            with self.subTest(filename=filename):
+                icon_path = icons_root / filename
+                original = icon_path.read_bytes()
+                icon_path.write_bytes(b"invalid platform icon" * 16)
+
+                result = self.run_check()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected_error, result.stderr)
+
+                icon_path.write_bytes(original)
 
 
 if __name__ == "__main__":
