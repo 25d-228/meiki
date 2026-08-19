@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 340" width="340" height="340">
-  <title>meiki-icon-light</title>
+  <title>meiki-icon-dark</title>
 
   <!-- 1. canvas -->
-  <rect width="340" height="340" rx="16" ry="16" fill="#E9D7C2"/>
+  <rect width="340" height="340" rx="16" ry="16" fill="#3D3D3D"/>
 
   <!-- 2. glyph: card stack — front card with two lines, back card peeking -->
   <g transform="translate(10, -5)"
-     fill="none" stroke="#3D3D3D" stroke-linecap="round" stroke-linejoin="round">
+     fill="none" stroke="#F5E6D8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M 124 88 H 232 A 26 26 0 0 1 258 114 V 206" stroke-width="20"/>
     <rect x="68" y="124" width="132" height="142" rx="26" stroke-width="20"/>
     <path d="M 98 168 H 164" stroke-width="18"/>
