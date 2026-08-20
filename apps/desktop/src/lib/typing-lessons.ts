@@ -6,7 +6,8 @@ export type TypingLanguage =
   | "spanish"
   | "german"
   | "portuguese"
-  | "russian";
+  | "russian"
+  | "chinese";
 export type TypingDrillMode = "physical" | "committed";
 
 export type TypingTrack = {
@@ -44,6 +45,7 @@ export const typingTracks: TypingTrack[] = [
   { language: "german", selectionLabel: "German — Umlauts and ß" },
   { language: "portuguese", selectionLabel: "Portuguese — Dead-key accents" },
   { language: "russian", selectionLabel: "Russian — ЙЦУКЕН" },
+  { language: "chinese", selectionLabel: "Chinese — Pinyin input" },
 ];
 
 export const koreanKeyLegends: Record<string, TypingKeyLegend> = {
@@ -135,6 +137,11 @@ const russianInstructions: Record<InstructionPlatform, string> = {
     "Add Russian on Windows and use the standard Russian keyboard layout.",
   macos:
     "Add a Russian input source on macOS that uses the displayed standard ЙЦУКЕН letter positions.",
+};
+
+const chineseInstructions: Record<InstructionPlatform, string> = {
+  windows: "Add Chinese (Simplified, China) and use Microsoft Pinyin.",
+  macos: "Add Chinese, Simplified, and use Pinyin - Simplified.",
 };
 
 export const typingLessons: TypingLesson[] = [
@@ -1754,6 +1761,153 @@ export const typingLessons: TypingLesson[] = [
     hint: "With Russian input active, type the displayed physical sequence and commit Привет мир.",
     keyLegends: russianKeyLegends,
     instructions: russianInstructions,
+  },
+  {
+    id: "typing-chinese-basic-initials",
+    language: "chinese",
+    languageTag: "zh-Hans",
+    title: "Basic initials",
+    mode: "physical",
+    target: "b p m f d t n l g k h",
+    expectedText: "bpmfdtnlgkh",
+    sharedPhysicalCodes: [
+      "KeyB",
+      "KeyP",
+      "KeyM",
+      "KeyF",
+      "KeyD",
+      "KeyT",
+      "KeyN",
+      "KeyL",
+      "KeyG",
+      "KeyK",
+      "KeyH",
+    ],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "Press the basic Pinyin initial positions in order. No active Chinese input source is required.",
+    keyLegends: {},
+    instructions: chineseInstructions,
+  },
+  {
+    id: "typing-chinese-finals",
+    language: "chinese",
+    languageTag: "zh-Hans",
+    title: "Finals and ü with V",
+    mode: "physical",
+    target: "a o e i u ü",
+    expectedText: "aoeiuü",
+    sharedPhysicalCodes: ["KeyA", "KeyO", "KeyE", "KeyI", "KeyU", "KeyV"],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "Press A O E I U V. Pinyin input methods commonly use V for ü.",
+    keyLegends: {},
+    instructions: chineseInstructions,
+  },
+  {
+    id: "typing-chinese-digraph-initials",
+    language: "chinese",
+    languageTag: "zh-Hans",
+    title: "zh, ch, and sh",
+    mode: "physical",
+    target: "zh ch sh",
+    expectedText: "zhchsh",
+    sharedPhysicalCodes: ["KeyZ", "KeyH", "KeyC", "KeyH", "KeyS", "KeyH"],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "Press Z H, C H, and S H in order. No active Chinese input source is required.",
+    keyLegends: {},
+    instructions: chineseInstructions,
+  },
+  {
+    id: "typing-chinese-nihao",
+    language: "chinese",
+    languageTag: "zh-Hans",
+    title: "Hello",
+    mode: "committed",
+    target: "你好",
+    expectedText: "你好",
+    sharedPhysicalCodes: ["KeyN", "KeyI", "KeyH", "KeyA", "KeyO"],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "With Simplified Chinese Pinyin input active, type N I H A O and commit 你好.",
+    keyLegends: {},
+    instructions: chineseInstructions,
+  },
+  {
+    id: "typing-chinese-zhongwen",
+    language: "chinese",
+    languageTag: "zh-Hans",
+    title: "Chinese",
+    mode: "committed",
+    target: "中文",
+    expectedText: "中文",
+    sharedPhysicalCodes: [
+      "KeyZ",
+      "KeyH",
+      "KeyO",
+      "KeyN",
+      "KeyG",
+      "KeyW",
+      "KeyE",
+      "KeyN",
+    ],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "With Simplified Chinese Pinyin input active, type Z H O N G W E N and commit 中文.",
+    keyLegends: {},
+    instructions: chineseInstructions,
+  },
+  {
+    id: "typing-chinese-v-for-umlaut",
+    language: "chinese",
+    languageTag: "zh-Hans",
+    title: "ü with V",
+    mode: "committed",
+    target: "绿",
+    expectedText: "绿",
+    sharedPhysicalCodes: ["KeyL", "KeyV"],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "With Simplified Chinese Pinyin input active, type L V and commit 绿.",
+    keyLegends: {},
+    instructions: chineseInstructions,
+  },
+  {
+    id: "typing-chinese-apostrophe-separator",
+    language: "chinese",
+    languageTag: "zh-Hans",
+    title: "Apostrophe separator",
+    mode: "committed",
+    target: "西安",
+    expectedText: "西安",
+    sharedPhysicalCodes: ["KeyX", "KeyI", "Quote", "KeyA", "KeyN"],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "With Simplified Chinese Pinyin input active, type X I Apostrophe A N and commit 西安.",
+    keyLegends: {},
+    instructions: chineseInstructions,
+  },
+  {
+    id: "typing-chinese-short-phrase",
+    language: "chinese",
+    languageTag: "zh-Hans",
+    title: "Short Chinese phrase",
+    mode: "committed",
+    target: "我学中文",
+    expectedText: "我学中文",
+    sharedPhysicalCodes: [
+      "KeyW",
+      "KeyO",
+      "KeyX",
+      "KeyU",
+      "KeyE",
+      "KeyZ",
+      "KeyH",
+      "KeyO",
+      "KeyN",
+      "KeyG",
+      "KeyW",
+      "KeyE",
+      "KeyN",
+    ],
+    platformPhysicalCodes: { windows: [], macos: [] },
+    hint: "With Simplified Chinese Pinyin input active, type W O X U E Z H O N G W E N and commit 我学中文.",
+    keyLegends: {},
+    instructions: chineseInstructions,
   },
 ];
 

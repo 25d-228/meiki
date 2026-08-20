@@ -337,7 +337,7 @@ for (const typingLandingCase of [
     });
     await expect(
       page.getByRole("group", { name: "Language" }).getByRole("button"),
-    ).toHaveCount(7);
+    ).toHaveCount(8);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -424,6 +424,18 @@ for (const typingCase of [
     theme: "dark",
     viewport: "narrow",
     language: "Russian — ЙЦУКЕН",
+  },
+  {
+    name: "typing-chinese-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+    language: "Chinese — Pinyin input",
+  },
+  {
+    name: "typing-chinese-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+    language: "Chinese — Pinyin input",
   },
 ] as const) {
   test(`visual regression: ${typingCase.name}`, async ({ page }) => {

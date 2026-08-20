@@ -289,6 +289,7 @@ test("Russian definitions append the exact ordered lessons, targets, tags, and p
     ["german", "German — Umlauts and ß"],
     ["portuguese", "Portuguese — Dead-key accents"],
     ["russian", "Russian — ЙЦУКЕН"],
+    ["chinese", "Chinese — Pinyin input"],
   ]);
 
   const lessons = russianLessonIds.map(russianLesson);
@@ -545,11 +546,10 @@ test("Russian selection and completion persist without changing another track's 
   });
   await openTyping(page);
   const languageChoices = page.getByRole("group", { name: "Language" });
-  await expect(languageChoices.getByRole("button")).toHaveCount(7);
+  await expect(languageChoices.getByRole("button")).toHaveCount(8);
   await expect(
     languageChoices.getByRole("button", { name: "Russian — ЙЦУКЕН" }),
   ).toBeVisible();
-  await expect(page.getByText(/Chinese/i)).toHaveCount(0);
 
   await page.getByRole("button", { name: "Russian — ЙЦУКЕН" }).click();
   await page.getByRole("button", { name: "Start practice" }).click();
