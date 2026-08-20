@@ -738,6 +738,7 @@ test("German and Portuguese definitions append exact ordered local lessons and p
     ["german", "German — Umlauts and ß"],
     ["portuguese", "Portuguese — Dead-key accents"],
     ["russian", "Russian — ЙЦУКЕН"],
+    ["chinese", "Chinese — Pinyin input"],
   ]);
   expect(germanLessonIds.map((id) => lesson(id).target)).toEqual([
     "ä",

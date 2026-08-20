@@ -8,6 +8,36 @@
   import TypingKeyboard from "./TypingKeyboard.svelte";
 
   type ConversionStep = "reading" | "convert" | "accept" | "accepted";
+  type ConversionLanguage = "japanese" | "chinese";
+  type Props = { language: ConversionLanguage };
+
+  const conversionCopy = {
+    japanese: {
+      title: "Kana conversion",
+      steps: [
+        "Type the reading.",
+        "Press Space to convert.",
+        "Press Enter to accept.",
+      ],
+      initialStatus: "Type a reading with Japanese romaji input.",
+      inputGuidance:
+        "Try any reading. Conversion results depend on your installed Japanese IME.",
+    },
+    chinese: {
+      title: "Pinyin conversion",
+      steps: [
+        "Type Pinyin.",
+        "Press Space to show candidates.",
+        "Choose the intended candidate, then press Enter to accept.",
+      ],
+      initialStatus: "Type Pinyin with a Simplified Chinese input source.",
+      inputGuidance:
+        "Try any Pinyin reading. Candidate results depend on your installed Simplified Chinese IME.",
+    },
+  } as const;
+
+  let { language }: Props = $props();
+  let copy = $derived(conversionCopy[language]);
 
   let step = $state<ConversionStep>("reading");
   let pressedCodes = $state<string[]>([]);
@@ -17,7 +47,7 @@
   let inputValue = $state("");
   let composing = $state(false);
   let acceptRequested = $state(false);
-  let liveStatus = $state("Type a reading with Japanese romaji input.");
+  let liveStatus = $state<string | null>(null);
 
   let expectedCode = $derived(
     step === "convert" ? "Space" : step === "accept" ? "Enter" : null,
@@ -161,7 +191,7 @@
     inputValue = "";
     composing = false;
     acceptRequested = false;
-    liveStatus = "Type a reading with Japanese romaji input.";
+    liveStatus = copy.initialStatus;
   }
 </script>
 
@@ -171,7 +201,7 @@
   <header>
     <div>
       <Badge variant="secondary">Non-scored sandbox</Badge>
-      <h2 id="conversion-sandbox-title">Kana conversion</h2>
+      <h2 id="conversion-sandbox-title">{copy.title}</h2>
     </div>
     <p>
       Candidate order varies by operating system, dictionary, and IME history.
@@ -180,9 +210,9 @@
   </header>
 
   <ol class="conversion-steps">
-    <li data-active={step === "reading"}>Type the reading.</li>
-    <li data-active={step === "convert"}>Press Space to convert.</li>
-    <li data-active={step === "accept"}>Press Enter to accept.</li>
+    <li data-active={step === "reading"}>{copy.steps[0]}</li>
+    <li data-active={step === "convert"}>{copy.steps[1]}</li>
+    <li data-active={step === "accept"}>{copy.steps[2]}</li>
   </ol>
 
   <dl class="conversion-details">
@@ -234,7 +264,7 @@
       oncompositionend={handleCompositionEnd}
     />
     <p id="conversion-sandbox-hint" class="field-description">
-      Try any reading. Conversion results depend on your installed Japanese IME.
+      {copy.inputGuidance}
     </p>
   </div>
 
@@ -244,7 +274,7 @@
     role="status"
     aria-live="polite"
   >
-    {liveStatus}
+    {liveStatus ?? copy.initialStatus}
   </p>
 
   <div>
