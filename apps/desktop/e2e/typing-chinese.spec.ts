@@ -287,10 +287,9 @@ test("the three Chinese physical lessons complete without committed Han text and
   );
   await dispatchKey(input, "keyup", "KeyH");
   await pressSequence(input, ["KeyH", "KeyS"]);
-  await expect(page.getByTestId("typing-key-KeyH")).toHaveAttribute(
-    "data-expected",
-    "true",
-  );
+  await expect(
+    page.locator(".practice").getByTestId("typing-key-KeyH"),
+  ).toHaveAttribute("data-expected", "true");
   await pressSequence(input, ["KeyH"]);
   await expect(page.getByTestId("typing-physical-trail")).toHaveText(
     "Z → H → C → H → S → H",
