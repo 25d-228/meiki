@@ -1008,6 +1008,9 @@ test("keeps one undo on session completion and restores the reviewed queue posit
 test("discards the previous-review undo before it could replace a new response", async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("meiki-vim-keybindings", "true");
+  });
   await openStudy(page, "/");
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
@@ -1019,7 +1022,7 @@ test("discards the previous-review undo before it could replace a new response",
   await nextAnswer.fill("unfinished next answer");
   await expect(page.getByTestId("review-saved-status")).toHaveCount(0);
   await page.locator("#main-content").focus();
-  await page.keyboard.press("ControlOrMeta+z");
+  await page.keyboard.press("u");
   await expect(nextAnswer).toHaveValue("unfinished next answer");
   expect(await requestCount(page, "undo_review")).toBe(0);
 });

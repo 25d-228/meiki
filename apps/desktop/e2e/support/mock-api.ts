@@ -258,9 +258,15 @@ export async function installMockApi(page: Page): Promise<void> {
           params.get("media") === "real-mp3" ||
           params.get("media") === "transport-error"
         ) {
+          const cardId = (args as { cardId?: string })?.cardId ?? "due-card";
           const ready = clone(dtos.readyMediaCard);
           return {
             ...ready,
+            card_id: cardId,
+            prompt:
+              cardId === "new-card"
+                ? `Second card · ${ready.prompt}`
+                : ready.prompt,
             prompt_media: [realMp3Media("prompt_audio")],
           };
         }

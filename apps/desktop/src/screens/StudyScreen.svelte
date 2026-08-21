@@ -1230,7 +1230,9 @@
                         </Button>
                       {/snippet}
                     </Tooltip.Trigger>
-                    <Tooltip.Content>Shortcut: {index + 1}</Tooltip.Content>
+                    <Tooltip.Content role="tooltip"
+                      >Shortcut: {index + 1}</Tooltip.Content
+                    >
                   </Tooltip.Root>
                 {/each}
               </div>
