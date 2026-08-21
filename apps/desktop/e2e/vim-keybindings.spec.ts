@@ -165,15 +165,11 @@ test("Study preserves replay, suggested grading, and next-state Enter when Vim i
   ).toBe(1);
 
   await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("review-saved-status")).toBeVisible();
   expect((await lastRequest(page, "grade_review"))?.args).toMatchObject({
     request: { chosen_grade: "good" },
   });
-
-  await page.keyboard.press("Enter");
-  await expect(page.getByText(/Second card ·/)).toBeVisible();
 });
 
 test("Decks supports bounded roving commands in Grid and List without blocking rectangle selection", async ({
@@ -496,16 +492,14 @@ test("Study supports safe mode changes, replay, suggested grading, continuation,
     ),
   ).toBe(1);
   await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await answer.press("Escape");
   await page.keyboard.press("u");
   await expect(page.getByText("Last review undone.")).toBeVisible();
   await expect(answer).toBeFocused();
 
   await answer.fill("行きます");
   await answer.press("Escape");
-  await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
   await expect(page.getByText(/Second card ·/)).toBeVisible();
@@ -525,9 +519,7 @@ for (const [key, grade] of [
     await answer.fill("行きます");
     await answer.press("Enter");
     await page.keyboard.press(key);
-    await expect(
-      page.getByRole("heading", { name: "Review saved" }),
-    ).toBeVisible();
+    await expect(page.getByText(/Second card ·/)).toBeVisible();
     expect((await lastRequest(page, "grade_review"))?.args).toMatchObject({
       request: { chosen_grade: grade },
     });

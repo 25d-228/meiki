@@ -37,6 +37,16 @@ async function lastRequest(page: Page, command: string) {
   }, command);
 }
 
+async function requestCount(page: Page, command: string): Promise<number> {
+  return page.evaluate(
+    (name) =>
+      (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+        (request) => request.command === name,
+      ).length,
+    command,
+  );
+}
+
 async function mediaPlayCount(page: Page): Promise<number> {
   return page.evaluate(() =>
     Number(localStorage.getItem("meiki-e2e-media-play-count") ?? "0"),
@@ -70,15 +80,26 @@ test("maps answer and grade requests and renders returned DTOs", async ({
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
   await expect(page.getByText("Expected answer")).toBeVisible();
-  await expect(page.getByText("exact", { exact: true })).toBeVisible();
+  const correctFeedback = page
+    .getByTestId("answer-difference")
+    .locator('[data-feedback="correct"]');
+  await expect(correctFeedback.locator(".feedback-symbol")).toHaveText("✓");
+  await expect(correctFeedback.locator("bdi")).toHaveText("行きます");
+  await expect(page.getByText("exact", { exact: true })).toHaveCount(0);
   expect((await lastRequest(page, "check_answer"))?.args).toMatchObject({
     request: { card_id: "due-card", raw_response: "行きます" },
   });
 
   await page.keyboard.press("4");
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("review-saved-status")).toContainText(
+    "Review saved",
+  );
+  await expect(page.getByRole("heading", { name: "Review saved" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByText("Next review", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Continue" })).toHaveCount(0);
   const grade = await lastRequest(page, "grade_review");
   expect(grade?.args).toMatchObject({
     request: {
@@ -171,7 +192,6 @@ test("persists the Study autoplay toggle and applies it to the next card", async
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
   await page.keyboard.press("Enter");
-  await page.getByRole("button", { name: "Continue" }).click();
 
   await expect(page.getByText(/Second card ·/)).toBeVisible();
   await expect.poll(() => mediaPlayCount(page)).toBe(1);
@@ -246,6 +266,31 @@ test("keeps manual audio controls usable when autoplay is blocked", async ({
   await page.getByRole("button", { name: "Play audio", exact: true }).click();
   await expect.poll(() => mediaPlayCount(page)).toBe(1);
   await expect(page.getByRole("button", { name: "Pause audio" })).toBeVisible();
+});
+
+test("keeps review undo visible alongside a next-card replay notice", async ({
+  page,
+}) => {
+  await openStudy(page, "/");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+
+  const reviewStatus = page.getByTestId("review-saved-status");
+  await expect(reviewStatus).toContainText("Review saved");
+  await expect(
+    reviewStatus.getByRole("button", { name: "Undo review" }),
+  ).toBeVisible();
+
+  await page.locator("#main-content").focus();
+  await page.keyboard.press("r");
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "No playable audio is attached to this side" }),
+  ).toBeVisible();
+  await expect(reviewStatus).toBeVisible();
 });
 
 test("decodes non-silent managed MP3 bytes and cleans up prompt and reveal URLs", async ({
@@ -367,9 +412,7 @@ test("decodes non-silent managed MP3 bytes and cleans up prompt and reveal URLs"
     .toBe(true);
   const revealUrl = await revealAudio.getAttribute("src");
   await page.keyboard.press("3");
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(
@@ -383,8 +426,10 @@ test("decodes non-silent managed MP3 bytes and cleans up prompt and reveal URLs"
       (request) => request.command === "read_managed_audio",
     ),
   );
-  expect(managedReads).toHaveLength(2);
-  expect(managedReads[0]?.args).toEqual(managedReads[1]?.args);
+  expect(managedReads).toHaveLength(3);
+  for (const managedRead of managedReads.slice(1)) {
+    expect(managedRead.args).toEqual(managedReads[0]?.args);
+  }
 });
 
 test("restarts audio at the decoder boundary and reports playback failures", async ({
@@ -520,7 +565,12 @@ test("preserves multilingual and multi-code-point input in command requests", as
     const input = page.getByLabel("Your answer");
     await input.fill(response);
     await input.press("Enter");
-    await expect(page.getByText("exact", { exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByTestId("answer-difference")
+        .locator('[data-feedback="correct"]'),
+    ).toBeVisible();
+    await expect(page.getByText("exact", { exact: true })).toHaveCount(0);
     expect((await lastRequest(page, "check_answer"))?.args).toMatchObject({
       request: { raw_response: response },
     });
@@ -659,30 +709,284 @@ test("renders difference semantics without altering raw input", async ({
   await page.getByLabel("Your answer").press("Enter");
 
   const difference = page.getByTestId("answer-difference");
-  await expect(difference.locator("del")).toHaveText("行きます");
-  await expect(difference.locator("ins")).toHaveText("図書館");
+  await expect(difference.locator("ins .feedback-symbol")).toHaveText("+");
+  await expect(difference.locator("ins bdi")).toHaveText("行きます");
+  await expect(difference.locator("del .feedback-symbol")).toHaveText("−");
+  await expect(difference.locator("del bdi")).toHaveText("図書館");
   const differenceStyles = await difference.evaluate((element) => {
-    const deletion = element.querySelector("del");
-    const insertion = element.querySelector("ins");
-    if (!deletion || !insertion) {
+    const extra = element.querySelector("del");
+    const missing = element.querySelector("ins");
+    if (!extra || !missing) {
       throw new Error("Answer difference semantics are missing");
     }
-    const deletionStyle = getComputedStyle(deletion);
-    const insertionStyle = getComputedStyle(insertion);
+    const extraStyle = getComputedStyle(extra);
+    const missingStyle = getComputedStyle(missing);
     return {
-      deletionBackground: deletionStyle.backgroundColor,
-      deletionDecoration: deletionStyle.textDecorationLine,
-      insertionBackground: insertionStyle.backgroundColor,
-      insertionDecoration: insertionStyle.textDecorationLine,
+      extraBackground: extraStyle.backgroundColor,
+      extraDecoration: extraStyle.textDecorationLine,
+      missingBackground: missingStyle.backgroundColor,
+      missingDecoration: missingStyle.textDecorationLine,
     };
   });
-  expect(differenceStyles.deletionBackground).not.toBe("rgba(0, 0, 0, 0)");
-  expect(differenceStyles.deletionDecoration).toContain("line-through");
-  expect(differenceStyles.insertionBackground).not.toBe("rgba(0, 0, 0, 0)");
-  expect(differenceStyles.insertionDecoration).toBe("none");
+  expect(differenceStyles.extraBackground).not.toBe("rgba(0, 0, 0, 0)");
+  expect(differenceStyles.extraDecoration).toContain("line-through");
+  expect(differenceStyles.missingBackground).not.toBe("rgba(0, 0, 0, 0)");
+  expect(differenceStyles.missingDecoration).toContain("underline");
   await expect(
     page.locator(".answer-comparison strong").nth(1),
   ).toHaveJSProperty("textContent", " 図書館 ");
+});
+
+test("tries the same answer again without reviewing and restarts local response state", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("meiki-study-visual-keyboard", "true");
+    localStorage.setItem("meiki-typing-platform", "windows");
+    localStorage.setItem("meiki-e2e-study-time", "1000");
+    Object.defineProperty(performance, "now", {
+      configurable: true,
+      value: () => Number(localStorage.getItem("meiki-e2e-study-time") ?? "0"),
+    });
+  });
+  await openStudy(page, "/");
+  const input = page.getByLabel("Your answer");
+  const prompt = await page.locator("#study-prompt").textContent();
+  await input.fill("first response");
+  await input.dispatchEvent("keydown", { code: "ShiftLeft", key: "Shift" });
+  await page.evaluate(() =>
+    localStorage.setItem("meiki-e2e-study-time", "1800"),
+  );
+  await input.press("Enter");
+  await expect(
+    page.getByText("Expected answer", { exact: true }),
+  ).toBeVisible();
+
+  await page.evaluate(() =>
+    localStorage.setItem("meiki-e2e-study-time", "5000"),
+  );
+  await page.getByRole("button", { name: "Try answer again" }).click();
+  await expect(page.locator("#study-prompt")).toHaveText(prompt ?? "");
+  await expect(input).toHaveValue("");
+  await expect(input).toBeFocused();
+  await expect(page.getByText("Expected answer", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(page.getByTestId("typing-key-ShiftLeft")).toHaveAttribute(
+    "data-held",
+    "false",
+  );
+  expect(await requestCount(page, "grade_review")).toBe(0);
+  expect(await requestCount(page, "undo_review")).toBe(0);
+
+  await input.fill("行きます");
+  await page.evaluate(() =>
+    localStorage.setItem("meiki-e2e-study-time", "5250"),
+  );
+  await input.press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
+  expect((await lastRequest(page, "grade_review"))?.args).toMatchObject({
+    request: { raw_response: "行きます", response_duration_ms: 250 },
+  });
+});
+
+for (const [answerMode, response, renderedAnswer] of [
+  ["exact", "行きます", "行きます"],
+  ["accepted", "いきます", "いきます"],
+] as const) {
+  test(`${answerMode} answers use complete semantic success feedback without raw comparison copy`, async ({
+    page,
+  }) => {
+    await openStudy(
+      page,
+      answerMode === "accepted" ? "/?answer=accepted" : "/",
+    );
+    await page.getByLabel("Your answer").fill(response);
+    await page.getByLabel("Your answer").press("Enter");
+
+    const feedback = page
+      .getByTestId("answer-difference")
+      .locator('[data-feedback="correct"]');
+    await expect(feedback.locator(".feedback-symbol")).toHaveText("✓");
+    await expect(feedback.locator("bdi")).toHaveText(renderedAnswer);
+    await expect(feedback).toContainText(`Correct: ${renderedAnswer}`);
+    for (const rawLabel of [
+      "exact",
+      "accepted variant",
+      "near match",
+      "incorrect",
+      "empty",
+    ]) {
+      await expect(page.getByText(rawLabel, { exact: true })).toHaveCount(0);
+    }
+  });
+}
+
+test("empty and mixed answer differences expose missing, extra, and correct semantics", async ({
+  page,
+}) => {
+  await openStudy(page, "/?answer=empty");
+  await page.getByLabel("Your answer").press("Enter");
+  const emptyDifference = page.getByTestId("answer-difference");
+  await expect(emptyDifference.locator("ins .feedback-symbol")).toHaveText("+");
+  await expect(emptyDifference.locator("ins bdi")).toHaveText("行きます");
+  await expect(emptyDifference.locator("ins")).toContainText(
+    "Missing: 行きます",
+  );
+  await expect(page.getByText("empty", { exact: true })).toHaveCount(0);
+
+  await openStudy(page, "/?answer=extra-prefix");
+  await page.getByLabel("Your answer").fill("大学生");
+  await page.getByLabel("Your answer").press("Enter");
+  const mixedDifference = page.getByTestId("answer-difference");
+  await expect(mixedDifference.locator("del .feedback-symbol")).toHaveText("−");
+  await expect(mixedDifference.locator("del bdi")).toHaveText("大");
+  await expect(mixedDifference.locator("del")).toContainText("Extra: 大");
+  await expect(
+    mixedDifference.locator('[data-feedback="correct"] .feedback-symbol'),
+  ).toHaveText("✓");
+  await expect(
+    mixedDifference.locator('[data-feedback="correct"] bdi'),
+  ).toHaveText("学生");
+  await expect(
+    mixedDifference.locator('[data-feedback="correct"]'),
+  ).toContainText("Correct: 学生");
+
+  await openStudy(page, "/?answer=grapheme");
+  await page.getByLabel("Your answer").fill("e\u{301}👨‍👩‍👧‍👦!");
+  await page.getByLabel("Your answer").press("Enter");
+  await expect(
+    page
+      .getByTestId("answer-difference")
+      .locator('[data-feedback="correct"] bdi'),
+  ).toHaveText("e\u{301}👨‍👩‍👧‍👦");
+  await expect(
+    page.getByTestId("answer-difference").locator("del bdi"),
+  ).toHaveText("!");
+});
+
+for (const theme of ["light", "dark"] as const) {
+  test(`correct and incorrect answer feedback reaches 4.5:1 contrast in ${theme} mode`, async ({
+    page,
+  }) => {
+    await openStudy(page, "/?answer=extra-prefix");
+    await chooseTheme(page, theme);
+    await page.getByLabel("Your answer").fill("大学生");
+    await page.getByLabel("Your answer").press("Enter");
+
+    const contrasts = await page
+      .getByTestId("answer-difference")
+      .evaluate((element) => {
+        const sample = (color: string): number[] => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 1;
+          canvas.height = 1;
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Canvas color sampling is unavailable");
+          context.fillStyle = color;
+          context.fillRect(0, 0, 1, 1);
+          return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+        };
+        const luminance = (color: number[]): number => {
+          const [red, green, blue] = color.map((component) => {
+            const channel = component / 255;
+            return channel <= 0.04045
+              ? channel / 12.92
+              : ((channel + 0.055) / 1.055) ** 2.4;
+          });
+          return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+        };
+        const contrast = (node: Element): number => {
+          const style = getComputedStyle(node);
+          const foreground = luminance(sample(style.color));
+          const background = luminance(sample(style.backgroundColor));
+          return (
+            (Math.max(foreground, background) + 0.05) /
+            (Math.min(foreground, background) + 0.05)
+          );
+        };
+        const correct = element.querySelector('[data-feedback="correct"]');
+        const extra = element.querySelector('[data-feedback="extra"]');
+        if (!correct || !extra) throw new Error("Answer feedback is missing");
+        return { correct: contrast(correct), extra: contrast(extra) };
+      });
+    expect(contrasts.correct).toBeGreaterThanOrEqual(4.5);
+    expect(contrasts.extra).toBeGreaterThanOrEqual(4.5);
+  });
+}
+
+test("grade buttons disclose keyboard shortcuts on hover and focus", async ({
+  page,
+}) => {
+  await revealAnswer(page, "cjk", "行きます");
+  const buttons = ["Again", "Hard", "Good", "Easy"].map((name) =>
+    page.getByRole("button", { name: new RegExp(`^${name}`) }),
+  );
+  for (const [index, button] of buttons.entries()) {
+    await expect(button).toHaveAttribute(
+      "aria-keyshortcuts",
+      String(index + 1),
+    );
+  }
+  await buttons[0].hover();
+  await expect(
+    page.getByRole("tooltip", { name: "Shortcut: 1" }),
+  ).toBeVisible();
+  await page.mouse.move(0, 0);
+  await buttons[2].focus();
+  await expect(
+    page.getByRole("tooltip", { name: "Shortcut: 3" }),
+  ).toBeVisible();
+});
+
+test("rapid repeated grading submits once and advances directly", async ({
+  page,
+}) => {
+  await revealAnswer(page, "cjk", "行きます");
+  const good = page.getByRole("button", { name: /^Good/ });
+  await good.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  expect(await requestCount(page, "grade_review")).toBe(1);
+});
+
+test("blocks conflicting revealed actions while a grade is committing", async ({
+  page,
+}) => {
+  await openStudy(page, "/?grade=controlled");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+
+  const tryAgain = page.getByRole("button", { name: "Try answer again" });
+  const edit = page.getByRole("button", { name: "Edit note" });
+  const suspend = page.getByRole("button", { name: "Suspend" });
+  await page.getByRole("button", { name: /^Good/ }).click();
+  await expect(page.getByText("Saving review…")).toBeVisible();
+  await expect(tryAgain).toBeDisabled();
+  await expect(edit).toBeDisabled();
+  await expect(suspend).toBeDisabled();
+
+  await tryAgain.dispatchEvent("click");
+  await edit.dispatchEvent("click");
+  await suspend.dispatchEvent("click");
+  await expect(page.getByText("Saving review…")).toBeVisible();
+  await expect(
+    page.getByText("Expected answer", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Your answer")).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Add / Edit card" }),
+  ).toHaveCount(0);
+  expect(await requestCount(page, "grade_review")).toBe(1);
+  expect(await requestCount(page, "suspend_card")).toBe(0);
+
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event("meiki-e2e-release-grade")),
+  );
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("review-saved-status")).toBeVisible();
 });
 
 test("maps keyboard grading and undo without browser persistence logic", async ({
@@ -692,10 +996,10 @@ test("maps keyboard grading and undo without browser persistence logic", async (
   await page.keyboard.type("行きます");
   await page.keyboard.press("Enter");
   await page.keyboard.press("4");
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
 
+  await expect(page.getByLabel("Your answer")).toBeFocused();
+  await expect(page.getByLabel("Your answer")).toHaveValue("");
   await page.keyboard.press("ControlOrMeta+z");
   await expect(page.getByText("Last review undone.")).toBeVisible();
   expect((await lastRequest(page, "undo_review"))?.args).toMatchObject({
@@ -706,6 +1010,142 @@ test("maps keyboard grading and undo without browser persistence logic", async (
     },
   });
   await expect(page.getByLabel("Your answer")).toBeFocused();
+});
+
+test("keeps one undo on session completion and restores the reviewed queue position", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 720 });
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "meiki-active-study-queue",
+      JSON.stringify({
+        version: 2,
+        deckId: "__all_decks__",
+        entries: [
+          {
+            card_id: "due-card",
+            card_content_version: 0,
+            schedule_version: 0,
+          },
+        ],
+        position: 0,
+        startedAtMs: 1_700_000_000_000,
+        pendingReview: null,
+      }),
+    );
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Resume study" }).click();
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "Session complete" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("review-saved-status")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false);
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-active-study-queue")),
+  ).toBeNull();
+
+  await page.getByRole("button", { name: "Undo review" }).click();
+  await expect(page.getByText("日曜日は図書館に[…]")).toBeVisible();
+  await expect(page.getByLabel("Your answer")).toBeFocused();
+  await expect(page.getByLabel("Your answer")).toHaveValue("");
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("meiki-active-study-queue") ?? "null"),
+    ),
+  ).toMatchObject({
+    position: 0,
+    entries: [
+      {
+        card_id: "due-card",
+        card_content_version: 0,
+        schedule_version: 2,
+      },
+    ],
+  });
+});
+
+test("leaves changed next-card input undo native after retiring review undo", async ({
+  page,
+}) => {
+  await openStudy(page, "/");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("review-saved-status")).toBeVisible();
+
+  const nextAnswer = page.getByLabel("Your answer");
+  await nextAnswer.fill("unfinished next answer");
+  await expect(page.getByTestId("review-saved-status")).toHaveCount(0);
+  await expect(nextAnswer).toBeFocused();
+  await nextAnswer.press("ControlOrMeta+z");
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(nextAnswer).toBeFocused();
+  await expect(nextAnswer).toHaveValue("");
+  expect(await requestCount(page, "undo_review")).toBe(0);
+});
+
+test("editing or suspending the next card retires the previous-review undo", async ({
+  page,
+}) => {
+  await openStudy(page, "/");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
+  await expect(page.getByTestId("review-saved-status")).toBeVisible();
+
+  await page.getByRole("button", { name: "Edit note" }).click();
+  await page.getByRole("button", { name: "Return to study" }).click();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("review-saved-status")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Suspend" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Card suspended" }),
+  ).toBeVisible();
+  expect(await requestCount(page, "undo_review")).toBe(0);
+});
+
+test("a failed undo preserves the committed review and retries the same undo request", async ({
+  page,
+}) => {
+  await openStudy(page, "/?failure=undo");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+
+  await page.locator("#main-content").focus();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(page.getByRole("alert")).toContainText(
+    "The review undo was interrupted.",
+  );
+  expect(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("meiki-active-study-queue") ?? "null"),
+    ),
+  ).toMatchObject({ position: 0, entries: [{ card_id: "new-card" }] });
+
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText("Last review undone.")).toBeVisible();
+  await expect(page.getByLabel("Your answer")).toBeFocused();
+  const undoRequests = await page.evaluate(() =>
+    (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+      (request) => request.command === "undo_review",
+    ),
+  );
+  expect(undoRequests).toHaveLength(2);
+  expect(undoRequests[0]?.args).toEqual(undoRequests[1]?.args);
 });
 
 test("offers UI retries for interrupted command responses", async ({
@@ -729,9 +1169,8 @@ test("offers UI retries for interrupted command responses", async ({
     page.getByText("The review commit was interrupted."),
   ).toBeVisible();
   await page.getByRole("button", { name: "Try again" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  expect(await requestCount(page, "grade_review")).toBe(2);
 });
 
 test("replays a pending review request from a restart fixture", async ({

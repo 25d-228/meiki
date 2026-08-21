@@ -923,6 +923,41 @@ for (const revealCase of [
   });
 }
 
+for (const feedbackCase of [
+  {
+    name: "study-feedback-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "study-feedback-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${feedbackCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/?answer=extra-prefix",
+      screen: "Study",
+      theme: feedbackCase.theme,
+      viewport: feedbackCase.viewport,
+    });
+    await page.getByLabel("Your answer").fill("大学生");
+    await page.getByLabel("Your answer").press("Enter");
+    await expect(
+      page.getByTestId("answer-difference").locator("del"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("answer-difference").locator("ins"),
+    ).toHaveCount(0);
+    await expect(page).toHaveScreenshot(`${feedbackCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 test("visual regression: study-loading-medium-light", async ({ page }) => {
   await prepare(page, {
     route: "/?fixture=loading",
@@ -1080,9 +1115,8 @@ for (const theme of ["light", "dark"] as const) {
     await answer.press("Enter");
     await expect(page.getByText("Expected answer")).toBeVisible();
     await page.getByRole("button", { name: /^Good/ }).click();
-    await expect(
-      page.getByRole("heading", { name: "Review saved" }),
-    ).toBeVisible();
+    await expect(page.getByText(/Second card ·/)).toBeVisible();
+    await expect(page.getByTestId("review-saved-status")).toBeVisible();
     await expect(page).toHaveScreenshot(`study-success-medium-${theme}.png`, {
       animations: "disabled",
       caret: "hide",

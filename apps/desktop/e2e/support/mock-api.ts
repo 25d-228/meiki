@@ -243,19 +243,14 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(dtos.readyPlan);
       }
       if (command === "reconcile_study_queue") {
-        if (params.get("reconcile") === "request") {
-          return clone(
-            (
-              args as {
-                request: { entries: typeof dtos.reconciledQueue };
-              }
-            ).request.entries,
-          );
-        }
+        if (params.get("reconcile") === "second")
+          return clone(dtos.reconciledSecondCard);
         return clone(
-          params.get("reconcile") === "second"
-            ? dtos.reconciledSecondCard
-            : dtos.reconciledQueue,
+          (
+            args as {
+              request: { entries: typeof dtos.reconciledQueue };
+            }
+          ).request.entries,
         );
       }
       if (command === "get_study_card") {
@@ -263,9 +258,15 @@ export async function installMockApi(page: Page): Promise<void> {
           params.get("media") === "real-mp3" ||
           params.get("media") === "transport-error"
         ) {
+          const cardId = (args as { cardId?: string })?.cardId ?? "due-card";
           const ready = clone(dtos.readyMediaCard);
           return {
             ...ready,
+            card_id: cardId,
+            prompt:
+              cardId === "new-card"
+                ? `Second card · ${ready.prompt}`
+                : ready.prompt,
             prompt_media: [realMp3Media("prompt_audio")],
           };
         }
@@ -348,6 +349,13 @@ export async function installMockApi(page: Page): Promise<void> {
           await new Promise((resolve) => setTimeout(resolve, 350));
         }
         if (params.get("answer") === "wrong") return clone(dtos.wrongReveal);
+        if (params.get("answer") === "accepted")
+          return clone(dtos.acceptedReveal);
+        if (params.get("answer") === "empty") return clone(dtos.emptyReveal);
+        if (params.get("answer") === "extra-prefix")
+          return clone(dtos.extraPrefixReveal);
+        if (params.get("answer") === "grapheme")
+          return clone(dtos.graphemeReveal);
         if (params.get("media") === "real-mp3") {
           return {
             ...clone(dtos.readyMediaReveal),
@@ -364,6 +372,17 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(study.reveal);
       }
       if (command === "grade_review") {
+        if (params.get("grade") === "controlled") {
+          await new Promise<void>((resolve) => {
+            window.addEventListener(
+              "meiki-e2e-release-grade",
+              () => resolve(),
+              {
+                once: true,
+              },
+            );
+          });
+        }
         if (params.get("grade") === "loading") {
           await new Promise((resolve) => setTimeout(resolve, 750));
         }
@@ -408,6 +427,9 @@ export async function installMockApi(page: Page): Promise<void> {
         };
       }
       if (command === "undo_review") {
+        if (params.get("failure") === "undo" && calls[command] === 1) {
+          throw new Error("The review undo was interrupted.");
+        }
         return {
           ...clone(dtos.undoResult),
           undo_event_id: (args as { request: { undo_event_id: string } })

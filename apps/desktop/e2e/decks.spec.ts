@@ -2138,10 +2138,8 @@ test("replaces a bundle-stage queue while preserving its completed review", asyn
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
   await page.getByRole("button", { name: /Good/ }).click();
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("review-saved-status")).toBeVisible();
   await page.getByLabel("Your answer").fill("unfinished response");
 
   await openDecks(page);

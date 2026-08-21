@@ -35,6 +35,7 @@ export function vimCommandAllowed(
   enabled: boolean,
   compositionActive = false,
   primaryModifierAllowed = false,
+  editableControlAllowed = false,
 ): boolean {
   return (
     enabled &&
@@ -43,7 +44,7 @@ export function vimCommandAllowed(
     (primaryModifierAllowed || (!event.ctrlKey && !event.metaKey)) &&
     !event.altKey &&
     !event.getModifierState("AltGraph") &&
-    !pathMatches(event, editableControlSelector) &&
+    (editableControlAllowed || !pathMatches(event, editableControlSelector)) &&
     !pathMatches(event, overlaySelector) &&
     !document.querySelector(overlaySelector)
   );

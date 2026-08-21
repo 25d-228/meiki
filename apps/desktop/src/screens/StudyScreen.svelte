@@ -9,6 +9,7 @@
   import * as Card from "$lib/components/ui/card/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
+  import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import LimitedMarkdown from "../lib/components/LimitedMarkdown.svelte";
   import MediaFrame from "../lib/components/MediaFrame.svelte";
   import type { GradeDto } from "../lib/generated/GradeDto";
@@ -68,19 +69,25 @@
     | "revealed"
     | "committing"
     | "next"
+    | "complete"
     | "error";
-  type StableView = "prompt" | "revealed" | "next";
+  type StableView = "prompt" | "revealed" | "next" | "complete";
   type RetryAction =
     "recover" | "load" | "check" | "grade" | "suspend" | "undo";
-  type CompletionKind = "graded" | "suspended" | null;
+  type CompletionKind = "suspended" | null;
   type StoredStudySession = {
     card: StudyCardDto;
     reveal: RevealDto | null;
-    result: GradeReviewResultDto | null;
     response: string;
-    view: StableView;
+    view: Exclude<StableView, "complete">;
     responseDurationMs: number;
     completionKind: CompletionKind;
+  };
+  type UndoableReview = {
+    card: StudyCardDto;
+    result: GradeReviewResultDto;
+    queue: StudyQueueSession;
+    undoEventId: string | null;
   };
 
   const selectedDeckKey = "meiki-today-deck";
@@ -93,11 +100,10 @@
   let recoveryView = $state<StableView>("prompt");
   let retryAction = $state<RetryAction>("load");
   let pendingGrade = $state<GradeDto | null>(null);
-  let pendingUndoEventId = $state<string | null>(null);
   let completionKind = $state<CompletionKind>(null);
   let card = $state<StudyCardDto | null>(null);
   let reveal = $state<RevealDto | null>(null);
-  let result = $state<GradeReviewResultDto | null>(null);
+  let undoableReview = $state<UndoableReview | null>(null);
   let response = $state("");
   let responseDurationMs = $state(0);
   let errorMessage = $state("");
@@ -199,7 +205,7 @@
   async function reconcileQueue(): Promise<void> {
     if (!queueSession) return;
     if (queueSession.position >= queueSession.entries.length) {
-      finishQueue();
+      endQueue();
       return;
     }
     const settings = await api.getSchedulerSettings(
@@ -215,7 +221,7 @@
       entries: remainingQueueEntries(queueSession),
     });
     if (!entries.length) {
-      finishQueue();
+      endQueue();
       return;
     }
     queueSession = {
@@ -256,12 +262,10 @@
         !current.suspended
       ) {
         reveal = session.reveal;
-        result = session.result;
         completionKind = session.completionKind;
         view = session.view;
       } else {
         reveal = null;
-        result = null;
         completionKind = null;
         await reconcileQueue();
         if (!queueSession) return;
@@ -275,19 +279,19 @@
     }
   }
 
-  async function loadCard(): Promise<void> {
+  async function loadCard(preserveUndoableReview = false): Promise<void> {
     resetStudyKeyboardState();
+    if (!preserveUndoableReview) undoableReview = null;
     view = "loading";
     errorMessage = "";
     sessionNotice = "";
     audioNotice = "";
     undoNotice = "";
     reveal = null;
-    result = null;
     completionKind = null;
+    card = null;
     response = "";
     responseDurationMs = 0;
-    pendingUndoEventId = null;
     hintVisible = false;
     try {
       await reconcileQueue();
@@ -295,7 +299,7 @@
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const queued = queueSession?.entries[queueSession.position];
         if (!queued) {
-          finishQueue();
+          endQueue();
           return;
         }
         try {
@@ -356,6 +360,7 @@
 
   async function checkAnswer(): Promise<void> {
     if (!card || composing || view !== "prompt") return;
+    discardReviewUndo();
     responseDurationMs ||= Math.min(
       4_294_967_295,
       Math.max(0, Math.round(performance.now() - promptStartedAt)),
@@ -376,9 +381,21 @@
     }
   }
 
+  async function tryAnswerAgain(): Promise<void> {
+    if (!card || !reveal || view !== "revealed") return;
+    reveal = null;
+    response = "";
+    responseDurationMs = 0;
+    resetStudyKeyboardState();
+    view = "prompt";
+    promptStartedAt = performance.now();
+    await focusAnswer();
+  }
+
   async function grade(chosenGrade: GradeDto): Promise<void> {
     if (!card || !reveal || !queueSession || view !== "revealed") return;
     pendingGrade = chosenGrade;
+    const queueBeforeReview = { ...queueSession, pendingReview: null };
     const pendingReview: GradeReviewRequest = queueSession.pendingReview ?? {
       review_event_id: crypto.randomUUID(),
       card_id: card.card_id,
@@ -393,21 +410,32 @@
     view = "committing";
     errorMessage = "";
     try {
-      result = await api.gradeReview(pendingReview);
-      card = {
+      const result = await api.gradeReview(pendingReview);
+      const reviewedCard = {
         ...card,
         schedule_version: result.schedule_version,
         due_at: result.due_at,
         completed_reviews: card.completed_reviews + 1,
       };
-      completionKind = "graded";
       queueSession = completePendingReview(
         queueSession,
         result.review_event_id,
       );
       writeStudyQueue(queueSession);
-      view = "next";
+      card = reviewedCard;
+      undoableReview = {
+        card: reviewedCard,
+        result,
+        queue: queueBeforeReview,
+        undoEventId: null,
+      };
+      pendingGrade = null;
       vimMode = "normal";
+      if (queueSession.position >= queueSession.entries.length) {
+        showSessionComplete();
+      } else {
+        await loadCard(true);
+      }
     } catch (error) {
       fail(error, "revealed", "grade");
     }
@@ -416,6 +444,7 @@
   async function suspendCard(): Promise<void> {
     if (!card || (view !== "prompt" && view !== "revealed")) return;
     const origin = view;
+    discardReviewUndo();
     view = "committing";
     errorMessage = "";
     try {
@@ -424,7 +453,6 @@
         card_content_version: card.card_content_version,
         schedule_version: card.schedule_version,
       });
-      result = null;
       completionKind = "suspended";
       advanceStudyQueue();
       view = "next";
@@ -435,39 +463,45 @@
   }
 
   async function undoReview(): Promise<void> {
-    if (!card || !result || completionKind !== "graded" || view !== "next")
+    if (
+      !undoableReview ||
+      (view !== "prompt" && view !== "complete") ||
+      response.length > 0
+    )
       return;
+    const resumeView = view;
+    const review = undoableReview;
+    const undoEventId = review.undoEventId ?? crypto.randomUUID();
+    undoableReview = { ...review, undoEventId };
     view = "committing";
-    pendingUndoEventId ??= crypto.randomUUID();
     errorMessage = "";
     try {
       const undone = await api.undoReview({
-        undo_event_id: pendingUndoEventId,
-        card_id: card.card_id,
-        card_content_version: card.card_content_version,
-        schedule_version: card.schedule_version,
-        review_event_id: result.review_event_id,
+        undo_event_id: undoEventId,
+        card_id: review.card.card_id,
+        card_content_version: review.card.card_content_version,
+        schedule_version: review.card.schedule_version,
+        review_event_id: review.result.review_event_id,
       });
       card = {
-        ...card,
+        ...review.card,
         schedule_version: undone.schedule_version,
         due_at: undone.due_at,
         completed_reviews: undone.completed_reviews,
       };
       reveal = null;
-      result = null;
       response = "";
       responseDurationMs = 0;
-      pendingUndoEventId = null;
       completionKind = null;
       resetStudyKeyboardState();
-      restoreStudyQueueCard();
+      restoreReviewedQueue(review.queue, card);
+      undoableReview = null;
       undoNotice = "Last review undone. The card is back in the queue.";
       view = "prompt";
       promptStartedAt = performance.now();
       await focusAnswer();
     } catch (error) {
-      fail(error, "next", "undo");
+      fail(error, resumeView, "undo");
     }
   }
 
@@ -486,26 +520,29 @@
     writeStudyQueue(queueSession);
   }
 
-  function restoreStudyQueueCard(): void {
-    if (!queueSession || !card || queueSession.position === 0) return;
-    const previous = queueSession.position - 1;
-    if (queueSession.entries[previous]?.card_id !== card.card_id) return;
-    const entries = [...queueSession.entries];
-    entries[previous] = {
-      card_id: card.card_id,
-      card_content_version: card.card_content_version,
-      schedule_version: card.schedule_version,
+  function restoreReviewedQueue(
+    previousQueue: StudyQueueSession,
+    reviewedCard: StudyCardDto,
+  ): void {
+    const entries = [...previousQueue.entries];
+    entries[previousQueue.position] = {
+      card_id: reviewedCard.card_id,
+      card_content_version: reviewedCard.card_content_version,
+      schedule_version: reviewedCard.schedule_version,
     };
     queueSession = {
-      ...queueSession,
+      ...previousQueue,
       entries,
-      position: previous,
       pendingReview: null,
     };
     writeStudyQueue(queueSession);
   }
 
   async function continueStudy(): Promise<void> {
+    if (view === "complete") {
+      finishQueue();
+      return;
+    }
     if (!queueSession && completionKind === "suspended") {
       onQueueComplete?.();
       return;
@@ -518,13 +555,18 @@
   }
 
   function beginEdit(): void {
-    if (!card || !onEdit) return;
-    const stableView: StableView =
+    if (
+      !card ||
+      !onEdit ||
+      (view !== "prompt" && view !== "revealed" && view !== "next")
+    )
+      return;
+    discardReviewUndo();
+    const stableView: Exclude<StableView, "complete"> =
       view === "revealed" ? "revealed" : view === "next" ? "next" : "prompt";
     const session: StoredStudySession = {
       card,
       reveal,
-      result,
       response,
       view: stableView,
       responseDurationMs,
@@ -554,7 +596,7 @@
     if (action === "recover") {
       await prepareStudy();
     } else if (action === "load") {
-      await loadCard();
+      await loadCard(undoableReview !== null);
     } else if (action === "check") {
       await checkAnswer();
     } else if (action === "grade" && pendingGrade) {
@@ -563,6 +605,32 @@
       await suspendCard();
     } else if (action === "undo") {
       await undoReview();
+    }
+  }
+
+  function discardReviewUndo(): void {
+    undoableReview = null;
+  }
+
+  function showSessionComplete(): void {
+    resetStudyKeyboardState();
+    clearStudyQueue();
+    clearStudySession();
+    queueSession = null;
+    card = undoableReview?.card ?? card;
+    reveal = null;
+    completionKind = null;
+    response = "";
+    responseDurationMs = 0;
+    hintVisible = false;
+    view = "complete";
+  }
+
+  function endQueue(): void {
+    if (undoableReview) {
+      showSessionComplete();
+    } else {
+      finishQueue();
     }
   }
 
@@ -643,10 +711,24 @@
     if (
       (event.metaKey || event.ctrlKey) &&
       key === "z" &&
-      view === "next" &&
-      result
+      (view === "prompt" || view === "complete") &&
+      undoableReview
     ) {
-      if (!vimCommandAllowed(event, true, composing, true)) return;
+      const emptyAnswerInputOwnsEvent =
+        view === "prompt" &&
+        response.length === 0 &&
+        answerInput !== null &&
+        event.composedPath().includes(answerInput);
+      if (
+        !vimCommandAllowed(
+          event,
+          true,
+          composing,
+          true,
+          emptyAnswerInputOwnsEvent,
+        )
+      )
+        return;
       event.preventDefault();
       void undoReview();
       return;
@@ -696,9 +778,8 @@
       void focusAnswer();
     } else if (
       key === "u" &&
-      view === "next" &&
-      completionKind === "graded" &&
-      result
+      (view === "prompt" || view === "complete") &&
+      undoableReview
     ) {
       event.preventDefault();
       void undoReview();
@@ -720,6 +801,10 @@
 
   function previewFor(grade: GradeDto): GradePreviewDto | undefined {
     return reveal?.grade_previews.find((preview) => preview.grade === grade);
+  }
+
+  function isSuggestedGrade(grade: GradeDto): boolean {
+    return reveal?.suggested_grade === grade;
   }
 
   function formatInterval(seconds: number): string {
@@ -786,6 +871,22 @@
       {/if}
     </div>
   </header>
+
+  {#if undoableReview && (view === "prompt" || view === "complete")}
+    <Alert.Root
+      role="status"
+      class="review-saved-status mb-5 pr-32"
+      data-testid="review-saved-status"
+    >
+      <Alert.Title>Review saved</Alert.Title>
+      <Alert.Description>The previous review was recorded.</Alert.Description>
+      <Alert.Action>
+        <Button variant="outline" size="sm" onclick={undoReview}
+          >Undo review</Button
+        >
+      </Alert.Action>
+    </Alert.Root>
+  {/if}
 
   {#if sessionNotice}
     <Alert.Root role="status" class="mb-5 bg-muted/40">
@@ -861,24 +962,26 @@
         data-testid="study-card"
         aria-busy={view === "checking" || view === "committing"}
       >
-        <p
-          id="study-prompt"
-          class="prompt content-text"
-          lang={card.language_tag ?? undefined}
-          dir={card.direction}
-        >
-          {#if reveal}
-            {#each reveal.source_segments as segment, index (index)}
-              {#if segment.highlighted}
-                <mark>{segment.text}</mark>
-              {:else}
-                {segment.text}
-              {/if}
-            {/each}
-          {:else}
-            {card.prompt}
-          {/if}
-        </p>
+        {#if view !== "complete"}
+          <p
+            id="study-prompt"
+            class="prompt content-text"
+            lang={card.language_tag ?? undefined}
+            dir={card.direction}
+          >
+            {#if reveal}
+              {#each reveal.source_segments as segment, index (index)}
+                {#if segment.highlighted}
+                  <mark>{segment.text}</mark>
+                {:else}
+                  {segment.text}
+                {/if}
+              {/each}
+            {:else}
+              {card.prompt}
+            {/if}
+          </p>
+        {/if}
 
         {#if view === "prompt" || view === "checking"}
           <div class="prompt-tools">
@@ -961,6 +1064,7 @@
                 aria-describedby="answer-guidance"
                 oncompositionstart={startStudyKeyboardComposition}
                 oncompositionend={endStudyKeyboardComposition}
+                oninput={discardReviewUndo}
                 onkeydown={handleAnswerKeydown}
                 onkeyup={releaseStudyKeyboardKey}
                 onfocus={() => vimKeybindingsEnabled && (vimMode = "insert")}
@@ -1021,15 +1125,41 @@
             >
               <span class="eyebrow">{messages.answerDifference}</span>
               <p class="content-text" dir="auto">
-                {#each reveal.difference as segment, index (`${segment.kind}-${index}`)}
-                  {#if segment.kind === "delete"}
-                    <del>{segment.text}</del>
-                  {:else if segment.kind === "insert"}
-                    <ins>{segment.text}</ins>
-                  {:else}
-                    <span>{segment.text}</span>
-                  {/if}
-                {/each}
+                {#if reveal.comparison === "exact" || reveal.comparison === "accepted_variant"}
+                  <span class="correct-answer" data-feedback="correct">
+                    <span class="feedback-symbol" aria-hidden="true">✓</span>
+                    <span class="sr-only">Correct: </span>
+                    <bdi
+                      >{reveal.normalized_response ||
+                        reveal.expected_answer}</bdi
+                    >
+                  </span>
+                {:else}
+                  {#each reveal.difference as segment, index (`${segment.kind}-${index}`)}
+                    {#if segment.kind === "delete"}
+                      <ins data-feedback="missing">
+                        <span class="feedback-symbol" aria-hidden="true">+</span
+                        >
+                        <span class="sr-only">Missing: </span>
+                        <bdi>{segment.text}</bdi>
+                      </ins>
+                    {:else if segment.kind === "insert"}
+                      <del data-feedback="extra">
+                        <span class="feedback-symbol" aria-hidden="true">−</span
+                        >
+                        <span class="sr-only">Extra: </span>
+                        <bdi>{segment.text}</bdi>
+                      </del>
+                    {:else}
+                      <span class="correct-run" data-feedback="correct">
+                        <span class="feedback-symbol" aria-hidden="true">✓</span
+                        >
+                        <span class="sr-only">Correct: </span>
+                        <bdi>{segment.text}</bdi>
+                      </span>
+                    {/if}
+                  {/each}
+                {/if}
               </p>
               {#if reveal.normalized_response !== reveal.raw_response}
                 <small>
@@ -1038,13 +1168,6 @@
                 </small>
               {/if}
             </div>
-            <span
-              class:correct={reveal.comparison === "exact" ||
-                reveal.comparison === "accepted_variant"}
-              class="result-pill"
-            >
-              {reveal.comparison.replace("_", " ")}
-            </span>
 
             {#if reveal.annotations.length || reveal.explanation || reveal.answer_media.length}
               <div class="supporting-content">
@@ -1091,35 +1214,61 @@
             {/if}
 
             <div class="reveal-tools">
-              <Button variant="ghost" size="sm" onclick={beginEdit}
-                >Edit note</Button
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={view === "committing"}
+                onclick={tryAnswerAgain}>Try answer again</Button
               >
-              <Button variant="ghost" size="sm" onclick={suspendCard}
-                >Suspend</Button
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={view === "committing"}
+                onclick={beginEdit}>Edit note</Button
+              >
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={view === "committing"}
+                onclick={suspendCard}>Suspend</Button
               >
             </div>
 
             <fieldset disabled={view === "committing"}>
               <legend>{messages.gradePrompt}</legend>
               <div class="grade-grid">
-                {#each grades as gradeValue (gradeValue)}
-                  <Button
-                    variant={gradeValue === reveal.suggested_grade
-                      ? "default"
-                      : "outline"}
-                    onclick={() => grade(gradeValue)}
-                  >
-                    <span>{messages[gradeValue]}</span>
-                    {#if previewFor(gradeValue)}
-                      <small
-                        >{formatInterval(
-                          previewFor(gradeValue)?.interval_seconds ?? 0,
-                        )}</small
-                      >
-                    {/if}
-                  </Button>
+                {#each grades as gradeValue, index (gradeValue)}
+                  <Tooltip.Root>
+                    <Tooltip.Trigger>
+                      {#snippet child({ props })}
+                        <Button
+                          {...props}
+                          variant={isSuggestedGrade(gradeValue)
+                            ? "default"
+                            : "outline"}
+                          aria-keyshortcuts={String(index + 1)}
+                          onclick={() => grade(gradeValue)}
+                        >
+                          <span>{messages[gradeValue]}</span>
+                          {#if previewFor(gradeValue)}
+                            <small
+                              >{formatInterval(
+                                previewFor(gradeValue)?.interval_seconds ?? 0,
+                              )}</small
+                            >
+                          {/if}
+                        </Button>
+                      {/snippet}
+                    </Tooltip.Trigger>
+                    <Tooltip.Content role="tooltip"
+                      >Shortcut: {index + 1}</Tooltip.Content
+                    >
+                  </Tooltip.Root>
                 {/each}
               </div>
+              {#if view === "committing"}
+                <p class="grade-status" role="status">Saving review…</p>
+              {/if}
             </fieldset>
           </div>
         {:else if view === "committing"}
@@ -1127,41 +1276,32 @@
             <span class="spinner" aria-hidden="true"></span>
             <p>Saving the study action…</p>
           </div>
-        {:else if view === "next"}
+        {:else if view === "next" && completionKind === "suspended"}
           <div class="complete-state" aria-live="polite">
             <span class="checkmark" aria-hidden="true">✓</span>
-            {#if completionKind === "suspended"}
-              <h2>Card suspended</h2>
-              <p>This card will stay out of the study queue.</p>
-              <div class="next-actions">
-                <Button variant="outline" onclick={beginEdit}>Edit note</Button>
-                <Button variant="default" onclick={continueStudy}
-                  >{queueSession &&
-                  queueSession.position >= queueSession.entries.length
-                    ? "Finish session"
-                    : queueSession
-                      ? "Continue"
-                      : "Return to Today"}</Button
-                >
-              </div>
-            {:else if result}
-              <h2>{messages.saved}</h2>
-              <p>
-                {messages.nextReview}:
-                <strong>{formatDueDate(result.due_at)}</strong>
-              </p>
-              <div class="next-actions">
-                <Button variant="outline" onclick={undoReview}
-                  >Undo review</Button
-                >
-                <Button variant="default" onclick={continueStudy}
-                  >{queueSession &&
-                  queueSession.position >= queueSession.entries.length
-                    ? "Finish session"
-                    : "Continue"}</Button
-                >
-              </div>
-            {/if}
+            <h2>Card suspended</h2>
+            <p>This card will stay out of the study queue.</p>
+            <div class="next-actions">
+              <Button variant="outline" onclick={beginEdit}>Edit note</Button>
+              <Button variant="default" onclick={continueStudy}
+                >{queueSession &&
+                queueSession.position >= queueSession.entries.length
+                  ? "Finish session"
+                  : queueSession
+                    ? "Continue"
+                    : "Return to Today"}</Button
+              >
+            </div>
+          </div>
+        {:else if view === "complete"}
+          <div class="complete-state" aria-live="polite">
+            <span class="checkmark" aria-hidden="true">✓</span>
+            <span class="eyebrow">Study complete</span>
+            <h2>Session complete</h2>
+            <p>You finished this study queue.</p>
+            <Button variant="default" onclick={continueStudy}
+              >Return to Today</Button
+            >
           </div>
         {/if}
       </article>
@@ -1302,44 +1442,52 @@
     line-height: 1.7;
   }
 
+  .answer-difference .correct-answer,
+  .answer-difference .correct-run,
   .answer-difference del,
   .answer-difference ins {
+    box-decoration-break: clone;
     padding: 0.08em 0.18em;
     border-radius: var(--radius-sm);
     text-decoration-thickness: 0.08em;
+    white-space: pre-wrap;
   }
 
   .answer-difference del {
     color: var(--destructive);
-    background: color-mix(in oklch, var(--destructive) 12%, transparent);
+    background: color-mix(in oklch, var(--destructive) 10%, var(--card));
+  }
+
+  .answer-difference .correct-answer,
+  .answer-difference .correct-run,
+  .answer-difference ins {
+    color: var(--success);
+    background: color-mix(in oklch, var(--success) 10%, var(--card));
   }
 
   .answer-difference ins {
-    color: var(--foreground);
-    background: var(--secondary);
-    text-decoration: none;
+    text-decoration-line: underline;
+    text-decoration-style: solid;
+  }
+
+  .feedback-symbol {
+    margin-inline-end: 0.2em;
+    font-weight: 800;
+  }
+
+  .answer-difference bdi {
+    unicode-bidi: isolate;
   }
 
   .answer-difference small {
     color: var(--muted-foreground);
   }
 
-  .result-pill {
-    display: inline-flex;
-    margin: 1rem 0;
-    padding: 0.5rem 0.75rem;
-    border-radius: var(--radius-lg);
-    color: var(--destructive);
-    background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  .grade-status {
+    margin: 0.75rem 0 0;
+    color: var(--muted-foreground);
     font-size: var(--text-xs);
-    font-weight: 800;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-
-  .result-pill.correct {
-    color: var(--foreground);
-    background: var(--secondary);
+    text-align: center;
   }
 
   .supporting-content {

@@ -17,8 +17,6 @@ export const messages = {
   hard: "Hard",
   good: "Good",
   easy: "Easy",
-  saved: "Review saved",
-  nextReview: "Next review",
   retry: "Try again",
   localOnly: "Stored on this device",
 } as const;
