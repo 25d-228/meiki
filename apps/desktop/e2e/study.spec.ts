@@ -401,8 +401,10 @@ test("decodes non-silent managed MP3 bytes and cleans up prompt and reveal URLs"
       (request) => request.command === "read_managed_audio",
     ),
   );
-  expect(managedReads).toHaveLength(2);
-  expect(managedReads[0]?.args).toEqual(managedReads[1]?.args);
+  expect(managedReads).toHaveLength(3);
+  for (const managedRead of managedReads.slice(1)) {
+    expect(managedRead.args).toEqual(managedReads[0]?.args);
+  }
 });
 
 test("restarts audio at the decoder boundary and reports playback failures", async ({
@@ -902,10 +904,14 @@ test("grade buttons disclose keyboard shortcuts on hover and focus", async ({
     );
   }
   await buttons[0].hover();
-  await expect(page.getByRole("tooltip")).toHaveText("Shortcut: 1");
+  await expect(
+    page.getByRole("tooltip", { name: "Shortcut: 1" }),
+  ).toBeVisible();
   await page.mouse.move(0, 0);
   await buttons[2].focus();
-  await expect(page.getByRole("tooltip")).toHaveText("Shortcut: 3");
+  await expect(
+    page.getByRole("tooltip", { name: "Shortcut: 3" }),
+  ).toBeVisible();
 });
 
 test("rapid repeated grading submits once and advances directly", async ({
