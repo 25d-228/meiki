@@ -287,9 +287,8 @@ for (const theme of ["light", "dark"] as const) {
       page.getByText("Expected answer", { exact: true }),
     ).toBeVisible();
     await page.keyboard.press("Enter");
-    await expect(
-      page.getByRole("heading", { name: "Review saved" }),
-    ).toBeVisible();
+    await expect(page.getByText(/Second card ·/)).toBeVisible();
+    await expect(page.getByTestId("review-saved-status")).toBeVisible();
     await expectNoAccessibilityViolations(page);
   });
 }
@@ -315,9 +314,8 @@ test("skip navigation, focus transfer, and live study states are exposed", async
     page.getByText("Expected answer", { exact: true }),
   ).toBeVisible();
   await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("review-saved-status")).toBeVisible();
 });
 
 test("RTL learning content does not reverse application controls", async ({

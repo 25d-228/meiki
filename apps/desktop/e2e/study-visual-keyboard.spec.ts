@@ -209,10 +209,6 @@ test("the next card replaces the previous front answer", async ({ page }) => {
   await input.fill("行きます");
   await input.press("Enter");
   await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
-  await page.keyboard.press("Enter");
 
   await expect(page.getByText(/Second card ·/)).toBeVisible();
   await expect(
@@ -241,7 +237,7 @@ for (const preferences of [
   });
 }
 
-test("the keyboard remains through checking and hides for reveal and saved states", async ({
+test("the keyboard remains through checking, hides for reveal, and resets for the next card", async ({
   page,
 }) => {
   await setStudyPreferences(page, { keyboard: true, platform: "windows" });
@@ -257,9 +253,8 @@ test("the keyboard remains through checking and hides for reveal and saved state
   await page.keyboard.press("Enter");
   await expect(page.getByRole("button", { name: /^Good/ })).toBeDisabled();
   await expect(page.getByTestId("study-visual-keyboard")).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("study-visual-keyboard")).toBeVisible();
 });
 
 test("the enabled Study keyboard renders only the passive keyboard layout", async ({
@@ -387,10 +382,6 @@ test("pressed state from one card cannot appear on the next card", async ({
 
   await input.fill("行きます");
   await input.press("Enter");
-  await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "Review saved" }),
-  ).toBeVisible();
   await page.keyboard.press("Enter");
 
   await expect(page.getByText(/Second card ·/)).toBeVisible();

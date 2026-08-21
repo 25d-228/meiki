@@ -151,7 +151,7 @@ test("keeps independent actions separated across maintained screens", async ({
   await expectActionGroupGap(page.locator(".scheduler-actions"));
 });
 
-test("keeps Study prompt, reveal, grading, audio, and saved actions separated", async ({
+test("keeps Study prompt, reveal, grading, and audio actions separated", async ({
   page,
 }) => {
   await page.goto("/?media=ready");
@@ -163,9 +163,6 @@ test("keeps Study prompt, reveal, grading, audio, and saved actions separated", 
   await page.getByLabel("Your answer").press("Enter");
   await expectActionGroupGap(page.locator(".reveal-tools"));
   await expectActionGroupGap(page.locator(".grade-grid"), 4);
-
-  await page.getByRole("button", { name: /^Good/ }).click();
-  await expectActionGroupGap(page.locator(".next-actions"));
 });
 
 test("keeps import and bundle dialog actions separated", async ({ page }) => {

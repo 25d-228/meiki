@@ -575,6 +575,51 @@ export const scenarioDtos = {
     ],
     suggested_grade: "again",
   },
+  acceptedReveal: {
+    ...reveal(content.cjk),
+    raw_response: "いきます",
+    normalized_response: "いきます",
+    comparison: "accepted_variant",
+    difference: [{ kind: "equal", text: "いきます" }],
+  },
+  emptyReveal: {
+    ...reveal(content.cjk),
+    raw_response: "",
+    normalized_response: "",
+    comparison: "empty",
+    difference: [{ kind: "delete", text: "行きます" }],
+    suggested_grade: "again",
+  },
+  extraPrefixReveal: {
+    ...reveal(content.cjk),
+    full_source: "彼は学生です。",
+    source_segments: [
+      { text: "彼は", highlighted: false },
+      { text: "学生", highlighted: true },
+      { text: "です。", highlighted: false },
+    ],
+    expected_answer: "学生",
+    raw_response: "大学生",
+    normalized_response: "大学生",
+    comparison: "incorrect",
+    difference: [
+      { kind: "insert", text: "大" },
+      { kind: "equal", text: "学生" },
+    ],
+    suggested_grade: "again",
+  },
+  graphemeReveal: {
+    ...reveal(content.emoji),
+    raw_response: "e\u{301}👨‍👩‍👧‍👦!",
+    normalized_response: "e\u{301}👨‍👩‍👧‍👦!",
+    expected_answer: "e\u{301}👨‍👩‍👧‍👦",
+    comparison: "incorrect",
+    difference: [
+      { kind: "equal", text: "e\u{301}👨‍👩‍👧‍👦" },
+      { kind: "insert", text: "!" },
+    ],
+    suggested_grade: "again",
+  },
   today: {
     normal: todayOverview(),
     empty: todayOverview({
