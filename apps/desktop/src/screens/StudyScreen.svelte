@@ -555,7 +555,12 @@
   }
 
   function beginEdit(): void {
-    if (!card || !onEdit) return;
+    if (
+      !card ||
+      !onEdit ||
+      (view !== "prompt" && view !== "revealed" && view !== "next")
+    )
+      return;
     discardReviewUndo();
     const stableView: Exclude<StableView, "complete"> =
       view === "revealed" ? "revealed" : view === "next" ? "next" : "prompt";
@@ -867,7 +872,9 @@
         >
       </Alert.Action>
     </Alert.Root>
-  {:else if sessionNotice}
+  {/if}
+
+  {#if sessionNotice}
     <Alert.Root role="status" class="mb-5 bg-muted/40">
       <Alert.Title>Study item refreshed</Alert.Title>
       <Alert.Description>{sessionNotice}</Alert.Description>
@@ -1193,14 +1200,23 @@
             {/if}
 
             <div class="reveal-tools">
-              <Button variant="outline" size="sm" onclick={tryAnswerAgain}
-                >Try answer again</Button
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={view === "committing"}
+                onclick={tryAnswerAgain}>Try answer again</Button
               >
-              <Button variant="ghost" size="sm" onclick={beginEdit}
-                >Edit note</Button
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={view === "committing"}
+                onclick={beginEdit}>Edit note</Button
               >
-              <Button variant="ghost" size="sm" onclick={suspendCard}
-                >Suspend</Button
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={view === "committing"}
+                onclick={suspendCard}>Suspend</Button
               >
             </div>
 

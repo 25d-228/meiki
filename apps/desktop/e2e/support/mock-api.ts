@@ -372,6 +372,17 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(study.reveal);
       }
       if (command === "grade_review") {
+        if (params.get("grade") === "controlled") {
+          await new Promise<void>((resolve) => {
+            window.addEventListener(
+              "meiki-e2e-release-grade",
+              () => resolve(),
+              {
+                once: true,
+              },
+            );
+          });
+        }
         if (params.get("grade") === "loading") {
           await new Promise((resolve) => setTimeout(resolve, 750));
         }

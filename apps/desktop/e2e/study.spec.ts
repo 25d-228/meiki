@@ -268,6 +268,31 @@ test("keeps manual audio controls usable when autoplay is blocked", async ({
   await expect(page.getByRole("button", { name: "Pause audio" })).toBeVisible();
 });
 
+test("keeps review undo visible alongside a next-card replay notice", async ({
+  page,
+}) => {
+  await openStudy(page, "/");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+
+  const reviewStatus = page.getByTestId("review-saved-status");
+  await expect(reviewStatus).toContainText("Review saved");
+  await expect(
+    reviewStatus.getByRole("button", { name: "Undo review" }),
+  ).toBeVisible();
+
+  await page.locator("#main-content").focus();
+  await page.keyboard.press("r");
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "No playable audio is attached to this side" }),
+  ).toBeVisible();
+  await expect(reviewStatus).toBeVisible();
+});
+
 test("decodes non-silent managed MP3 bytes and cleans up prompt and reveal URLs", async ({
   page,
 }) => {
@@ -925,6 +950,43 @@ test("rapid repeated grading submits once and advances directly", async ({
   });
   await expect(page.getByText(/Second card ·/)).toBeVisible();
   expect(await requestCount(page, "grade_review")).toBe(1);
+});
+
+test("blocks conflicting revealed actions while a grade is committing", async ({
+  page,
+}) => {
+  await openStudy(page, "/?grade=controlled");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+
+  const tryAgain = page.getByRole("button", { name: "Try answer again" });
+  const edit = page.getByRole("button", { name: "Edit note" });
+  const suspend = page.getByRole("button", { name: "Suspend" });
+  await page.getByRole("button", { name: /^Good/ }).click();
+  await expect(page.getByText("Saving review…")).toBeVisible();
+  await expect(tryAgain).toBeDisabled();
+  await expect(edit).toBeDisabled();
+  await expect(suspend).toBeDisabled();
+
+  await tryAgain.dispatchEvent("click");
+  await edit.dispatchEvent("click");
+  await suspend.dispatchEvent("click");
+  await expect(page.getByText("Saving review…")).toBeVisible();
+  await expect(
+    page.getByText("Expected answer", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Your answer")).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Add / Edit card" }),
+  ).toHaveCount(0);
+  expect(await requestCount(page, "grade_review")).toBe(1);
+  expect(await requestCount(page, "suspend_card")).toBe(0);
+
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event("meiki-e2e-release-grade")),
+  );
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(page.getByTestId("review-saved-status")).toBeVisible();
 });
 
 test("maps keyboard grading and undo without browser persistence logic", async ({
