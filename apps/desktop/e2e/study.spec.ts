@@ -998,7 +998,8 @@ test("maps keyboard grading and undo without browser persistence logic", async (
   await page.keyboard.press("4");
   await expect(page.getByText(/Second card ·/)).toBeVisible();
 
-  await page.locator("#main-content").focus();
+  await expect(page.getByLabel("Your answer")).toBeFocused();
+  await expect(page.getByLabel("Your answer")).toHaveValue("");
   await page.keyboard.press("ControlOrMeta+z");
   await expect(page.getByText("Last review undone.")).toBeVisible();
   expect((await lastRequest(page, "undo_review"))?.args).toMatchObject({
@@ -1073,12 +1074,9 @@ test("keeps one undo on session completion and restores the reviewed queue posit
   });
 });
 
-test("discards the previous-review undo before it could replace a new response", async ({
+test("leaves changed next-card input undo native after retiring review undo", async ({
   page,
 }) => {
-  await page.addInitScript(() => {
-    localStorage.setItem("meiki-vim-keybindings", "true");
-  });
   await openStudy(page, "/");
   await page.getByLabel("Your answer").fill("行きます");
   await page.getByLabel("Your answer").press("Enter");
@@ -1089,9 +1087,11 @@ test("discards the previous-review undo before it could replace a new response",
   const nextAnswer = page.getByLabel("Your answer");
   await nextAnswer.fill("unfinished next answer");
   await expect(page.getByTestId("review-saved-status")).toHaveCount(0);
-  await page.locator("#main-content").focus();
-  await page.keyboard.press("u");
-  await expect(nextAnswer).toHaveValue("unfinished next answer");
+  await expect(nextAnswer).toBeFocused();
+  await nextAnswer.press("ControlOrMeta+z");
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+  await expect(nextAnswer).toBeFocused();
+  await expect(nextAnswer).toHaveValue("");
   expect(await requestCount(page, "undo_review")).toBe(0);
 });
 

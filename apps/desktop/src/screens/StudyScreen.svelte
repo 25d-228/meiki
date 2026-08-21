@@ -714,7 +714,21 @@
       (view === "prompt" || view === "complete") &&
       undoableReview
     ) {
-      if (!vimCommandAllowed(event, true, composing, true)) return;
+      const emptyAnswerInputOwnsEvent =
+        view === "prompt" &&
+        response.length === 0 &&
+        answerInput !== null &&
+        event.composedPath().includes(answerInput);
+      if (
+        !vimCommandAllowed(
+          event,
+          true,
+          composing,
+          true,
+          emptyAnswerInputOwnsEvent,
+        )
+      )
+        return;
       event.preventDefault();
       void undoReview();
       return;
