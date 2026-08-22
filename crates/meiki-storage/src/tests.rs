@@ -2493,6 +2493,126 @@ fn active_review_days_follow_current_deck_scope_and_exclude_trash_and_removal() 
     assert!(storage.active_review_days(None, 0).unwrap().is_empty());
 }
 
+#[cfg(unix)]
+type ReviewDayExpectation = (&'static str, u64, u64, u64, u64);
+
+#[cfg(unix)]
+#[test]
+fn active_review_days_time_zone_process() {
+    let Some(time_zone) = std::env::var_os("MEIKI_TEST_REVIEW_TIME_ZONE") else {
+        return;
+    };
+    let time_zone = time_zone.to_str().unwrap();
+    let (timestamps, midnight_expected, four_am_expected): (
+        &[&str],
+        &[ReviewDayExpectation],
+        &[ReviewDayExpectation],
+    ) = match time_zone {
+        "America/New_York" => (
+            &[
+                "2025-03-09T04:59:00Z",
+                "2025-03-09T05:00:00Z",
+                "2025-03-09T06:59:00Z",
+                "2025-03-09T07:00:00Z",
+                "2025-03-09T08:00:00Z",
+                "2025-11-02T03:59:00Z",
+                "2025-11-02T04:00:00Z",
+                "2025-11-02T05:59:00Z",
+                "2025-11-02T06:00:00Z",
+                "2025-11-02T09:00:00Z",
+            ],
+            &[
+                ("2025-03-08", 1, 1, 0, 1),
+                ("2025-03-09", 4, 4, 0, 0),
+                ("2025-11-01", 1, 1, 0, 0),
+                ("2025-11-02", 4, 4, 0, 0),
+            ],
+            &[
+                ("2025-03-08", 4, 4, 0, 1),
+                ("2025-03-09", 1, 1, 0, 0),
+                ("2025-11-01", 4, 4, 0, 0),
+                ("2025-11-02", 1, 1, 0, 0),
+            ],
+        ),
+        "Asia/Kolkata" => (
+            &[
+                "2025-01-14T18:29:00Z",
+                "2025-01-14T18:30:00Z",
+                "2025-01-14T22:29:00Z",
+                "2025-01-14T22:30:00Z",
+            ],
+            &[("2025-01-14", 1, 1, 0, 1), ("2025-01-15", 3, 3, 0, 0)],
+            &[("2025-01-14", 3, 3, 0, 1), ("2025-01-15", 1, 1, 0, 0)],
+        ),
+        "Asia/Kathmandu" => (
+            &[
+                "2025-01-14T18:14:00Z",
+                "2025-01-14T18:15:00Z",
+                "2025-01-14T22:14:00Z",
+                "2025-01-14T22:15:00Z",
+            ],
+            &[("2025-01-14", 1, 1, 0, 1), ("2025-01-15", 3, 3, 0, 0)],
+            &[("2025-01-14", 3, 3, 0, 1), ("2025-01-15", 1, 1, 0, 0)],
+        ),
+        other => panic!("unsupported review statistics time zone {other}"),
+    };
+
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(100_000).unwrap();
+    for (index, timestamp) in timestamps.iter().enumerate() {
+        let reviewed_at_ms = storage
+            .connection
+            .query_row(
+                "SELECT CAST(strftime('%s', ?1) AS INTEGER) * 1000",
+                [timestamp],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        storage
+            .commit_review(&sample_event(
+                &storage,
+                &format!("time-zone-review-{index}"),
+                reviewed_at_ms,
+            ))
+            .unwrap();
+    }
+
+    for (boundary, expected) in [(0, midnight_expected), (240, four_am_expected)] {
+        let days = storage.active_review_days(None, boundary).unwrap();
+        let actual = days
+            .iter()
+            .map(|day| {
+                (
+                    day.study_day.as_str(),
+                    day.reviews,
+                    day.correct_reviews,
+                    day.error_reviews,
+                    day.learned_cards,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{time_zone} at minute {boundary}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn active_review_days_bucket_dst_transitions_and_non_hour_offsets() {
+    for time_zone in ["America/New_York", "Asia/Kolkata", "Asia/Kathmandu"] {
+        // SQLite reads process-global local-time state, so each zone must be
+        // fixed before a separate test process initializes the connection.
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::active_review_days_time_zone_process")
+            .arg("--nocapture")
+            .env("TZ", time_zone)
+            .env("MEIKI_TEST_REVIEW_TIME_ZONE", time_zone)
+            .status()
+            .unwrap();
+        assert!(status.success(), "review statistics failed in {time_zone}");
+    }
+}
+
 #[test]
 fn active_review_days_apply_the_configured_local_boundary() {
     let mut storage = Storage::open_in_memory().unwrap();

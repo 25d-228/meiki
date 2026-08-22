@@ -152,6 +152,7 @@ test("deck reset and deletion actions are keyboard accessible", async ({
   await expect(actions).toBeFocused();
 
   await page.keyboard.press("Enter");
+  await expect(resetAction).toBeFocused();
   await page.keyboard.press("ArrowDown");
   const deleteAction = page.getByRole("menuitem", { name: "Delete deck" });
   await expect(deleteAction).toBeFocused();
