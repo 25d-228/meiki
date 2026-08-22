@@ -1,6 +1,28 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
+
+const minimumCardInsetPixels = 12;
+
+type ElementBounds = NonNullable<Awaited<ReturnType<Locator["boundingBox"]>>>;
+
+async function visibleBounds(locator: Locator): Promise<ElementBounds> {
+  const bounds = await locator.boundingBox();
+  expect(bounds).not.toBeNull();
+  return bounds!;
+}
+
+function expectHorizontalCardInset(
+  card: ElementBounds,
+  content: ElementBounds,
+): void {
+  expect(content.x - card.x).toBeGreaterThanOrEqual(minimumCardInsetPixels);
+  expect(
+    card.x + card.width - (content.x + content.width),
+  ).toBeGreaterThanOrEqual(minimumCardInsetPixels);
+  expect(content.y).toBeGreaterThanOrEqual(card.y);
+  expect(content.y + content.height).toBeLessThanOrEqual(card.y + card.height);
+}
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
@@ -169,6 +191,113 @@ test("shows scoped summaries and accessible bounded activity charts", async ({
     },
   );
 });
+
+for (const layout of [
+  { name: "desktop", width: 1_440, height: 900 },
+  { name: "narrow", width: 640, height: 720 },
+] as const) {
+  test(`keeps every statistics card inset in the ${layout.name} layout`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: layout.width, height: layout.height });
+    await page.goto("/?today=normal");
+    await openToday(page);
+
+    const summaryCards = page.locator("[data-statistics-summary-card]");
+    await expect(summaryCards).toHaveCount(5);
+    for (let index = 0; index < 5; index += 1) {
+      const card = summaryCards.nth(index);
+      const cardBounds = await visibleBounds(card);
+      const labelBounds = await visibleBounds(
+        card.locator("[data-statistics-summary-label]"),
+      );
+      const valueBounds = await visibleBounds(
+        card.locator("[data-statistics-summary-value]"),
+      );
+      expectHorizontalCardInset(cardBounds, labelBounds);
+      expectHorizontalCardInset(cardBounds, valueBounds);
+      expect(labelBounds.y - cardBounds.y).toBeGreaterThanOrEqual(
+        minimumCardInsetPixels,
+      );
+      expect(
+        cardBounds.y + cardBounds.height - (valueBounds.y + valueBounds.height),
+      ).toBeGreaterThanOrEqual(minimumCardInsetPixels);
+    }
+
+    const chartCards = page.locator("[data-statistics-chart-card]");
+    await expect(chartCards).toHaveCount(2);
+    for (const chart of [
+      {
+        index: 0,
+        heading: "Review activity",
+        image: /Daily review activity from/,
+        legend: "Activity intensity legend",
+      },
+      {
+        index: 1,
+        heading: "Correct and error reviews",
+        image: /Daily correct and error reviews from/,
+        legend: "Review result legend",
+      },
+    ] as const) {
+      const card = chartCards.nth(chart.index);
+      const cardBounds = await visibleBounds(card);
+      const headingBounds = await visibleBounds(
+        card.getByRole("heading", { name: chart.heading }),
+      );
+      const chartBounds = await visibleBounds(
+        card.getByRole("img", { name: chart.image }),
+      );
+      const legendBounds = await visibleBounds(
+        card.getByRole("group", { name: chart.legend }),
+      );
+      expectHorizontalCardInset(cardBounds, headingBounds);
+      expectHorizontalCardInset(cardBounds, chartBounds);
+      expectHorizontalCardInset(cardBounds, legendBounds);
+      expect(headingBounds.y - cardBounds.y).toBeGreaterThanOrEqual(
+        minimumCardInsetPixels,
+      );
+      expect(
+        cardBounds.y +
+          cardBounds.height -
+          (legendBounds.y + legendBounds.height),
+      ).toBeGreaterThanOrEqual(minimumCardInsetPixels);
+    }
+
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+
+    if (layout.name === "narrow") {
+      await page.goto("/?today=empty");
+      await openToday(page);
+      const noReviewCards = page
+        .locator("[data-statistics-summary-card]")
+        .filter({ hasText: "No reviews" });
+      await expect(noReviewCards).toHaveCount(2);
+      for (let index = 0; index < 2; index += 1) {
+        const card = noReviewCards.nth(index);
+        const value = card.locator("[data-statistics-summary-value]");
+        expectHorizontalCardInset(
+          await visibleBounds(card),
+          await visibleBounds(value),
+        );
+        expect(
+          await value.evaluate(
+            (element) => element.scrollWidth <= element.clientWidth,
+          ),
+        ).toBe(true);
+      }
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+    }
+  });
+}
 
 test("keeps study available when statistics fail and retries only statistics", async ({
   page,

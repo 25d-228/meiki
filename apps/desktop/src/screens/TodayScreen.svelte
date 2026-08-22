@@ -424,31 +424,137 @@
         </Alert.Description>
       </Alert.Root>
     {:else if statistics}
-      <dl class="statistics-summary">
-        <Card.Root class="summary-card">
-          <dt>Cards learned today</dt>
-          <dd>{statistics.cards_learned_today}</dd>
+      <div
+        class="statistics-summary"
+        role="list"
+        aria-label="Review statistics summary"
+      >
+        <Card.Root
+          size="sm"
+          class="min-w-0"
+          role="listitem"
+          aria-labelledby="cards-learned-today-label"
+          data-statistics-summary-card
+        >
+          <Card.Header>
+            <Card.Description
+              id="cards-learned-today-label"
+              class="text-xs leading-snug"
+              data-statistics-summary-label
+            >
+              Cards learned today
+            </Card.Description>
+          </Card.Header>
+          <Card.Content class="mt-auto">
+            <p
+              class="m-0 text-xl font-bold [overflow-wrap:anywhere]"
+              data-statistics-summary-value
+            >
+              {statistics.cards_learned_today}
+            </p>
+          </Card.Content>
         </Card.Root>
-        <Card.Root class="summary-card">
-          <dt>Reviews today</dt>
-          <dd>{statistics.reviews_today}</dd>
+        <Card.Root
+          size="sm"
+          class="min-w-0"
+          role="listitem"
+          aria-labelledby="reviews-today-label"
+          data-statistics-summary-card
+        >
+          <Card.Header>
+            <Card.Description
+              id="reviews-today-label"
+              class="text-xs leading-snug"
+              data-statistics-summary-label
+            >
+              Reviews today
+            </Card.Description>
+          </Card.Header>
+          <Card.Content class="mt-auto">
+            <p
+              class="m-0 text-xl font-bold [overflow-wrap:anywhere]"
+              data-statistics-summary-value
+            >
+              {statistics.reviews_today}
+            </p>
+          </Card.Content>
         </Card.Root>
-        <Card.Root class="summary-card">
-          <dt>Correct rate</dt>
-          <dd>{percentage(statistics.correct_rate_basis_points)}</dd>
+        <Card.Root
+          size="sm"
+          class="min-w-0"
+          role="listitem"
+          aria-labelledby="correct-rate-label"
+          data-statistics-summary-card
+        >
+          <Card.Header>
+            <Card.Description
+              id="correct-rate-label"
+              class="text-xs leading-snug"
+              data-statistics-summary-label
+            >
+              Correct rate
+            </Card.Description>
+          </Card.Header>
+          <Card.Content class="mt-auto">
+            <p
+              class="m-0 text-xl font-bold [overflow-wrap:anywhere]"
+              data-statistics-summary-value
+            >
+              {percentage(statistics.correct_rate_basis_points)}
+            </p>
+          </Card.Content>
         </Card.Root>
-        <Card.Root class="summary-card">
-          <dt>Error rate</dt>
-          <dd>{percentage(statistics.error_rate_basis_points)}</dd>
+        <Card.Root
+          size="sm"
+          class="min-w-0"
+          role="listitem"
+          aria-labelledby="error-rate-label"
+          data-statistics-summary-card
+        >
+          <Card.Header>
+            <Card.Description
+              id="error-rate-label"
+              class="text-xs leading-snug"
+              data-statistics-summary-label
+            >
+              Error rate
+            </Card.Description>
+          </Card.Header>
+          <Card.Content class="mt-auto">
+            <p
+              class="m-0 text-xl font-bold [overflow-wrap:anywhere]"
+              data-statistics-summary-value
+            >
+              {percentage(statistics.error_rate_basis_points)}
+            </p>
+          </Card.Content>
         </Card.Root>
-        <Card.Root class="summary-card">
-          <dt>Longest streak</dt>
-          <dd>
-            {statistics.longest_streak}
-            {statistics.longest_streak === 1 ? "day" : "days"}
-          </dd>
+        <Card.Root
+          size="sm"
+          class="min-w-0"
+          role="listitem"
+          aria-labelledby="longest-streak-label"
+          data-statistics-summary-card
+        >
+          <Card.Header>
+            <Card.Description
+              id="longest-streak-label"
+              class="text-xs leading-snug"
+              data-statistics-summary-label
+            >
+              Longest streak
+            </Card.Description>
+          </Card.Header>
+          <Card.Content class="mt-auto">
+            <p
+              class="m-0 text-xl font-bold [overflow-wrap:anywhere]"
+              data-statistics-summary-value
+            >
+              {`${statistics.longest_streak} ${statistics.longest_streak === 1 ? "day" : "days"}`}
+            </p>
+          </Card.Content>
         </Card.Root>
-      </dl>
+      </div>
 
       {#if statistics.review_activity.every((day) => day.reviews === 0)}
         <p class="empty-statistics">
@@ -458,121 +564,146 @@
       {/if}
 
       <div class="chart-grid">
-        <Card.Root class="chart-card">
-          <figure aria-labelledby="review-activity-title">
-            <figcaption>
+        <Card.Root class="min-w-0" data-statistics-chart-card>
+          <Card.Header>
+            <Card.Title>
               <h3 id="review-activity-title">Review activity</h3>
-              <p>
-                {activityReviewTotal} reviews across the past 52 weeks on
-                {activityDayTotal} active {activityDayTotal === 1
-                  ? "day"
-                  : "days"}.
-              </p>
-            </figcaption>
-            <svg
-              class="activity-chart"
-              viewBox="0 0 520 70"
-              role="img"
-              aria-label={`Daily review activity from ${displayDate(statistics.review_activity[0].date)} through ${displayDate(statistics.review_activity.at(-1)?.date ?? statistics.review_activity[0].date)}`}
-              focusable="false"
+            </Card.Title>
+            <Card.Description id="review-activity-description">
+              {activityReviewTotal} reviews across the past 52 weeks on
+              {activityDayTotal} active {activityDayTotal === 1
+                ? "day"
+                : "days"}.
+            </Card.Description>
+          </Card.Header>
+          <Card.Content class="min-w-0">
+            <figure
+              class="m-0 grid min-w-0 gap-2"
+              aria-labelledby="review-activity-title"
+              aria-describedby="review-activity-description"
             >
-              {#each statistics.review_activity as day, index (day.date)}
-                <rect
-                  class={`activity-level-${activityLevel(day.reviews)}`}
-                  x={Math.floor(index / 7) * 10 + 1}
-                  y={(index % 7) * 10 + 1}
-                  width="8"
-                  height="8"
-                  aria-hidden="true"
-                >
-                  <title>{day.date}: {day.reviews} reviews</title>
-                </rect>
-              {/each}
-            </svg>
-            <div
-              class="activity-key"
-              role="group"
-              aria-label="Activity intensity legend"
-            >
-              <span>Less</span>
-              {#each [0, 1, 2, 3, 4] as level (level)}
-                <span
-                  class={`activity-swatch activity-level-${level}`}
-                  aria-hidden="true"
-                ></span>
-              {/each}
-              <span>More</span>
-            </div>
-          </figure>
+              <svg
+                class="activity-chart"
+                viewBox="0 0 520 70"
+                role="img"
+                aria-label={`Daily review activity from ${displayDate(statistics.review_activity[0].date)} through ${displayDate(statistics.review_activity.at(-1)?.date ?? statistics.review_activity[0].date)}`}
+                focusable="false"
+              >
+                {#each statistics.review_activity as day, index (day.date)}
+                  <rect
+                    class={`activity-level-${activityLevel(day.reviews)}`}
+                    x={Math.floor(index / 7) * 10 + 1}
+                    y={(index % 7) * 10 + 1}
+                    width="8"
+                    height="8"
+                    aria-hidden="true"
+                  >
+                    <title>{day.date}: {day.reviews} reviews</title>
+                  </rect>
+                {/each}
+              </svg>
+              <div
+                class="activity-key"
+                role="group"
+                aria-label="Activity intensity legend"
+              >
+                <span>Less</span>
+                {#each [0, 1, 2, 3, 4] as level (level)}
+                  <span
+                    class={`activity-swatch activity-level-${level}`}
+                    aria-hidden="true"
+                  ></span>
+                {/each}
+                <span>More</span>
+              </div>
+            </figure>
+          </Card.Content>
         </Card.Root>
 
-        <Card.Root class="chart-card">
-          <figure aria-labelledby="accuracy-activity-title">
-            <figcaption>
+        <Card.Root class="min-w-0" data-statistics-chart-card>
+          <Card.Header>
+            <Card.Title>
               <h3 id="accuracy-activity-title">Correct and error reviews</h3>
-              <p>
-                {recentCorrectTotal} correct and {recentErrorTotal} error reviews
-                over 30 study days.
-              </p>
-            </figcaption>
-            <svg
-              class="accuracy-chart"
-              viewBox="0 0 600 110"
-              role="img"
-              aria-label={`Daily correct and error reviews from ${displayDate(statistics.recent_reviews[0].date)} through ${displayDate(statistics.recent_reviews.at(-1)?.date ?? statistics.recent_reviews[0].date)}`}
-              focusable="false"
+            </Card.Title>
+            <Card.Description id="accuracy-activity-description">
+              {recentCorrectTotal} correct and {recentErrorTotal} error reviews over
+              30 study days.
+            </Card.Description>
+          </Card.Header>
+          <Card.Content class="min-w-0">
+            <figure
+              class="m-0 grid min-w-0 gap-2"
+              aria-labelledby="accuracy-activity-title"
+              aria-describedby="accuracy-activity-description"
             >
-              <defs>
-                <pattern
-                  id="today-error-hatch"
-                  width="5"
-                  height="5"
-                  patternUnits="userSpaceOnUse"
+              <svg
+                class="accuracy-chart"
+                viewBox="0 0 600 110"
+                role="img"
+                aria-label={`Daily correct and error reviews from ${displayDate(statistics.recent_reviews[0].date)} through ${displayDate(statistics.recent_reviews.at(-1)?.date ?? statistics.recent_reviews[0].date)}`}
+                focusable="false"
+              >
+                <defs>
+                  <pattern
+                    id="today-error-hatch"
+                    width="5"
+                    height="5"
+                    patternUnits="userSpaceOnUse"
+                  >
+                    <rect width="5" height="5" class="error-pattern-fill"
+                    ></rect>
+                    <path d="M-1,1 l2,-2 M0,5 l5,-5 M4,6 l2,-2"></path>
+                  </pattern>
+                </defs>
+                <line x1="0" y1="99" x2="600" y2="99" class="chart-axis"></line>
+                {#each statistics.recent_reviews as day, index (day.date)}
+                  {@const correctHeight = barHeight(day.correct_reviews)}
+                  {@const errorHeight = barHeight(day.error_reviews)}
+                  <rect
+                    class="correct-bar"
+                    x={index * 20 + 2}
+                    y={99 - correctHeight}
+                    width="7"
+                    height={correctHeight}
+                    aria-hidden="true"
+                  >
+                    <title>{day.date}: {day.correct_reviews} correct</title>
+                  </rect>
+                  <rect
+                    class="error-bar"
+                    x={index * 20 + 11}
+                    y={99 - errorHeight}
+                    width="7"
+                    height={errorHeight}
+                    aria-hidden="true"
+                  >
+                    <title>{day.date}: {day.error_reviews} errors</title>
+                  </rect>
+                {/each}
+              </svg>
+              <div
+                class="chart-legend"
+                role="group"
+                aria-label="Review result legend"
+              >
+                <span
+                  ><i class="correct-key" aria-hidden="true"></i>Correct</span
                 >
-                  <rect width="5" height="5" class="error-pattern-fill"></rect>
-                  <path d="M-1,1 l2,-2 M0,5 l5,-5 M4,6 l2,-2"></path>
-                </pattern>
-              </defs>
-              <line x1="0" y1="99" x2="600" y2="99" class="chart-axis"></line>
-              {#each statistics.recent_reviews as day, index (day.date)}
-                {@const correctHeight = barHeight(day.correct_reviews)}
-                {@const errorHeight = barHeight(day.error_reviews)}
-                <rect
-                  class="correct-bar"
-                  x={index * 20 + 2}
-                  y={99 - correctHeight}
-                  width="7"
-                  height={correctHeight}
-                  aria-hidden="true"
-                >
-                  <title>{day.date}: {day.correct_reviews} correct</title>
-                </rect>
-                <rect
-                  class="error-bar"
-                  x={index * 20 + 11}
-                  y={99 - errorHeight}
-                  width="7"
-                  height={errorHeight}
-                  aria-hidden="true"
-                >
-                  <title>{day.date}: {day.error_reviews} errors</title>
-                </rect>
-              {/each}
-            </svg>
-            <div
-              class="chart-legend"
-              role="group"
-              aria-label="Review result legend"
-            >
-              <span><i class="correct-key" aria-hidden="true"></i>Correct</span>
-              <span><i class="error-key" aria-hidden="true"></i>Error</span>
-            </div>
-          </figure>
+                <span><i class="error-key" aria-hidden="true"></i>Error</span>
+              </div>
+            </figure>
+          </Card.Content>
         </Card.Root>
       </div>
     {:else}
       <div class="statistics-placeholder" aria-hidden="true">
-        <span></span><span></span><span></span><span></span><span></span>
+        {#each [0, 1, 2, 3, 4] as placeholder (placeholder)}
+          <Card.Root size="sm" class="min-w-0">
+            <Card.Content>
+              <span class="block min-h-14 bg-muted"></span>
+            </Card.Content>
+          </Card.Root>
+        {/each}
       </div>
     {/if}
   </section>
@@ -648,8 +779,7 @@
     gap: 0.75rem;
   }
 
-  .section-heading h2,
-  figure h3 {
+  .section-heading h2 {
     margin: 0;
     font-family: var(--font-sans);
   }
@@ -659,7 +789,6 @@
   }
 
   .statistics-loading,
-  figure p,
   .empty-statistics {
     color: var(--muted-foreground);
     font-size: var(--text-sm);
@@ -672,25 +801,6 @@
     margin: 0;
   }
 
-  .summary-card {
-    min-width: 0;
-    padding: 1rem;
-  }
-
-  .statistics-summary dt {
-    min-height: 2.25rem;
-    color: var(--muted-foreground);
-    font-size: var(--text-xs);
-    line-height: 1.4;
-  }
-
-  .statistics-summary dd {
-    margin: 0.5rem 0 0;
-    font-size: clamp(1.15rem, 2.5vw, 1.5rem);
-    font-weight: 750;
-    overflow-wrap: anywhere;
-  }
-
   .empty-statistics {
     margin: 0;
   }
@@ -701,31 +811,11 @@
     gap: 1rem;
   }
 
-  .chart-card {
-    min-width: 0;
-    padding: 1.25rem;
-  }
-
-  figure,
-  figcaption {
-    display: grid;
-    min-width: 0;
-    gap: 0.4rem;
-    margin: 0;
-  }
-
-  figure p {
-    min-height: 2.5rem;
-    margin: 0;
-    line-height: 1.5;
-  }
-
   .activity-chart,
   .accuracy-chart {
     display: block;
     width: 100%;
     min-width: 0;
-    margin-top: 0.5rem;
     overflow: visible;
   }
 
@@ -823,12 +913,6 @@
     gap: 0.75rem;
   }
 
-  .statistics-placeholder span {
-    min-height: 5.5rem;
-    border: 1px solid var(--border);
-    background: var(--muted);
-  }
-
   @media (max-width: 880px) {
     .chart-grid {
       grid-template-columns: 1fr;
@@ -849,22 +933,6 @@
     .statistics-summary,
     .statistics-placeholder {
       grid-template-columns: 1fr;
-    }
-
-    .summary-card {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 0.75rem;
-    }
-
-    .statistics-summary dt {
-      min-height: 0;
-    }
-
-    .statistics-summary dd {
-      margin: 0;
-      text-align: end;
     }
   }
 </style>
