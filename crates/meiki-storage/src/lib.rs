@@ -212,6 +212,15 @@ pub struct DeckProgressReset {
     pub compensated_reviews: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActiveReviewDay {
+    pub study_day: String,
+    pub reviews: u64,
+    pub correct_reviews: u64,
+    pub error_reviews: u64,
+    pub learned_cards: u64,
+}
+
 impl PristineBundleImportPlan {
     #[must_use]
     pub fn requires_changes(&self) -> bool {

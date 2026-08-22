@@ -200,6 +200,19 @@ for (const visualCase of visualCases) {
     if (visualCase.screen === "Study") {
       await expect(page.locator("#study-prompt")).toBeVisible();
     }
+    if (visualCase.screen === "Today") {
+      await expect(
+        page.getByRole("heading", { name: "Review statistics" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("img", { name: /Daily review activity from/ }),
+      ).toBeVisible();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+    }
     if (visualCase.name.startsWith("study-audio")) {
       await expect(page.getByRole("slider", { name: /Seek/ })).toBeVisible();
       expect(

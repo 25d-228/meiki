@@ -256,6 +256,16 @@ test("Today refreshes when deletion finishes while Today is open", async ({
   );
   await expect(page.getByLabel("Deck")).toHaveValue("__all_decks__");
   await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByText("Review statistics")).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      (window.__MEIKI_TEST_REQUESTS__ ?? [])
+        .filter((request) => request.command === "get_today_statistics")
+        .at(-1),
+    ),
+  ).toMatchObject({
+    args: { request: { deck_id: "__all_decks__" } },
+  });
 });
 
 test("progress ignores older phases and lower values", async ({ page }) => {

@@ -12,8 +12,8 @@ use meiki_application::{
     ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
     ResetDeckProgressRequest, ResetDeckProgressResultDto, RevealDto, SchedulerParametersExportDto,
     SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto,
-    StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest,
-    UndoReviewResultDto, UpdateSchedulerSettingsRequest,
+    StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto, TodayRequest, TodayStatisticsDto,
+    TodayStatisticsRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State, ipc::Channel};
 
@@ -25,6 +25,7 @@ macro_rules! desktop_commands {
         $apply!(
             get_study_card,
             get_today_overview,
+            get_today_statistics,
             prepare_study,
             reconcile_study_queue,
             get_deck_cards,
@@ -102,6 +103,15 @@ fn get_today_overview(
     state: State<'_, AppContext>,
 ) -> Result<TodayOverviewDto, String> {
     commands::get_today_overview(&state.service(), &request)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_today_statistics(
+    request: TodayStatisticsRequest,
+    state: State<'_, AppContext>,
+) -> Result<TodayStatisticsDto, String> {
+    commands::get_today_statistics(&state.service(), &request)
 }
 
 #[tauri::command]
@@ -469,7 +479,7 @@ mod tests {
 
     use meiki_application::{
         ALL_DECKS_ID, CreateDeckRequest, DeckCardRequest, DeckCardTrashDto,
-        ResetDeckProgressRequest, StudyAvailabilityDto, TodayRequest,
+        ResetDeckProgressRequest, StudyAvailabilityDto, TodayRequest, TodayStatisticsRequest,
     };
     use serde_json::json;
     use tempfile::tempdir;
@@ -479,6 +489,7 @@ mod tests {
     const EXPECTED_COMMANDS: &[&str] = &[
         "get_study_card",
         "get_today_overview",
+        "get_today_statistics",
         "prepare_study",
         "reconcile_study_queue",
         "get_deck_cards",
@@ -611,6 +622,20 @@ mod tests {
             serde_json::to_value(plan).expect("serialize the study plan")["availability"],
             json!("empty_collection")
         );
+        let statistics = commands::get_today_statistics(
+            &service,
+            &TodayStatisticsRequest {
+                deck_id: ALL_DECKS_ID.into(),
+                now_ms: request.now_ms,
+                day_start_ms: request.day_start_ms,
+                day_end_ms: request.day_end_ms,
+                day_boundary_minutes: 0,
+            },
+        )
+        .expect("return empty local statistics as DTO data");
+        assert_eq!(statistics.reviews_today, 0);
+        assert_eq!(statistics.correct_rate_basis_points, None);
+        assert_eq!(statistics.review_activity.len(), 364);
 
         let expected = service
             .get_study_card("missing-card")

@@ -25,6 +25,8 @@ import type { MediaRoleDto } from "./generated/MediaRoleDto";
 import type { StudyMediaDto } from "./generated/StudyMediaDto";
 import type { TodayOverviewDto } from "./generated/TodayOverviewDto";
 import type { TodayRequest } from "./generated/TodayRequest";
+import type { TodayStatisticsDto } from "./generated/TodayStatisticsDto";
+import type { TodayStatisticsRequest } from "./generated/TodayStatisticsRequest";
 import type { PortableExportResultDto } from "./generated/PortableExportResultDto";
 import type { ReconcileStudyQueueRequest } from "./generated/ReconcileStudyQueueRequest";
 import type { StudyQueueEntryDto } from "./generated/StudyQueueEntryDto";
@@ -71,6 +73,12 @@ export const api = {
 
   getTodayOverview(request: TodayRequest): Promise<TodayOverviewDto> {
     return invoke("get_today_overview", { request });
+  },
+
+  getTodayStatistics(
+    request: TodayStatisticsRequest,
+  ): Promise<TodayStatisticsDto> {
+    return invoke("get_today_statistics", { request });
   },
 
   prepareStudy(request: TodayRequest): Promise<StudyPlanDto> {

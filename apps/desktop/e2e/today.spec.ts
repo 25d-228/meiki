@@ -86,6 +86,8 @@ test("shows empty, overdue, and capped workload states", async ({ page }) => {
   await openToday(page);
   await expect(page.getByText("You’re caught up")).toBeVisible();
   await expect(page.getByText(/Next review:/)).toBeVisible();
+  await expect(page.getByText("No active reviews yet.")).toBeVisible();
+  await expect(page.getByText("No reviews", { exact: true })).toHaveCount(2);
   await expect(page.getByRole("button", { name: "Start study" })).toBeEnabled();
 
   await page.goto("/?today=overdue");
@@ -110,6 +112,105 @@ test("shows empty, overdue, and capped workload states", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("loads local statistics without runtime network requests", async ({
+  page,
+}) => {
+  const runtimeRequests: string[] = [];
+  page.on("request", (request) => {
+    if (["fetch", "xhr"].includes(request.resourceType())) {
+      runtimeRequests.push(request.url());
+    }
+  });
+  await page.goto("/");
+  await openToday(page);
+  await expect(page.getByText("Cards learned today")).toBeVisible();
+  expect(runtimeRequests).toEqual([]);
+});
+
+test("shows scoped summaries and accessible bounded activity charts", async ({
+  page,
+}) => {
+  await page.goto("/?today=normal");
+  await openToday(page);
+
+  await expect(page.getByText("Cards learned today")).toBeVisible();
+  await expect(page.getByText("Reviews today")).toBeVisible();
+  await expect(page.getByText("60%")).toBeVisible();
+  await expect(page.getByText("40%")).toBeVisible();
+  await expect(page.getByText("3 days")).toBeVisible();
+  const activity = page.getByRole("img", {
+    name: /Daily review activity from/,
+  });
+  const accuracy = page.getByRole("img", {
+    name: /Daily correct and error reviews from/,
+  });
+  await expect(activity).toBeVisible();
+  await expect(accuracy).toBeVisible();
+  await expect(activity.locator("rect")).toHaveCount(364);
+  await expect(accuracy.locator("rect.correct-bar")).toHaveCount(30);
+  await expect(accuracy.locator("rect.error-bar")).toHaveCount(30);
+  expect(await page.locator(".statistics [tabindex]").count()).toBe(0);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+
+  await page.getByLabel("Deck").selectOption("travel-deck");
+  await expect(
+    page.locator(".statistics-summary").getByText("2", { exact: true }),
+  ).toBeVisible();
+  expect((await lastRequest(page, "get_today_statistics"))?.args).toMatchObject(
+    {
+      request: {
+        deck_id: "travel-deck",
+        day_boundary_minutes: 240,
+      },
+    },
+  );
+});
+
+test("keeps study available when statistics fail and retries only statistics", async ({
+  page,
+}) => {
+  await page.goto("/?failure=statistics");
+  await openToday(page);
+
+  await expect(page.getByText("Ready when you are")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start study" })).toBeEnabled();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Review statistics are unavailable");
+  await expect(alert).not.toContainText("database");
+  await alert.getByRole("button", { name: "Try statistics again" }).click();
+  await expect(page.getByText("Cards learned today")).toBeVisible();
+  await expect(page.getByText("Review statistics are unavailable")).toHaveCount(
+    0,
+  );
+  expect(
+    await page.evaluate(
+      () =>
+        (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+          (request) => request.command === "get_today_overview",
+        ).length,
+    ),
+  ).toBe(1);
+});
+
+test("an empty selected deck does not fall back to all-decks statistics", async ({
+  page,
+}) => {
+  await page.goto("/?statistics=focused-empty");
+  await openToday(page);
+  await expect(page.getByText("5", { exact: true })).toBeVisible();
+
+  await page.getByLabel("Deck").selectOption("travel-deck");
+  await expect(page.getByText("No active reviews yet.")).toBeVisible();
+  await expect(page.getByText("No reviews", { exact: true })).toHaveCount(2);
+  await expect(
+    page.locator(".statistics-summary").getByText("5", { exact: true }),
+  ).toHaveCount(0);
+});
+
 test("maps deck and time-budget controls to command requests", async ({
   page,
 }) => {
@@ -121,6 +222,11 @@ test("maps deck and time-budget controls to command requests", async ({
   expect((await lastRequest(page, "get_today_overview"))?.args).toMatchObject({
     request: { deck_id: "travel-deck" },
   });
+  expect((await lastRequest(page, "get_today_statistics"))?.args).toMatchObject(
+    {
+      request: { deck_id: "travel-deck" },
+    },
+  );
 
   await page
     .locator("#main-content")
@@ -574,6 +680,15 @@ test("renders and continues a persisted queue fixture", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Today", level: 1 }),
   ).toBeVisible();
+  await expect(page.getByText("Review statistics")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+          (request) => request.command === "get_today_statistics",
+        ).length,
+    ),
+  ).toBeGreaterThanOrEqual(2);
   expect(
     await page.evaluate(() => localStorage.getItem("meiki-active-study-queue")),
   ).toBeNull();

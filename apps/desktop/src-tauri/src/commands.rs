@@ -10,8 +10,8 @@ use meiki_application::{
     ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
     ResetDeckProgressRequest, ResetDeckProgressResultDto, RevealDto, SchedulerParametersExportDto,
     SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto,
-    StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest,
-    UndoReviewResultDto, UpdateSchedulerSettingsRequest,
+    StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto, TodayRequest, TodayStatisticsDto,
+    TodayStatisticsRequest, UndoReviewRequest, UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 
 type CommandResult<T> = Result<T, String>;
@@ -32,6 +32,13 @@ pub(crate) fn get_today_overview(
     request: &TodayRequest,
 ) -> CommandResult<TodayOverviewDto> {
     map_error(service.get_today_overview(request))
+}
+
+pub(crate) fn get_today_statistics(
+    service: &ApplicationService,
+    request: &TodayStatisticsRequest,
+) -> CommandResult<TodayStatisticsDto> {
+    map_error(service.get_today_statistics(request))
 }
 
 pub(crate) fn prepare_study(

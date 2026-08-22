@@ -1610,6 +1610,12 @@ test("confirms one deck reset, refreshes Decks and Today, and preserves Today se
   await page.getByRole("button", { name: "Today", exact: true }).click();
   await expect(page.getByLabel("Deck")).toHaveValue("travel-deck");
   await expect(page.getByText("0 due and 2 new.")).toBeVisible();
+  await expect(page.getByText("No active reviews yet.")).toBeVisible();
+  expect((await lastRequest(page, "get_today_statistics"))?.args).toMatchObject(
+    {
+      request: { deck_id: "travel-deck" },
+    },
+  );
 });
 
 test("reports a reset no-op without changing deck counts", async ({ page }) => {
