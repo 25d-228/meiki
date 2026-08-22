@@ -200,6 +200,19 @@ for (const visualCase of visualCases) {
     if (visualCase.screen === "Study") {
       await expect(page.locator("#study-prompt")).toBeVisible();
     }
+    if (visualCase.screen === "Today") {
+      await expect(
+        page.getByRole("heading", { name: "Review statistics" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("img", { name: /Daily review activity from/ }),
+      ).toBeVisible();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+    }
     if (visualCase.name.startsWith("study-audio")) {
       await expect(page.getByRole("slider", { name: /Seek/ })).toBeVisible();
       expect(
@@ -217,6 +230,45 @@ for (const visualCase of visualCases) {
     await expect(page).toHaveScreenshot(`${visualCase.name}.png`, {
       animations: "disabled",
       caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
+for (const statisticsCase of [
+  {
+    name: "today-statistics-dashboard-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "today-statistics-dashboard-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${statisticsCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/?today=normal",
+      screen: "Today",
+      theme: statisticsCase.theme,
+      viewport: statisticsCase.viewport,
+    });
+    await expect(
+      page.getByRole("heading", { name: "Review statistics" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("img", { name: /Daily review activity from/ }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${statisticsCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      fullPage: true,
       maxDiffPixelRatio: 0.12,
     });
   });

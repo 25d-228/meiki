@@ -2328,6 +2328,373 @@ fn deck_progress_reset_noop_writes_nothing_and_precommit_failure_rolls_back() {
 }
 
 #[test]
+fn active_review_days_use_comparison_and_exclude_compensated_history() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let deck_id = &bundle.decks[0].deck.id;
+    let first_card_id = &bundle.decks[0].notes[0].cards[0].card.id;
+    let second_card_id = &bundle.decks[0].notes[0].cards[1].card.id;
+    let reviewed_at_ms = 1_000_000_000;
+
+    let mut exact = event_for_card(&storage, first_card_id, "statistics-exact", reviewed_at_ms);
+    exact.chosen_grade = Grade::Again;
+    storage.commit_review(&exact).unwrap();
+    let mut near_match = event_for_card(
+        &storage,
+        first_card_id,
+        "statistics-near-match",
+        reviewed_at_ms + 1,
+    );
+    near_match.comparison = ComparisonResult::NearMatch;
+    near_match.chosen_grade = Grade::Good;
+    storage.commit_review(&near_match).unwrap();
+    let mut empty = event_for_card(
+        &storage,
+        first_card_id,
+        "statistics-empty",
+        reviewed_at_ms + 2,
+    );
+    empty.comparison = ComparisonResult::Empty;
+    empty.chosen_grade = Grade::Easy;
+    storage.commit_review(&empty).unwrap();
+    let mut accepted = event_for_card(
+        &storage,
+        second_card_id,
+        "statistics-accepted",
+        reviewed_at_ms + 3,
+    );
+    accepted.comparison = ComparisonResult::AcceptedVariant;
+    accepted.chosen_grade = Grade::Again;
+    storage.commit_review(&accepted).unwrap();
+    let mut incorrect = event_for_card(
+        &storage,
+        second_card_id,
+        "statistics-incorrect",
+        reviewed_at_ms + 4,
+    );
+    incorrect.comparison = ComparisonResult::Incorrect;
+    incorrect.chosen_grade = Grade::Easy;
+    storage.commit_review(&incorrect).unwrap();
+
+    let days = storage.active_review_days(Some(deck_id), 0).unwrap();
+    assert_eq!(days.len(), 1);
+    assert_eq!(days[0].reviews, 5);
+    assert_eq!(days[0].correct_reviews, 2);
+    assert_eq!(days[0].error_reviews, 3);
+    assert_eq!(days[0].learned_cards, 2);
+
+    storage
+        .undo_last_review(
+            second_card_id,
+            "statistics-incorrect",
+            "statistics-undo",
+            reviewed_at_ms + 5,
+        )
+        .unwrap();
+    let days = storage.active_review_days(Some(deck_id), 0).unwrap();
+    assert_eq!(days[0].reviews, 4);
+    assert_eq!(days[0].correct_reviews, 2);
+    assert_eq!(days[0].error_reviews, 2);
+    assert_eq!(days[0].learned_cards, 2);
+
+    let mut next_undo = 0_u8;
+    storage
+        .reset_deck_progress(deck_id, reviewed_at_ms + 6, || {
+            next_undo += 1;
+            format!("statistics-reset-{next_undo}")
+        })
+        .unwrap();
+    assert!(
+        storage
+            .active_review_days(Some(deck_id), 0)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn active_review_days_follow_current_deck_scope_and_exclude_trash_and_removal() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let first_deck_id = &bundle.decks[0].deck.id;
+    let second_deck_id = &bundle.decks[1].deck.id;
+    let first_card_id = &bundle.decks[0].notes[0].cards[0].card.id;
+    let second_card_id = &bundle.decks[1].notes[0].cards[0].card.id;
+    storage
+        .commit_review(&event_for_card(
+            &storage,
+            first_card_id,
+            "statistics-first-deck",
+            1_000_000_000,
+        ))
+        .unwrap();
+    storage
+        .commit_review(&event_for_card(
+            &storage,
+            second_card_id,
+            "statistics-second-deck",
+            1_000_000_001,
+        ))
+        .unwrap();
+    let mut suspended = storage.get_card(first_card_id).unwrap();
+    suspended.suspended = true;
+    suspended.updated_at_ms += 1;
+    storage.update_card(&suspended).unwrap();
+
+    assert_eq!(
+        storage.active_review_days(Some(first_deck_id), 0).unwrap()[0].reviews,
+        1
+    );
+    assert_eq!(storage.active_review_days(None, 0).unwrap()[0].reviews, 2);
+
+    storage
+        .move_deck_cards(
+            std::slice::from_ref(second_card_id),
+            first_deck_id,
+            1_000_000_002,
+        )
+        .unwrap();
+    assert_eq!(
+        storage.active_review_days(Some(first_deck_id), 0).unwrap()[0].reviews,
+        2
+    );
+    assert!(
+        storage
+            .active_review_days(Some(second_deck_id), 0)
+            .unwrap()
+            .is_empty()
+    );
+
+    storage
+        .set_deck_cards_deleted(
+            std::slice::from_ref(second_card_id),
+            Some(1_000_000_003),
+            1_000_000_003,
+        )
+        .unwrap();
+    assert_eq!(storage.active_review_days(None, 0).unwrap()[0].reviews, 1);
+
+    let installed = storage.installed_bundles().unwrap().remove(0);
+    storage
+        .remove_bundle(
+            &installed.language_tag,
+            installed.deck_count,
+            installed.active_card_count,
+            1_000_000_004,
+            |_, _| {},
+        )
+        .unwrap();
+    assert!(storage.active_review_days(None, 0).unwrap().is_empty());
+}
+
+#[cfg(unix)]
+type ReviewDayExpectation = (&'static str, u64, u64, u64, u64);
+
+#[cfg(unix)]
+type ReviewBoundaryExpectation = (u16, &'static [ReviewDayExpectation]);
+
+#[cfg(unix)]
+struct ReviewTimeZoneFixture {
+    timestamps: &'static [&'static str],
+    midnight_expected: &'static [ReviewDayExpectation],
+    boundary_expectations: &'static [ReviewBoundaryExpectation],
+}
+
+#[cfg(unix)]
+fn review_time_zone_fixture(time_zone: &str) -> ReviewTimeZoneFixture {
+    match time_zone {
+        "America/New_York" => ReviewTimeZoneFixture {
+            timestamps: &[
+                "2025-03-09T04:59:00Z",
+                "2025-03-09T05:00:00Z",
+                "2025-03-09T06:59:00Z",
+                "2025-03-09T07:00:00Z",
+                "2025-03-09T08:00:00Z",
+                "2025-11-02T03:59:00Z",
+                "2025-11-02T04:00:00Z",
+                "2025-11-02T05:59:00Z",
+                "2025-11-02T06:00:00Z",
+                "2025-11-02T09:00:00Z",
+            ],
+            midnight_expected: &[
+                ("2025-03-08", 1, 1, 0, 1),
+                ("2025-03-09", 4, 4, 0, 0),
+                ("2025-11-01", 1, 1, 0, 0),
+                ("2025-11-02", 4, 4, 0, 0),
+            ],
+            boundary_expectations: &[
+                (
+                    90,
+                    &[
+                        ("2025-03-08", 2, 2, 0, 1),
+                        ("2025-03-09", 3, 3, 0, 0),
+                        ("2025-11-01", 2, 2, 0, 0),
+                        ("2025-11-02", 3, 3, 0, 0),
+                    ],
+                ),
+                (
+                    150,
+                    &[
+                        ("2025-03-08", 4, 4, 0, 1),
+                        ("2025-03-09", 1, 1, 0, 0),
+                        ("2025-11-01", 4, 4, 0, 0),
+                        ("2025-11-02", 1, 1, 0, 0),
+                    ],
+                ),
+            ],
+        },
+        "Asia/Kolkata" => ReviewTimeZoneFixture {
+            timestamps: &[
+                "2025-01-14T18:29:00Z",
+                "2025-01-14T18:30:00Z",
+                "2025-01-14T22:29:00Z",
+                "2025-01-14T22:30:00Z",
+            ],
+            midnight_expected: &[("2025-01-14", 1, 1, 0, 1), ("2025-01-15", 3, 3, 0, 0)],
+            boundary_expectations: &[(
+                240,
+                &[("2025-01-14", 3, 3, 0, 1), ("2025-01-15", 1, 1, 0, 0)],
+            )],
+        },
+        "Asia/Kathmandu" => ReviewTimeZoneFixture {
+            timestamps: &[
+                "2025-01-14T18:14:00Z",
+                "2025-01-14T18:15:00Z",
+                "2025-01-14T22:14:00Z",
+                "2025-01-14T22:15:00Z",
+            ],
+            midnight_expected: &[("2025-01-14", 1, 1, 0, 1), ("2025-01-15", 3, 3, 0, 0)],
+            boundary_expectations: &[(
+                240,
+                &[("2025-01-14", 3, 3, 0, 1), ("2025-01-15", 1, 1, 0, 0)],
+            )],
+        },
+        other => panic!("unsupported review statistics time zone {other}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn active_review_days_time_zone_process() {
+    let Some(time_zone) = std::env::var_os("MEIKI_TEST_REVIEW_TIME_ZONE") else {
+        return;
+    };
+    let time_zone = time_zone.to_str().unwrap();
+    let fixture = review_time_zone_fixture(time_zone);
+
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(100_000).unwrap();
+    for (index, timestamp) in fixture.timestamps.iter().enumerate() {
+        let reviewed_at_ms = storage
+            .connection
+            .query_row(
+                "SELECT CAST(strftime('%s', ?1) AS INTEGER) * 1000",
+                [timestamp],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        storage
+            .commit_review(&sample_event(
+                &storage,
+                &format!("time-zone-review-{index}"),
+                reviewed_at_ms,
+            ))
+            .unwrap();
+    }
+
+    let assert_days = |boundary, expected| {
+        let days = storage.active_review_days(None, boundary).unwrap();
+        let actual = days
+            .iter()
+            .map(|day| {
+                (
+                    day.study_day.as_str(),
+                    day.reviews,
+                    day.correct_reviews,
+                    day.error_reviews,
+                    day.learned_cards,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{time_zone} at minute {boundary}");
+    };
+    assert_days(0, fixture.midnight_expected);
+    for &(boundary, expected) in fixture.boundary_expectations {
+        assert_days(boundary, expected);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn active_review_days_bucket_dst_transitions_and_non_hour_offsets() {
+    for time_zone in ["America/New_York", "Asia/Kolkata", "Asia/Kathmandu"] {
+        // SQLite reads process-global local-time state, so each zone must be
+        // fixed before a separate test process initializes the connection.
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::active_review_days_time_zone_process")
+            .arg("--nocapture")
+            .env("TZ", time_zone)
+            .env("MEIKI_TEST_REVIEW_TIME_ZONE", time_zone)
+            .status()
+            .unwrap();
+        assert!(status.success(), "review statistics failed in {time_zone}");
+    }
+}
+
+#[test]
+fn active_review_days_apply_the_configured_local_boundary() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(100_000).unwrap();
+    let local_timestamp = |storage: &Storage, value: &str| {
+        storage
+            .connection
+            .query_row(
+                "SELECT CAST(strftime('%s', ?1, 'utc') AS INTEGER) * 1000",
+                [value],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let before_boundary = local_timestamp(&storage, "2025-01-15 03:59:00");
+    let at_boundary = local_timestamp(&storage, "2025-01-15 04:00:00");
+    storage
+        .commit_review(&event_for_card(
+            &storage,
+            SAMPLE_CARD_ID,
+            "statistics-before-boundary",
+            before_boundary,
+        ))
+        .unwrap();
+    storage
+        .commit_review(&event_for_card(
+            &storage,
+            SAMPLE_CARD_ID,
+            "statistics-at-boundary",
+            at_boundary,
+        ))
+        .unwrap();
+
+    let midnight_days = storage.active_review_days(None, 0).unwrap();
+    assert_eq!(midnight_days.len(), 1);
+    assert_eq!(midnight_days[0].study_day, "2025-01-15");
+    assert_eq!(midnight_days[0].reviews, 2);
+
+    let four_am_days = storage.active_review_days(None, 240).unwrap();
+    assert_eq!(four_am_days.len(), 2);
+    assert_eq!(four_am_days[0].study_day, "2025-01-14");
+    assert_eq!(four_am_days[0].reviews, 1);
+    assert_eq!(four_am_days[1].study_day, "2025-01-15");
+    assert_eq!(four_am_days[1].reviews, 1);
+}
+
+#[test]
 fn review_events_cannot_be_changed_or_deleted_in_place() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();

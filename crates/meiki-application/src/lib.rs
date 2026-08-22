@@ -59,7 +59,7 @@ pub use portable::{
 };
 pub use today::{
     ALL_DECKS_ID, StudyAvailabilityDto, StudyPlanDto, TodayDeckDto, TodayOverviewDto,
-    TodayQueueCardDto, TodayRequest,
+    TodayQueueCardDto, TodayRequest, TodayStatisticsDto, TodayStatisticsRequest, TodayStudyDayDto,
 };
 
 #[derive(Debug, Error)]
@@ -1788,6 +1788,9 @@ pub fn export_typescript_contracts(output: &Path) -> Result<(), ContractExportEr
     TodayDeckDto::export_all_to(output)?;
     TodayQueueCardDto::export_all_to(output)?;
     TodayOverviewDto::export_all_to(output)?;
+    TodayStatisticsRequest::export_all_to(output)?;
+    TodayStudyDayDto::export_all_to(output)?;
+    TodayStatisticsDto::export_all_to(output)?;
     PortableExportResultDto::export_all_to(output)?;
     BundleDeckInstallStatusDto::export_all_to(output)?;
     BundleDeckPreviewDto::export_all_to(output)?;

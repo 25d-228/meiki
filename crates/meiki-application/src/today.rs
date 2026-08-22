@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 
+use chrono::{Days, Local, NaiveDate, TimeZone};
 use meiki_domain::{CardLifecycle, ReviewEvent};
 use meiki_scheduler::{DeckIntakeCandidate, allocate_unseen_round_robin};
-use meiki_storage::{DeckRepository, SchedulerProfileRepository, Storage};
+use meiki_storage::{ActiveReviewDay, DeckRepository, SchedulerProfileRepository, Storage};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -28,6 +29,39 @@ pub struct TodayRequest {
     pub day_start_ms: i64,
     #[ts(type = "number")]
     pub day_end_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct TodayStatisticsRequest {
+    pub deck_id: String,
+    #[ts(type = "number")]
+    pub now_ms: i64,
+    #[ts(type = "number")]
+    pub day_start_ms: i64,
+    #[ts(type = "number")]
+    pub day_end_ms: i64,
+    pub day_boundary_minutes: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct TodayStudyDayDto {
+    pub date: String,
+    pub reviews: u32,
+    pub correct_reviews: u32,
+    pub error_reviews: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct TodayStatisticsDto {
+    pub cards_learned_today: u32,
+    pub reviews_today: u32,
+    pub correct_reviews_today: u32,
+    pub error_reviews_today: u32,
+    pub correct_rate_basis_points: Option<u16>,
+    pub error_rate_basis_points: Option<u16>,
+    pub longest_streak: u32,
+    pub review_activity: Vec<TodayStudyDayDto>,
+    pub recent_reviews: Vec<TodayStudyDayDto>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
@@ -124,6 +158,28 @@ struct TodayInputs {
 }
 
 impl ApplicationService {
+    /// Aggregates active review history for the selected Today scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the local day is invalid, the selected deck no
+    /// longer exists, or active review history cannot be loaded.
+    pub fn get_today_statistics(
+        &self,
+        request: &TodayStatisticsRequest,
+    ) -> Result<TodayStatisticsDto, ApplicationError> {
+        validate_statistics_request(request)?;
+        let storage = self.open_storage()?;
+        let deck_id = (request.deck_id != ALL_DECKS_ID).then_some(request.deck_id.as_str());
+        let days = storage.active_review_days(deck_id, request.day_boundary_minutes)?;
+        let today = Local
+            .timestamp_millis_opt(request.day_start_ms)
+            .single()
+            .ok_or(ApplicationError::InvalidTimestamp(request.day_start_ms))?
+            .date_naive();
+        build_today_statistics(days, today)
+    }
+
     /// Builds a deterministic queue projection for one local day.
     ///
     /// Automatic mode may persist derived controller metadata. Card
@@ -405,6 +461,116 @@ fn validate_day(request: &TodayRequest) -> Result<(), ApplicationError> {
     Ok(())
 }
 
+fn validate_statistics_request(request: &TodayStatisticsRequest) -> Result<(), ApplicationError> {
+    validate_day(&TodayRequest {
+        deck_id: request.deck_id.clone(),
+        now_ms: request.now_ms,
+        day_start_ms: request.day_start_ms,
+        day_end_ms: request.day_end_ms,
+    })?;
+    if request.day_boundary_minutes >= 1_440 {
+        return Err(ApplicationError::InvalidToday(
+            "the local study-day boundary is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn build_today_statistics(
+    days: Vec<ActiveReviewDay>,
+    today: NaiveDate,
+) -> Result<TodayStatisticsDto, ApplicationError> {
+    let mut by_date = BTreeMap::new();
+    for day in days {
+        let date = NaiveDate::parse_from_str(&day.study_day, "%Y-%m-%d").map_err(|_| {
+            ApplicationError::Storage(meiki_storage::StorageError::InvalidAggregate(
+                "review history contains an invalid local study day".to_owned(),
+            ))
+        })?;
+        if date <= today {
+            by_date.insert(date, day);
+        }
+    }
+
+    let current = by_date.get(&today);
+    let reviews_today = current.map_or(0, |day| day.reviews);
+    let correct_reviews_today = current.map_or(0, |day| day.correct_reviews);
+    let error_reviews_today = current.map_or(0, |day| day.error_reviews);
+    let rate = |count: u64| {
+        (reviews_today != 0).then(|| {
+            u16::try_from(count.saturating_mul(10_000) / reviews_today)
+                .expect("a review ratio cannot exceed 10,000 basis points")
+        })
+    };
+
+    Ok(TodayStatisticsDto {
+        cards_learned_today: desktop_u64_count(
+            current.map_or(0, |day| day.learned_cards),
+            "cards learned today",
+        )?,
+        reviews_today: desktop_u64_count(reviews_today, "reviews today")?,
+        correct_reviews_today: desktop_u64_count(correct_reviews_today, "correct reviews today")?,
+        error_reviews_today: desktop_u64_count(error_reviews_today, "error reviews today")?,
+        correct_rate_basis_points: rate(correct_reviews_today),
+        error_rate_basis_points: rate(error_reviews_today),
+        longest_streak: longest_streak(&by_date)?,
+        review_activity: study_day_window(&by_date, today, 364)?,
+        recent_reviews: study_day_window(&by_date, today, 30)?,
+    })
+}
+
+fn study_day_window(
+    days: &BTreeMap<NaiveDate, ActiveReviewDay>,
+    today: NaiveDate,
+    length: u64,
+) -> Result<Vec<TodayStudyDayDto>, ApplicationError> {
+    let first = today
+        .checked_sub_days(Days::new(length.saturating_sub(1)))
+        .ok_or(ApplicationError::InvalidTimestamp(0))?;
+    (0..length)
+        .map(|offset| {
+            let date = first
+                .checked_add_days(Days::new(offset))
+                .ok_or(ApplicationError::InvalidTimestamp(0))?;
+            let day = days.get(&date);
+            Ok(TodayStudyDayDto {
+                date: date.format("%Y-%m-%d").to_string(),
+                reviews: desktop_u64_count(day.map_or(0, |value| value.reviews), "daily reviews")?,
+                correct_reviews: desktop_u64_count(
+                    day.map_or(0, |value| value.correct_reviews),
+                    "daily correct reviews",
+                )?,
+                error_reviews: desktop_u64_count(
+                    day.map_or(0, |value| value.error_reviews),
+                    "daily error reviews",
+                )?,
+            })
+        })
+        .collect()
+}
+
+fn longest_streak(days: &BTreeMap<NaiveDate, ActiveReviewDay>) -> Result<u32, ApplicationError> {
+    let mut previous = None;
+    let mut current = 0_u64;
+    let mut longest = 0_u64;
+    for (&date, _) in days.iter().filter(|(_, day)| day.reviews > 0) {
+        current = if previous.is_some_and(|previous_date: NaiveDate| {
+            previous_date.checked_add_days(Days::new(1)) == Some(date)
+        }) {
+            current.saturating_add(1)
+        } else {
+            1
+        };
+        longest = longest.max(current);
+        previous = Some(date);
+    }
+    desktop_u64_count(longest, "longest review streak")
+}
+
+fn desktop_u64_count(value: u64, field: &'static str) -> Result<u32, ApplicationError> {
+    u32::try_from(value).map_err(|_| ApplicationError::NumericRange(field))
+}
+
 fn plan_today(
     candidates: &[QueueCandidate],
     reviews: &[ReviewEvent],
@@ -581,7 +747,7 @@ mod tests {
         ReviewEventKind, ScheduleState, StudySettingsOverride,
     };
     use meiki_storage::{
-        CardRepository, DeckRepository, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID,
+        ActiveReviewDay, CardRepository, DeckRepository, SAMPLE_CARD_ID, SAMPLE_SOURCE_ID,
         SchedulerProfileRepository, SourceNoteRepository, Storage,
     };
     use tempfile::{TempDir, tempdir};
@@ -589,7 +755,7 @@ mod tests {
     use super::{
         ALL_DECKS_ID, ApplicationError, ApplicationService, QueueCandidate,
         ReconcileStudyQueueRequest, StudyAvailabilityDto, StudyQueueEntryDto, TodayRequest,
-        plan_today,
+        TodayStatisticsRequest, build_today_statistics, plan_today,
     };
     use crate::{
         DeckCardRequest, DeckCardTrashDto, GradeDto, GradeReviewRequest, MakeClozeRequest,
@@ -1365,6 +1531,103 @@ mod tests {
     }
 
     #[test]
+    fn statistics_build_fixed_windows_rates_and_longest_recorded_streak() {
+        let statistics = build_today_statistics(
+            vec![
+                ActiveReviewDay {
+                    study_day: "2024-03-05".into(),
+                    reviews: 3,
+                    correct_reviews: 2,
+                    error_reviews: 1,
+                    learned_cards: 2,
+                },
+                ActiveReviewDay {
+                    study_day: "2024-03-06".into(),
+                    reviews: 1,
+                    correct_reviews: 1,
+                    error_reviews: 0,
+                    learned_cards: 0,
+                },
+                ActiveReviewDay {
+                    study_day: "2024-03-08".into(),
+                    reviews: 4,
+                    correct_reviews: 1,
+                    error_reviews: 3,
+                    learned_cards: 1,
+                },
+            ],
+            chrono::NaiveDate::from_ymd_opt(2024, 3, 8).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(statistics.cards_learned_today, 1);
+        assert_eq!(statistics.reviews_today, 4);
+        assert_eq!(statistics.correct_rate_basis_points, Some(2_500));
+        assert_eq!(statistics.error_rate_basis_points, Some(7_500));
+        assert_eq!(statistics.longest_streak, 2);
+        assert_eq!(statistics.review_activity.len(), 364);
+        assert_eq!(statistics.recent_reviews.len(), 30);
+        assert_eq!(
+            statistics.review_activity.last().unwrap().date,
+            "2024-03-08"
+        );
+        assert_eq!(statistics.recent_reviews.last().unwrap().reviews, 4);
+        assert_eq!(statistics.recent_reviews[28].reviews, 0);
+    }
+
+    #[test]
+    fn statistics_with_no_reviews_report_zero_without_a_rate() {
+        let statistics = build_today_statistics(
+            Vec::new(),
+            chrono::NaiveDate::from_ymd_opt(2024, 3, 8).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(statistics.cards_learned_today, 0);
+        assert_eq!(statistics.reviews_today, 0);
+        assert_eq!(statistics.correct_rate_basis_points, None);
+        assert_eq!(statistics.error_rate_basis_points, None);
+        assert_eq!(statistics.longest_streak, 0);
+        assert!(
+            statistics
+                .review_activity
+                .iter()
+                .all(|day| day.reviews == 0)
+        );
+    }
+
+    #[test]
+    fn statistics_use_the_requested_scope_and_validate_the_day_boundary() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("collection.db");
+        let mut storage = Storage::open(&path).unwrap();
+        storage.seed_walking_skeleton(100_000).unwrap();
+        storage
+            .commit_review(&review(SAMPLE_CARD_ID, 100_000, 1_000, 0))
+            .unwrap();
+        drop(storage);
+        let service = ApplicationService::new(&path);
+        let request = TodayStatisticsRequest {
+            deck_id: meiki_storage::DEFAULT_DECK_ID.into(),
+            now_ms: 100_000,
+            day_start_ms: 0,
+            day_end_ms: 86_400_000,
+            day_boundary_minutes: 0,
+        };
+
+        let statistics = service.get_today_statistics(&request).unwrap();
+        assert_eq!(statistics.reviews_today, 1);
+        assert_eq!(statistics.cards_learned_today, 1);
+
+        let mut invalid = request;
+        invalid.day_boundary_minutes = 1_440;
+        assert!(matches!(
+            service.get_today_statistics(&invalid),
+            Err(ApplicationError::InvalidToday(_))
+        ));
+    }
+
+    #[test]
     #[ignore = "release performance budget; run with scripts/performance"]
     fn release_budget_storage_backed_today_controller_and_deck_search() {
         const CARD_COUNT: u32 = 15_000;
@@ -1394,6 +1657,18 @@ mod tests {
             .unwrap();
         let today_elapsed = today_started.elapsed();
 
+        let statistics_started = std::time::Instant::now();
+        let statistics = service
+            .get_today_statistics(&TodayStatisticsRequest {
+                deck_id: "performance-deck".into(),
+                now_ms: NOW_MS,
+                day_start_ms: NOW_MS - 60_000,
+                day_end_ms: NOW_MS + 86_400_000,
+                day_boundary_minutes: 0,
+            })
+            .unwrap();
+        let statistics_elapsed = statistics_started.elapsed();
+
         let deck_search_started = std::time::Instant::now();
         let deck_search = service
             .get_deck_cards(&DeckCardRequest {
@@ -1408,6 +1683,8 @@ mod tests {
         let deck_search_elapsed = deck_search_started.elapsed();
 
         assert_eq!(overview.due_reviews, 10_000);
+        assert_eq!(statistics.review_activity.len(), 364);
+        assert_eq!(statistics.recent_reviews.len(), 30);
         assert!(
             overview
                 .queue
@@ -1425,11 +1702,16 @@ mod tests {
             deck_search_elapsed <= Duration::from_secs(60),
             "storage-backed 15,000-card deck search exceeded 60 s: {deck_search_elapsed:?}"
         );
+        assert!(
+            statistics_elapsed <= Duration::from_secs(5),
+            "selected-deck Today statistics exceeded 5 s: {statistics_elapsed:?}"
+        );
         eprintln!(
             "release-budget storage_backed_15000 fixture_bytes={fixture_bytes} \
-             open_ms={} today_ms={} deck_search_ms={}",
+             open_ms={} today_ms={} statistics_ms={} deck_search_ms={}",
             open_elapsed.as_millis(),
             today_elapsed.as_millis(),
+            statistics_elapsed.as_millis(),
             deck_search_elapsed.as_millis()
         );
     }

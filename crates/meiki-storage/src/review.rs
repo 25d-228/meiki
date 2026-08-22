@@ -4,7 +4,7 @@ use meiki_domain::{
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::{
-    DeckProgressReset, ScheduleIntegrityReport, Storage, StorageError,
+    ActiveReviewDay, DeckProgressReset, ScheduleIntegrityReport, Storage, StorageError,
     repository::{card_lifecycle_from_database, card_lifecycle_to_database, load_schedule_row},
 };
 
@@ -12,6 +12,119 @@ struct CardProgressReset {
     events: Vec<ReviewEvent>,
     final_schedule: ScheduleState,
 }
+
+// A boundary inside a daylight-saving gap or repeated hour must use the same
+// forward-gap and earlier-duplicate behavior as `Date.setHours`.
+const ACTIVE_REVIEW_DAYS_QUERY: &str = r"WITH active_reviews AS (
+    SELECT
+        review.card_id,
+        review.reviewed_at_ms,
+        review.comparison,
+        review.previous_lifecycle,
+        date(
+            review.reviewed_at_ms / 1000,
+            'unixepoch',
+            'localtime'
+        ) AS local_date
+    FROM source_items
+    JOIN clozes ON clozes.source_item_id = source_items.id
+    JOIN cards ON cards.cloze_id = clozes.id
+    JOIN review_events AS review ON review.card_id = cards.id
+    LEFT JOIN review_events AS compensation
+      ON compensation.undoes_review_event_id = review.id
+    WHERE source_items.deleted_at_ms IS NULL
+      {deck_filter}
+      AND review.event_kind = 'review'
+      AND compensation.id IS NULL
+),
+review_dates AS (
+    SELECT DISTINCT local_date
+    FROM active_reviews
+),
+normalized_boundaries AS (
+    SELECT
+        local_date,
+        local_date || ' ' || printf(
+            '%02d:%02d:00',
+            ?1 / 60,
+            ?1 % 60
+        ) AS boundary_local,
+        unixepoch(
+            local_date || ' ' || printf(
+                '%02d:%02d:00',
+                ?1 / 60,
+                ?1 % 60
+            ),
+            'utc'
+        ) AS normalized_at_seconds
+    FROM review_dates
+),
+boundary_offset_samples AS (
+    SELECT
+        local_date,
+        boundary_local,
+        normalized_at_seconds,
+        unixepoch(datetime(
+            normalized_at_seconds + sample.offset_seconds,
+            'unixepoch',
+            'localtime'
+        )) - (normalized_at_seconds + sample.offset_seconds)
+            AS utc_offset_seconds
+    FROM normalized_boundaries
+    CROSS JOIN (
+        SELECT -43200 AS offset_seconds
+        UNION ALL SELECT 0
+        UNION ALL SELECT 43200
+    ) AS sample
+),
+resolved_boundaries AS (
+    SELECT
+        local_date,
+        COALESCE(
+            MIN(CASE
+                WHEN datetime(
+                    unixepoch(boundary_local) - utc_offset_seconds,
+                    'unixepoch',
+                    'localtime'
+                ) = boundary_local
+                THEN unixepoch(boundary_local) - utc_offset_seconds
+            END),
+            MIN(normalized_at_seconds)
+        ) * 1000 AS boundary_at_ms
+    FROM boundary_offset_samples
+    GROUP BY local_date
+),
+labeled_reviews AS (
+    SELECT
+        review.card_id,
+        review.comparison,
+        review.previous_lifecycle,
+        CASE
+            WHEN review.reviewed_at_ms < boundary.boundary_at_ms
+            THEN date(review.local_date, '-1 day')
+            ELSE review.local_date
+        END AS study_day
+    FROM active_reviews AS review
+    JOIN resolved_boundaries AS boundary
+      ON boundary.local_date = review.local_date
+)
+SELECT
+    study_day,
+    COUNT(*) AS reviews,
+    SUM(CASE
+        WHEN review.comparison IN ('exact', 'accepted_variant') THEN 1
+        ELSE 0
+    END) AS correct_reviews,
+    SUM(CASE
+        WHEN review.comparison IN ('near_match', 'incorrect', 'empty') THEN 1
+        ELSE 0
+    END) AS error_reviews,
+    COUNT(DISTINCT CASE
+        WHEN review.previous_lifecycle = 'unseen' THEN review.card_id
+    END) AS learned_cards
+FROM labeled_reviews AS review
+GROUP BY study_day
+ORDER BY study_day";
 
 impl Storage {
     /// Atomically appends a review event, advances the schedule projection, and
@@ -410,6 +523,64 @@ impl Storage {
         Ok(events)
     }
 
+    /// Aggregates active graded reviews into local study days for one active
+    /// deck, or for every active deck when `deck_id` is `None`.
+    ///
+    /// Suspended cards remain included. Trash and review events compensated by
+    /// undo events are excluded before aggregation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the selected deck is missing, the day
+    /// boundary is invalid, or the aggregate cannot be loaded.
+    pub fn active_review_days(
+        &self,
+        deck_id: Option<&str>,
+        day_boundary_minutes: u16,
+    ) -> Result<Vec<ActiveReviewDay>, StorageError> {
+        if day_boundary_minutes >= 1_440 {
+            return Err(StorageError::InvalidAggregate(
+                "review statistics require a valid study-day boundary".into(),
+            ));
+        }
+        if let Some(selected_deck_id) = deck_id {
+            let exists = self
+                .connection
+                .query_row(
+                    "SELECT 1 FROM decks WHERE id = ?1",
+                    [selected_deck_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !exists {
+                return Err(crate::entity_not_found("deck", selected_deck_id));
+            }
+        }
+
+        // Keeping the selected-deck predicate direct lets SQLite begin with
+        // the deck index instead of scanning unrelated review history.
+        let deck_filter = deck_id.map_or("", |_| "AND source_items.deck_id = ?2");
+        let query = ACTIVE_REVIEW_DAYS_QUERY.replace("{deck_filter}", deck_filter);
+        let mut statement = self.connection.prepare(&query)?;
+        let mut rows = if let Some(selected_deck_id) = deck_id {
+            statement.query(params![day_boundary_minutes, selected_deck_id])?
+        } else {
+            statement.query(params![day_boundary_minutes])?
+        };
+        let mut days = Vec::new();
+        while let Some(row) = rows.next()? {
+            days.push(ActiveReviewDay {
+                study_day: row.get(0)?,
+                reviews: nonnegative_count(row.get(1)?, "daily review count")?,
+                correct_reviews: nonnegative_count(row.get(2)?, "daily correct review count")?,
+                error_reviews: nonnegative_count(row.get(3)?, "daily error review count")?,
+                learned_cards: nonnegative_count(row.get(4)?, "daily learned card count")?,
+            });
+        }
+        Ok(days)
+    }
+
     /// Loads complete study-card aggregates for one deck.
     ///
     /// # Errors
@@ -502,6 +673,10 @@ impl Storage {
             .query_map([deck_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?)
     }
+}
+
+fn nonnegative_count(value: i64, field: &'static str) -> Result<u64, StorageError> {
+    u64::try_from(value).map_err(|_| StorageError::NumericRange(field))
 }
 
 fn build_card_progress_reset(

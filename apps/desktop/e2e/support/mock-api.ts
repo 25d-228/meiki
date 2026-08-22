@@ -71,6 +71,55 @@ export async function installMockApi(page: Page): Promise<void> {
       "/tmp/exports/meiki-e2e.meiki";
     window.__MEIKI_TEST_PICK_SCHEDULER_PARAMETERS__ = async () =>
       "/tmp/meiki-scheduler-parameters.json";
+    const studyDay = (date: Date): string =>
+      [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, "0"),
+        String(date.getDate()).padStart(2, "0"),
+      ].join("-");
+    const todayStatistics = (
+      dayStartMs: number,
+      empty: boolean,
+      focused: boolean,
+    ) => {
+      const end = new Date(dayStartMs);
+      const days = Array.from({ length: 364 }, (_, index) => {
+        const date = new Date(end);
+        date.setDate(date.getDate() - (363 - index));
+        const distance = 363 - index;
+        const reviews = empty
+          ? 0
+          : distance === 0
+            ? focused
+              ? 2
+              : 5
+            : distance === 1
+              ? 3
+              : distance === 2
+                ? 1
+                : distance === 9
+                  ? 4
+                  : 0;
+        return {
+          date: studyDay(date),
+          reviews,
+          correct_reviews: reviews === 0 ? 0 : Math.ceil(reviews / 2),
+          error_reviews: reviews === 0 ? 0 : Math.floor(reviews / 2),
+        };
+      });
+      const today = days.at(-1)!;
+      return {
+        cards_learned_today: empty ? 0 : focused ? 1 : 2,
+        reviews_today: today.reviews,
+        correct_reviews_today: today.correct_reviews,
+        error_reviews_today: today.error_reviews,
+        correct_rate_basis_points: empty ? null : focused ? 5_000 : 6_000,
+        error_rate_basis_points: empty ? null : focused ? 5_000 : 4_000,
+        longest_streak: empty ? 0 : 3,
+        review_activity: days,
+        recent_reviews: days.slice(-30),
+      };
+    };
     const nativePlay = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = async function () {
       if (new URLSearchParams(location.search).get("media") === "real-mp3") {
@@ -227,6 +276,31 @@ export async function installMockApi(page: Page): Promise<void> {
           };
         }
         return { ...resetOverview, decks: availableDecks };
+      }
+      if (command === "get_today_statistics") {
+        if (params.get("failure") === "statistics" && calls[command] === 1) {
+          throw new Error("database query exposed internal identity details");
+        }
+        const request = (
+          args as {
+            request: {
+              deck_id: string;
+              day_start_ms: number;
+            };
+          }
+        ).request;
+        const empty =
+          params.get("statistics") === "empty" ||
+          (params.get("statistics") === "focused-empty" &&
+            request.deck_id !== "__all_decks__") ||
+          todayName === "empty" ||
+          resetDeckIds.has(request.deck_id) ||
+          deletedDeckIds.has(request.deck_id);
+        return todayStatistics(
+          request.day_start_ms,
+          empty,
+          request.deck_id !== "__all_decks__",
+        );
       }
       if (command === "prepare_study") {
         if (params.get("collection") === "empty")

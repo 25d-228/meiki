@@ -100,6 +100,18 @@ for (const fixture of calendarCases) {
           day_end_ms: Date.parse(fixture.end),
         },
       });
+      const statisticsRequest = await lastRequest(
+        opened.page,
+        "get_today_statistics",
+      );
+      expect(statisticsRequest?.args).toMatchObject({
+        request: {
+          now_ms: Date.parse(fixture.now),
+          day_start_ms: Date.parse(fixture.start),
+          day_end_ms: Date.parse(fixture.end),
+          day_boundary_minutes: fixture.boundary === "midnight" ? 0 : 240,
+        },
+      });
     } finally {
       await opened.close();
     }
