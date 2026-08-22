@@ -8,10 +8,10 @@ use meiki_application::{
     DeleteDecksResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
     ImportSchedulerParametersRequest, MakeClozeRequest, PortableExportResultDto,
     ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
-    RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto,
-    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
-    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
-    UpdateSchedulerSettingsRequest,
+    ResetDeckProgressRequest, ResetDeckProgressResultDto, RevealDto, SchedulerParametersExportDto,
+    SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto,
+    StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest,
+    UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 
 type CommandResult<T> = Result<T, String>;
@@ -207,6 +207,13 @@ pub(crate) fn delete_decks(
     on_progress: impl FnMut(DeleteDeckProgressDto),
 ) -> CommandResult<DeleteDecksResultDto> {
     map_error(service.delete_decks(request, on_progress))
+}
+
+pub(crate) fn reset_deck_progress(
+    service: &ApplicationService,
+    request: &ResetDeckProgressRequest,
+) -> CommandResult<ResetDeckProgressResultDto> {
+    map_error(service.reset_deck_progress(request))
 }
 
 pub(crate) fn new_authoring_draft(

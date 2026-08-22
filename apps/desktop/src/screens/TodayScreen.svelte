@@ -22,14 +22,20 @@
     onSettings: () => void;
     onDeckContextChange: (value: string) => void;
     deletionRefresh: number;
+    progressResetRefresh: number;
   };
 
   const selectedDeckKey = "meiki-today-deck";
   const defaultDeckId = "default-deck";
   const allDecksId = "__all_decks__";
 
-  let { onStart, onSettings, onDeckContextChange, deletionRefresh }: Props =
-    $props();
+  let {
+    onStart,
+    onSettings,
+    onDeckContextChange,
+    deletionRefresh,
+    progressResetRefresh,
+  }: Props = $props();
   let overview = $state<TodayOverviewDto | null>(null);
   let activeQueue = $state<StudyQueueSession | null>(null);
   let selectedDeckId = $state(allDecksId);
@@ -38,6 +44,7 @@
   let error = $state("");
   let retryStudyStart = $state(false);
   let loadedDeletionRefresh = $state<number | null>(null);
+  let loadedProgressResetRefresh = $state<number | null>(null);
 
   onMount(() => {
     const storedQueue = readStudyQueue();
@@ -57,6 +64,16 @@
     }
     if (deletionRefresh === loadedDeletionRefresh) return;
     loadedDeletionRefresh = deletionRefresh;
+    void loadOverview();
+  });
+
+  $effect(() => {
+    if (loadedProgressResetRefresh === null) {
+      loadedProgressResetRefresh = progressResetRefresh;
+      return;
+    }
+    if (progressResetRefresh === loadedProgressResetRefresh) return;
+    loadedProgressResetRefresh = progressResetRefresh;
     void loadOverview();
   });
 

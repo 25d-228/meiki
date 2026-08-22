@@ -128,7 +128,7 @@ test("deck deletion progress exposes an accessible determinate state", async ({
   );
 });
 
-test("deck card actions and deletion confirmation are keyboard accessible", async ({
+test("deck reset and deletion actions are keyboard accessible", async ({
   page,
 }) => {
   await chooseTheme(page, "dark");
@@ -138,10 +138,23 @@ test("deck card actions and deletion confirmation are keyboard accessible", asyn
   });
   await actions.focus();
   await page.keyboard.press("Enter");
-  const deleteAction = page.getByRole("menuitem", { name: "Delete deck" });
-  await expect(deleteAction).toBeFocused();
+  const resetAction = page.getByRole("menuitem", { name: "Reset progress" });
+  await expect(resetAction).toBeFocused();
   await expectNoAccessibilityViolations(page);
 
+  await page.keyboard.press("Enter");
+  const resetConfirmation = page.getByRole("alertdialog", {
+    name: "Reset progress for “Travel phrases”?",
+  });
+  await expect(resetConfirmation).toBeVisible();
+  await expectNoAccessibilityViolations(page);
+  await resetConfirmation.getByRole("button", { name: "Cancel" }).click();
+  await expect(actions).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  const deleteAction = page.getByRole("menuitem", { name: "Delete deck" });
+  await expect(deleteAction).toBeFocused();
   await page.keyboard.press("Enter");
   const confirmation = page.getByRole("alertdialog", {
     name: "Delete “Travel phrases”?",

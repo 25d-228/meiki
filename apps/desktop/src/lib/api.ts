@@ -42,6 +42,8 @@ import type { DeleteDeckResultDto } from "./generated/DeleteDeckResultDto";
 import type { DeleteDecksRequest } from "./generated/DeleteDecksRequest";
 import type { DeleteDecksResultDto } from "./generated/DeleteDecksResultDto";
 import type { RenameDeckRequest } from "./generated/RenameDeckRequest";
+import type { ResetDeckProgressRequest } from "./generated/ResetDeckProgressRequest";
+import type { ResetDeckProgressResultDto } from "./generated/ResetDeckProgressResultDto";
 import type { BundlePreviewDto } from "./generated/BundlePreviewDto";
 import type { BundleImportRequest } from "./generated/BundleImportRequest";
 import type { BundleImportProgressDto } from "./generated/BundleImportProgressDto";
@@ -219,6 +221,12 @@ export const api = {
 
   renameDeck(request: RenameDeckRequest): Promise<DeckDto> {
     return invoke("rename_deck", { request });
+  },
+
+  resetDeckProgress(
+    request: ResetDeckProgressRequest,
+  ): Promise<ResetDeckProgressResultDto> {
+    return invoke("reset_deck_progress", { request });
   },
 
   deleteDeck(

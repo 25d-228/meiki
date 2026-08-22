@@ -45,6 +45,18 @@ async function openDeckDeleteAction(
   await page.getByRole("menuitem", { name: "Delete deck" }).click();
 }
 
+async function openDeckResetAction(
+  page: import("@playwright/test").Page,
+  deckId: string,
+  deckName: string,
+): Promise<void> {
+  await page
+    .getByTestId(`deck-${deckId}`)
+    .getByRole("button", { name: `Actions for ${deckName}` })
+    .click();
+  await page.getByRole("menuitem", { name: "Reset progress" }).click();
+}
+
 async function seedStudyState(
   page: import("@playwright/test").Page,
   queueDeckId: string,
@@ -97,6 +109,17 @@ async function batchDeleteRequestCount(
     () =>
       (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
         (request) => request.command === "delete_decks",
+      ).length,
+  );
+}
+
+async function resetDeckProgressRequestCount(
+  page: import("@playwright/test").Page,
+): Promise<number> {
+  return page.evaluate(
+    () =>
+      (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+        (request) => request.command === "reset_deck_progress",
       ).length,
   );
 }
@@ -1496,7 +1519,7 @@ test("wraps long names without horizontal overflow in Grid or narrow List", asyn
   ).toBe(true);
 });
 
-test("opens each deletable deck's actions by keyboard and keeps Unsorted non-deletable", async ({
+test("opens each deletable deck's reset action by keyboard and keeps Unsorted without actions", async ({
   page,
 }) => {
   await openDecks(page);
@@ -1506,6 +1529,10 @@ test("opens each deletable deck's actions by keyboard and keeps Unsorted non-del
   });
   await actions.focus();
   await page.keyboard.press("Enter");
+  const resetAction = page.getByRole("menuitem", { name: "Reset progress" });
+  await expect(resetAction).toBeVisible();
+  await expect(resetAction).toBeFocused();
+  await page.keyboard.press("ArrowDown");
   const deleteAction = page.getByRole("menuitem", { name: "Delete deck" });
   await expect(deleteAction).toBeVisible();
   await expect(deleteAction).toBeFocused();
@@ -1516,6 +1543,190 @@ test("opens each deletable deck's actions by keyboard and keeps Unsorted non-del
       .getByTestId("deck-default-deck")
       .getByRole("button", { name: /Actions for/ }),
   ).toHaveCount(0);
+});
+
+test("offers Reset progress for ordinary and bundle decks in Grid and List", async ({
+  page,
+}) => {
+  await page.goto("/?bundleRemoval=installed");
+  await openDecks(page);
+  for (const view of ["Grid", "List"] as const) {
+    if (view === "List") await selectDeckView(page, view);
+    for (const [deckId, deckName] of [
+      ["travel-deck", "Travel phrases"],
+      ["deck:ja-JP:00", "Japanese 00 — Kana, sound, and Japanese input"],
+    ] as const) {
+      await page
+        .getByTestId(`deck-${deckId}`)
+        .getByRole("button", { name: `Actions for ${deckName}` })
+        .click();
+      await expect(
+        page.getByRole("menuitem", { name: "Reset progress" }),
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
+    }
+  }
+});
+
+test("confirms one deck reset, refreshes Decks and Today, and preserves Today selection", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    localStorage.setItem("meiki-today-deck", "travel-deck");
+  });
+  await openDecks(page);
+  await openDeckResetAction(page, "travel-deck", "Travel phrases");
+
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Reset progress for “Travel phrases”?",
+  });
+  await expect(confirmation).toContainText(
+    "Reviewed cards in this deck will become new again.",
+  );
+  await expect(confirmation).toContainText(
+    "Cards, notes, media, suspension, deck settings, and bundle membership remain unchanged.",
+  );
+  await confirmation.getByRole("button", { name: "Reset progress" }).click();
+
+  await expect(
+    page.getByText("Reset progress for Travel phrases."),
+  ).toBeVisible();
+  const resetDeck = page.getByTestId("deck-travel-deck");
+  await expect(
+    resetDeck.locator("dl div").filter({ hasText: "Due" }).locator("dd"),
+  ).toHaveText("0");
+  await expect(
+    resetDeck.locator("dl div").filter({ hasText: "New" }).locator("dd"),
+  ).toHaveText("2");
+  expect(await resetDeckProgressRequestCount(page)).toBe(1);
+  expect((await lastRequest(page, "reset_deck_progress"))?.args).toMatchObject({
+    request: { deck_id: "travel-deck" },
+  });
+  expect(await lastRequest(page, "undo_review")).toBeUndefined();
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-today-deck")),
+  ).toBe("travel-deck");
+
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(page.getByLabel("Deck")).toHaveValue("travel-deck");
+  await expect(page.getByText("0 due and 2 new.")).toBeVisible();
+});
+
+test("reports a reset no-op without changing deck counts", async ({ page }) => {
+  await page.goto("/?deckReset=no-progress");
+  await openDecks(page);
+  await openDeckResetAction(page, "travel-deck", "Travel phrases");
+  await page
+    .getByRole("alertdialog", {
+      name: "Reset progress for “Travel phrases”?",
+    })
+    .getByRole("button", { name: "Reset progress" })
+    .click();
+
+  await expect(
+    page.getByText("There is no progress to reset in Travel phrases."),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByTestId("deck-travel-deck")
+      .locator("dl div")
+      .filter({ hasText: "New" })
+      .locator("dd"),
+  ).toHaveText("1");
+  expect(await resetDeckProgressRequestCount(page)).toBe(1);
+});
+
+for (const queueDeckId of [
+  "travel-deck",
+  "__all_decks__",
+  "default-deck",
+] as const) {
+  test(`cleans the ${queueDeckId} queue correctly after reset`, async ({
+    page,
+  }) => {
+    await seedStudyState(page, queueDeckId, "travel-deck");
+    await page.goto("/");
+    await openDecks(page);
+    await openDeckResetAction(page, "travel-deck", "Travel phrases");
+    await page
+      .getByRole("alertdialog", {
+        name: "Reset progress for “Travel phrases”?",
+      })
+      .getByRole("button", { name: "Reset progress" })
+      .click();
+
+    const queue = await page.evaluate(() =>
+      localStorage.getItem("meiki-active-study-queue"),
+    );
+    const session = await page.evaluate(() =>
+      sessionStorage.getItem("meiki-active-study-session"),
+    );
+    if (queueDeckId === "default-deck") {
+      expect(JSON.parse(queue ?? "null")).toMatchObject({
+        deckId: "default-deck",
+      });
+      expect(session).toBe("session for default-deck");
+    } else {
+      expect(queue).toBeNull();
+      expect(session).toBeNull();
+    }
+    expect(
+      await page.evaluate(() => localStorage.getItem("meiki-today-deck")),
+    ).toBe("travel-deck");
+  });
+}
+
+test("keeps queue state on a concise reset failure", async ({ page }) => {
+  await seedStudyState(page, "travel-deck", "travel-deck");
+  const queueBefore = await page.evaluate(() =>
+    localStorage.getItem("meiki-active-study-queue"),
+  );
+  await page.goto("/?deckReset=failure");
+  await openDecks(page);
+  await openDeckResetAction(page, "travel-deck", "Travel phrases");
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Reset progress for “Travel phrases”?",
+  });
+  await confirmation.getByRole("button", { name: "Reset progress" }).click();
+
+  await expect(confirmation.getByRole("alert")).toContainText(
+    "Could not reset progress for Travel phrases. Try again.",
+  );
+  await expect(confirmation).not.toContainText("schedule version");
+  await expect(confirmation).not.toContainText("raw fixture id");
+  expect(
+    await page.evaluate(() => localStorage.getItem("meiki-active-study-queue")),
+  ).toBe(queueBefore);
+  expect(await resetDeckProgressRequestCount(page)).toBe(1);
+});
+
+test("submits a rapid repeated reset confirmation only once", async ({
+  page,
+}) => {
+  await page.goto("/?deckReset=controlled");
+  await openDecks(page);
+  await openDeckResetAction(page, "travel-deck", "Travel phrases");
+  const confirmation = page.getByRole("alertdialog", {
+    name: "Reset progress for “Travel phrases”?",
+  });
+  const resetButton = confirmation.getByRole("button", {
+    name: "Reset progress",
+  });
+  await resetButton.evaluate((button) => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await expect(
+    confirmation.getByRole("button", { name: "Resetting…" }),
+  ).toBeDisabled();
+  expect(await resetDeckProgressRequestCount(page)).toBe(1);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("meiki-e2e-release-deck-reset"));
+  });
+  await expect(
+    page.getByText("Reset progress for Travel phrases."),
+  ).toBeVisible();
+  expect(await resetDeckProgressRequestCount(page)).toBe(1);
 });
 
 test("deletes an ordinary deck from its card once and refreshes Decks in place", async ({

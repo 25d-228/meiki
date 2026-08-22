@@ -10,10 +10,10 @@ use meiki_application::{
     DeleteDecksResultDto, GradeReviewRequest, GradeReviewResultDto, ImportMediaRequest,
     ImportSchedulerParametersRequest, MakeClozeRequest, PortableExportResultDto,
     ReconcileStudyQueueRequest, RemoveClozeRequest, RenameDeckRequest, ReorderSegmentsRequest,
-    RevealDto, SchedulerParametersExportDto, SchedulerPolicyPreviewDto, SchedulerSettingsDto,
-    StudyCardDto, StudyMediaDto, StudyPlanDto, StudyQueueEntryDto, SuspendCardRequest,
-    TodayOverviewDto, TodayRequest, UndoReviewRequest, UndoReviewResultDto,
-    UpdateSchedulerSettingsRequest,
+    ResetDeckProgressRequest, ResetDeckProgressResultDto, RevealDto, SchedulerParametersExportDto,
+    SchedulerPolicyPreviewDto, SchedulerSettingsDto, StudyCardDto, StudyMediaDto, StudyPlanDto,
+    StudyQueueEntryDto, SuspendCardRequest, TodayOverviewDto, TodayRequest, UndoReviewRequest,
+    UndoReviewResultDto, UpdateSchedulerSettingsRequest,
 };
 use tauri::{Manager, State, ipc::Channel};
 
@@ -50,6 +50,7 @@ macro_rules! desktop_commands {
             rename_deck,
             delete_deck,
             delete_decks,
+            reset_deck_progress,
             new_authoring_draft,
             import_media,
             read_managed_audio,
@@ -355,6 +356,18 @@ async fn delete_decks(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+async fn reset_deck_progress(
+    request: ResetDeckProgressRequest,
+    state: State<'_, AppContext>,
+) -> Result<ResetDeckProgressResultDto, String> {
+    let service = state.service();
+    tauri::async_runtime::spawn_blocking(move || commands::reset_deck_progress(&service, &request))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 fn new_authoring_draft(state: State<'_, AppContext>) -> Result<AuthoringDraftDto, String> {
     commands::new_authoring_draft(&state.service())
 }
@@ -455,8 +468,8 @@ mod tests {
     use std::collections::HashSet;
 
     use meiki_application::{
-        ALL_DECKS_ID, CreateDeckRequest, DeckCardRequest, DeckCardTrashDto, StudyAvailabilityDto,
-        TodayRequest,
+        ALL_DECKS_ID, CreateDeckRequest, DeckCardRequest, DeckCardTrashDto,
+        ResetDeckProgressRequest, StudyAvailabilityDto, TodayRequest,
     };
     use serde_json::json;
     use tempfile::tempdir;
@@ -491,6 +504,7 @@ mod tests {
         "rename_deck",
         "delete_deck",
         "delete_decks",
+        "reset_deck_progress",
         "new_authoring_draft",
         "import_media",
         "read_managed_audio",
@@ -545,6 +559,17 @@ mod tests {
         assert_eq!(summary.total_cards, 0);
         assert_eq!(summary.due_cards, 0);
         assert_eq!(summary.new_cards, 0);
+        let reset = commands::reset_deck_progress(
+            &service,
+            &ResetDeckProgressRequest {
+                deck_id: created.id.clone(),
+                now_ms: request.now_ms,
+            },
+        )
+        .expect("reset an empty deck through the command contract");
+        assert_eq!(reset.deck_id, created.id);
+        assert_eq!(reset.reset_cards, 0);
+        assert_eq!(reset.compensated_reviews, 0);
         let cards = commands::get_deck_cards(
             &service,
             &DeckCardRequest {

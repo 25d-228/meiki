@@ -206,6 +206,12 @@ pub struct DecksDeletion {
     pub orphaned_media_hashes: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeckProgressReset {
+    pub reset_cards: u64,
+    pub compensated_reviews: u64,
+}
+
 impl PristineBundleImportPlan {
     #[must_use]
     pub fn requires_changes(&self) -> bool {

@@ -4,9 +4,14 @@ use meiki_domain::{
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use crate::{
-    ScheduleIntegrityReport, Storage, StorageError,
+    DeckProgressReset, ScheduleIntegrityReport, Storage, StorageError,
     repository::{card_lifecycle_from_database, card_lifecycle_to_database, load_schedule_row},
 };
+
+struct CardProgressReset {
+    events: Vec<ReviewEvent>,
+    final_schedule: ScheduleState,
+}
 
 impl Storage {
     /// Atomically appends a review event, advances the schedule projection, and
@@ -115,6 +120,106 @@ impl Storage {
         persist_review_event(&transaction, &event)?;
         transaction.commit()?;
         Ok(restored)
+    }
+
+    /// Compensates every active graded review in one deck and restores each
+    /// affected schedule to its immutable baseline values.
+    ///
+    /// All histories are validated before the first write. Undo events are
+    /// appended in reverse review order inside one transaction so the
+    /// immutable event chains remain valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the deck is missing, a schedule does not
+    /// match its immutable history, an undo identity is invalid, or the
+    /// transaction cannot be committed.
+    pub fn reset_deck_progress(
+        &mut self,
+        deck_id: &str,
+        reset_at_ms: i64,
+        next_undo_event_id: impl FnMut() -> String,
+    ) -> Result<DeckProgressReset, StorageError> {
+        self.reset_deck_progress_inner(deck_id, reset_at_ms, next_undo_event_id, || Ok(()))
+    }
+
+    /// Exercises rollback after every reset write but before transaction commit.
+    ///
+    /// This bounded fault is available only to local tests and fixture builds.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`StorageError::InjectedTestFailure`] when the selected
+    /// deck contains active progress.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn reset_deck_progress_failing_before_commit(
+        &mut self,
+        deck_id: &str,
+        reset_at_ms: i64,
+        next_undo_event_id: impl FnMut() -> String,
+    ) -> Result<DeckProgressReset, StorageError> {
+        self.reset_deck_progress_inner(deck_id, reset_at_ms, next_undo_event_id, || {
+            Err(StorageError::InjectedTestFailure(
+                "deck progress reset before commit",
+            ))
+        })
+    }
+
+    fn reset_deck_progress_inner(
+        &mut self,
+        deck_id: &str,
+        reset_at_ms: i64,
+        mut next_undo_event_id: impl FnMut() -> String,
+        before_commit: impl FnOnce() -> Result<(), StorageError>,
+    ) -> Result<DeckProgressReset, StorageError> {
+        if reset_at_ms < 0 {
+            return Err(StorageError::InvalidAggregate(
+                "deck progress reset requires a valid timestamp".into(),
+            ));
+        }
+        let transaction = self.connection.transaction()?;
+        let card_ids = card_ids_with_active_reviews_for_deck(&transaction, deck_id)?;
+        let mut reset_plans = Vec::with_capacity(card_ids.len());
+        let mut compensated_reviews = 0_u64;
+        let mut undo_event_ids = std::collections::HashSet::new();
+
+        for card_id in card_ids {
+            let plan = build_card_progress_reset(
+                &transaction,
+                &card_id,
+                reset_at_ms,
+                &mut next_undo_event_id,
+                &mut undo_event_ids,
+            )?;
+            compensated_reviews = compensated_reviews
+                .checked_add(
+                    u64::try_from(plan.events.len())
+                        .map_err(|_| StorageError::NumericRange("compensated review count"))?,
+                )
+                .ok_or(StorageError::NumericRange("compensated review count"))?;
+            reset_plans.push(plan);
+        }
+
+        let reset_cards = u64::try_from(reset_plans.len())
+            .map_err(|_| StorageError::NumericRange("reset card count"))?;
+        if reset_plans.is_empty() {
+            return Ok(DeckProgressReset {
+                reset_cards,
+                compensated_reviews,
+            });
+        }
+        for plan in &reset_plans {
+            for event in &plan.events {
+                insert_review_event(&transaction, event)?;
+            }
+            write_schedule_projection(&transaction, &plan.final_schedule, reset_at_ms)?;
+        }
+        before_commit()?;
+        transaction.commit()?;
+        Ok(DeckProgressReset {
+            reset_cards,
+            compensated_reviews,
+        })
     }
 
     /// Loads immutable review events in deterministic chronological order.
@@ -399,6 +504,79 @@ impl Storage {
     }
 }
 
+fn build_card_progress_reset(
+    transaction: &Transaction<'_>,
+    card_id: &str,
+    reset_at_ms: i64,
+    next_undo_event_id: &mut impl FnMut() -> String,
+    undo_event_ids: &mut std::collections::HashSet<String>,
+) -> Result<CardProgressReset, StorageError> {
+    let current = load_schedule_row(transaction, "schedule_states", card_id)?
+        .ok_or_else(|| StorageError::CardNotFound(card_id.to_owned()))?;
+    let (baseline, recorded_events, projected, _) = load_recorded_projection(transaction, card_id)?;
+    if current != projected {
+        return Err(StorageError::ProjectionMismatch(format!(
+            "card {card_id} current projection does not match immutable history"
+        )));
+    }
+    let active_events = active_reviews(recorded_events.clone())?;
+    let card_content_version = transaction.query_row(
+        "SELECT content_version FROM cards WHERE id = ?1",
+        [card_id],
+        |row| row.get::<_, u64>(0),
+    )?;
+    let mut next_schedule = current;
+    let mut undo_events = Vec::with_capacity(active_events.len());
+    for target in active_events.into_iter().rev() {
+        let undo_event_id = next_undo_event_id();
+        if undo_event_id.trim().is_empty() || !undo_event_ids.insert(undo_event_id.clone()) {
+            return Err(StorageError::InvalidAggregate(
+                "deck progress reset requires unique undo event identities".into(),
+            ));
+        }
+        let mut restored = target.previous_schedule.clone();
+        restored.version = next_schedule
+            .version
+            .checked_add(1)
+            .ok_or(StorageError::NumericRange("schedule version"))?;
+        restored.last_review_event_id = Some(undo_event_id.clone());
+        let event = ReviewEvent {
+            id: undo_event_id,
+            card_id: card_id.to_owned(),
+            card_content_version,
+            kind: ReviewEventKind::Undo,
+            undoes_review_event_id: Some(target.id),
+            raw_response: String::new(),
+            normalized_response: String::new(),
+            comparison: target.comparison,
+            suggested_grade: target.suggested_grade,
+            chosen_grade: target.chosen_grade,
+            grade_overridden: false,
+            response_duration_ms: 0,
+            reviewed_at_ms: reset_at_ms,
+            scheduler_version: target.scheduler_version,
+            scheduler_parameter_set_id: target.scheduler_parameter_set_id,
+            target_retention_basis_points: target.target_retention_basis_points,
+            previous_schedule: next_schedule,
+            next_schedule: restored.clone(),
+        };
+        next_schedule = restored;
+        undo_events.push(event);
+    }
+
+    let mut complete_history = recorded_events;
+    complete_history.extend(undo_events.iter().cloned());
+    if project_history(card_id, &baseline, &complete_history)? != next_schedule {
+        return Err(StorageError::ProjectionMismatch(format!(
+            "card {card_id} reset does not produce its recorded projection"
+        )));
+    }
+    Ok(CardProgressReset {
+        events: undo_events,
+        final_schedule: next_schedule,
+    })
+}
+
 pub(crate) fn repair_all_schedule_projections(
     transaction: &Transaction<'_>,
 ) -> Result<usize, StorageError> {
@@ -440,6 +618,37 @@ fn all_card_ids(connection: &Connection) -> Result<Vec<String>, StorageError> {
     let mut statement = connection.prepare("SELECT id FROM cards ORDER BY id")?;
     Ok(statement
         .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn card_ids_with_active_reviews_for_deck(
+    connection: &Connection,
+    deck_id: &str,
+) -> Result<Vec<String>, StorageError> {
+    let exists = connection
+        .query_row("SELECT 1 FROM decks WHERE id = ?1", [deck_id], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if !exists {
+        return Err(crate::entity_not_found("deck", deck_id));
+    }
+    let mut statement = connection.prepare(
+        "SELECT cards.id
+         FROM cards
+         JOIN clozes ON clozes.id = cards.cloze_id
+         JOIN source_items ON source_items.id = clozes.source_item_id
+         JOIN review_events ON review_events.card_id = cards.id
+         WHERE source_items.deck_id = ?1
+           AND source_items.deleted_at_ms IS NULL
+         GROUP BY cards.id
+         HAVING SUM(CASE review_events.event_kind
+             WHEN 'review' THEN 1
+             WHEN 'undo' THEN -1
+         END) > 0
+         ORDER BY cards.id",
+    )?;
+    Ok(statement
+        .query_map([deck_id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?)
 }
 

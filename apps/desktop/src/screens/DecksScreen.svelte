@@ -6,6 +6,7 @@
   import RiGridLine from "remixicon-svelte/icons/grid-line";
   import RiListUnordered from "remixicon-svelte/icons/list-unordered";
   import RiMore2Line from "remixicon-svelte/icons/more-2-line";
+  import RiRestartLine from "remixicon-svelte/icons/restart-line";
   import { onMount, tick } from "svelte";
   import { SvelteDate, SvelteSet } from "svelte/reactivity";
 
@@ -53,6 +54,7 @@
     onDeleteDeck: (deletion: SingleDeckDeletion) => void;
     onDeleteDecks: (deletion: MultipleDeckDeletion) => void;
     onRemoveBundle: (deletion: BundleDeletion) => void;
+    onProgressReset: () => void;
   };
 
   type DeckView = "grid" | "list";
@@ -118,6 +120,7 @@
     onDeleteDeck,
     onDeleteDecks,
     onRemoveBundle,
+    onProgressReset,
   }: Props = $props();
   let decks = $state<DeckSummaryDto[]>([]);
   let activeQueue = $state<StudyQueueSession | null>(null);
@@ -137,6 +140,10 @@
   let retryStudyDeck = $state<DeckSummaryDto | null>(null);
   let deleteTarget = $state<DeckSummaryDto | null>(null);
   let deleteFlowOpen = $state(false);
+  let resetTarget = $state<DeckSummaryDto | null>(null);
+  let resetDialogOpen = $state(false);
+  let resetting = $state(false);
+  let resetError = $state("");
   let deckView = $state<DeckView>("grid");
   let selectedDeckIds = $state<string[]>([]);
   let selectionRectangle = $state<SelectionRectangle | null>(null);
@@ -252,6 +259,48 @@
     if (deck.id === defaultDeckId || deletionRunning) return;
     deleteTarget = deck;
     deleteFlowOpen = true;
+  }
+
+  function openResetProgress(deck: DeckSummaryDto): void {
+    if (deck.id === defaultDeckId || resetting) return;
+    resetTarget = deck;
+    resetError = "";
+    resetDialogOpen = true;
+  }
+
+  async function resetProgress(): Promise<void> {
+    const target = resetTarget;
+    if (!target || resetting) return;
+    resetting = true;
+    resetError = "";
+    notice = "";
+    try {
+      const result = await api.resetDeckProgress({
+        deck_id: target.id,
+        now_ms: Date.now(),
+      });
+      resetDialogOpen = false;
+      if (result.reset_cards === 0) {
+        notice = `There is no progress to reset in ${target.name}.`;
+        return;
+      }
+      const savedQueue = readStudyQueue();
+      if (
+        savedQueue &&
+        (savedQueue.deckId === target.id || savedQueue.deckId === allDecksId)
+      ) {
+        clearStudyQueue();
+        clearStudySession();
+        activeQueue = null;
+      }
+      await loadDecks();
+      onProgressReset();
+      notice = `Reset progress for ${target.name}.`;
+    } catch {
+      resetError = `Could not reset progress for ${target.name}. Try again.`;
+    } finally {
+      resetting = false;
+    }
   }
 
   function selectDeckView(view: DeckView): void {
@@ -889,6 +938,15 @@
         class="z-50 min-w-36 rounded-none bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10"
       >
         <DropdownMenu.Item
+          textValue="Reset progress"
+          disabled={resetting}
+          class="flex cursor-default items-center gap-2 rounded-none px-2 py-1.5 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground"
+          onSelect={() => openResetProgress(deck)}
+        >
+          <RiRestartLine class="size-4" aria-hidden="true" />
+          Reset progress
+        </DropdownMenu.Item>
+        <DropdownMenu.Item
           textValue="Delete deck"
           disabled={deletionRunning}
           class="flex cursor-default items-center gap-2 rounded-none px-2 py-1.5 text-sm text-destructive outline-none select-none data-highlighted:bg-destructive/10"
@@ -1195,6 +1253,39 @@
     {deletionRunning}
     onDelete={onDeleteDecks}
   />
+{/if}
+
+{#if resetTarget}
+  <AlertDialog.Root bind:open={resetDialogOpen}>
+    <AlertDialog.Content>
+      <AlertDialog.Header>
+        <AlertDialog.Title>
+          Reset progress for “{resetTarget.name}”?
+        </AlertDialog.Title>
+        <AlertDialog.Description>
+          Reviewed cards in this deck will become new again. Cards, notes,
+          media, suspension, deck settings, and bundle membership remain
+          unchanged.
+        </AlertDialog.Description>
+      </AlertDialog.Header>
+      {#if resetError}
+        <Alert.Root variant="destructive" role="alert">
+          <Alert.Title>The progress was not reset</Alert.Title>
+          <Alert.Description>{resetError}</Alert.Description>
+        </Alert.Root>
+      {/if}
+      <AlertDialog.Footer>
+        <AlertDialog.Cancel disabled={resetting}>Cancel</AlertDialog.Cancel>
+        <AlertDialog.Action
+          class="bg-destructive/10 text-destructive hover:bg-destructive/20"
+          disabled={resetting}
+          onclick={() => void resetProgress()}
+        >
+          {resetting ? "Resetting…" : "Reset progress"}
+        </AlertDialog.Action>
+      </AlertDialog.Footer>
+    </AlertDialog.Content>
+  </AlertDialog.Root>
 {/if}
 
 <Dialog.Root bind:open={newDeckDialogOpen}>

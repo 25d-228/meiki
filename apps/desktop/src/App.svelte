@@ -91,6 +91,7 @@
   let deletionDialogOpen = false;
   let deletionCardVisible = false;
   let deletionRefresh = 0;
+  let progressResetRefresh = 0;
   let nextDeletionOperationId = 1;
   $: bundleImportRunning =
     bundleImportActivity?.status === "choosing" ||
@@ -798,6 +799,7 @@
             onSettings={() => void navigate("settings")}
             onDeckContextChange={(value) => (deckContext = value)}
             {deletionRefresh}
+            {progressResetRefresh}
           />
         {:else if activeScreen === "decks"}
           <DecksScreen
@@ -813,6 +815,7 @@
             onDeleteDeck={(deletion) => void deleteSingleDeck(deletion)}
             onDeleteDecks={(deletion) => void deleteMultipleDecks(deletion)}
             onRemoveBundle={(deletion) => void removeBundle(deletion)}
+            onProgressReset={() => (progressResetRefresh += 1)}
           />
         {:else if activeScreen === "study"}
           <StudyScreen
