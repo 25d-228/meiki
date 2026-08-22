@@ -80,6 +80,22 @@ pub struct DeleteDecksResultDto {
     pub media_cleanup_warning: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct ResetDeckProgressRequest {
+    pub deck_id: String,
+    #[ts(type = "number")]
+    pub now_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+pub struct ResetDeckProgressResultDto {
+    pub deck_id: String,
+    #[ts(type = "number")]
+    pub reset_cards: u64,
+    #[ts(type = "number")]
+    pub compensated_reviews: u64,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
@@ -466,6 +482,36 @@ impl ApplicationService {
         })
     }
 
+    /// Resets every active review chain in one non-default deck while keeping
+    /// its content and immutable history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the deck or timestamp is invalid, a stored
+    /// schedule does not match its history, or the transaction fails.
+    pub fn reset_deck_progress(
+        &self,
+        request: &ResetDeckProgressRequest,
+    ) -> Result<ResetDeckProgressResultDto, ApplicationError> {
+        if request.deck_id == DEFAULT_DECK_ID
+            || request.deck_id.trim().is_empty()
+            || request.now_ms < 0
+        {
+            return Err(ApplicationError::InvalidDeck(
+                "progress can be reset only for an existing non-default deck".into(),
+            ));
+        }
+        let mut storage = self.open_storage()?;
+        let reset = storage.reset_deck_progress(&request.deck_id, request.now_ms, || {
+            self.next_id("deck-progress-reset")
+        })?;
+        Ok(ResetDeckProgressResultDto {
+            deck_id: request.deck_id.clone(),
+            reset_cards: reset.reset_cards,
+            compensated_reviews: reset.compensated_reviews,
+        })
+    }
+
     fn clean_deck_deletion_media(
         &self,
         storage: &Storage,
@@ -581,19 +627,19 @@ mod tests {
         StudySettingsOverride,
     };
     use meiki_storage::{
-        CardRepository, DeckRepository, PristineBundleImport, PristineDeckCard, PristineDeckImport,
-        PristineDeckNote, SourceNoteRepository, Storage, StoredSourceNote,
+        CardRepository, DEFAULT_DECK_ID, DeckRepository, PristineBundleImport, PristineDeckCard,
+        PristineDeckImport, PristineDeckNote, SourceNoteRepository, Storage, StoredSourceNote,
     };
     use tempfile::tempdir;
 
     use super::{
         BundleRemovalProgressDto, BundleRemovalRequest, CreateDeckRequest, DeckSummaryDto,
         DeleteDeckPhaseDto, DeleteDeckProgressDto, DeleteDeckRequest, DeleteDecksRequest,
-        RenameDeckRequest,
+        RenameDeckRequest, ResetDeckProgressRequest,
     };
     use crate::{
-        ApplicationService, DeckCardActionDto, DeckCardActionRequest, DeckCardRequest,
-        DeckCardTrashDto, GradeDto, GradeReviewRequest,
+        ApplicationError, ApplicationService, DeckCardActionDto, DeckCardActionRequest,
+        DeckCardRequest, DeckCardTrashDto, GradeDto, GradeReviewRequest,
     };
 
     fn seed_deck_deletion_media(service: &ApplicationService) -> (Vec<String>, Vec<String>) {
@@ -881,6 +927,76 @@ mod tests {
             storage.review_events("listening-card").unwrap(),
             history_before
         );
+    }
+
+    #[test]
+    fn reset_deck_progress_returns_reviewed_cards_to_new_and_reports_a_noop() {
+        let directory = tempdir().unwrap();
+        let service = ApplicationService::new(directory.path().join("collection.db"));
+        let created = service
+            .create_deck(&CreateDeckRequest {
+                name: "Review later".into(),
+                now_ms: 1_000,
+            })
+            .unwrap();
+        let mut storage = service.open_storage().unwrap();
+        add_card(
+            &mut storage,
+            &created.id,
+            "reset-card",
+            CardLifecycle::Unseen,
+            1_000,
+            false,
+        );
+        drop(storage);
+        review_card(&service, "reset-card", "reset-review", 2_000);
+
+        let result = service
+            .reset_deck_progress(&ResetDeckProgressRequest {
+                deck_id: created.id.clone(),
+                now_ms: 3_000,
+            })
+            .unwrap();
+        assert_eq!(result.deck_id, created.id);
+        assert_eq!(result.reset_cards, 1);
+        assert_eq!(result.compensated_reviews, 1);
+        let summary = service
+            .list_deck_summaries(3_000)
+            .unwrap()
+            .into_iter()
+            .find(|deck| deck.id == created.id)
+            .unwrap();
+        assert_eq!(summary.total_cards, 1);
+        assert_eq!(summary.due_cards, 0);
+        assert_eq!(summary.new_cards, 1);
+
+        let storage = service.open_storage().unwrap();
+        let event_count = storage.review_events("reset-card").unwrap().len();
+        drop(storage);
+        let no_progress = service
+            .reset_deck_progress(&ResetDeckProgressRequest {
+                deck_id: created.id,
+                now_ms: 4_000,
+            })
+            .unwrap();
+        assert_eq!(no_progress.reset_cards, 0);
+        assert_eq!(no_progress.compensated_reviews, 0);
+        assert_eq!(
+            service
+                .open_storage()
+                .unwrap()
+                .review_events("reset-card")
+                .unwrap()
+                .len(),
+            event_count
+        );
+        assert!(matches!(
+            service.reset_deck_progress(&ResetDeckProgressRequest {
+                deck_id: DEFAULT_DECK_ID.into(),
+                now_ms: 5_000,
+            }),
+            Err(ApplicationError::InvalidDeck(_))
+        ));
     }
 
     #[test]

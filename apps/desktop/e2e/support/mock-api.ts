@@ -16,6 +16,7 @@ export async function installMockApi(page: Page): Promise<void> {
     const calls: Record<string, number> = {};
     const committedReviewEventIds = new Set<string>();
     const deletedDeckIds = new Set<string>();
+    const resetDeckIds = new Set<string>();
     const removedDeckCardIds = new Set<string>();
     let deckDeletedToUnsorted = false;
     let deletedDeckCardRestored = false;
@@ -206,18 +207,26 @@ export async function installMockApi(page: Page): Promise<void> {
         const selectedDeck = availableDecks.find(
           (deck) => deck.id === requestedDeckId,
         );
+        const resetOverview = resetDeckIds.has(requestedDeckId ?? "")
+          ? {
+              ...clone(overview),
+              due_reviews: 0,
+              overdue_reviews: 0,
+              new_cards: 2,
+            }
+          : clone(overview);
         if (requestedDeckId && requestedDeckId !== "__all_decks__") {
           if (!selectedDeck) {
             throw new Error(`deck ${requestedDeckId} does not exist`);
           }
           return {
-            ...clone(overview),
+            ...resetOverview,
             deck_id: requestedDeckId,
             deck_name: selectedDeck.name,
             decks: availableDecks,
           };
         }
-        return { ...clone(overview), decks: availableDecks };
+        return { ...resetOverview, decks: availableDecks };
       }
       if (command === "prepare_study") {
         if (params.get("collection") === "empty")
@@ -509,6 +518,19 @@ export async function installMockApi(page: Page): Promise<void> {
         return clone(dtos.decks);
       }
       if (command === "list_deck_summaries") {
+        const withResetCounts = <
+          T extends {
+            id: string;
+            total_cards: number;
+            due_cards: number;
+            new_cards: number;
+          },
+        >(
+          deck: T,
+        ): T =>
+          resetDeckIds.has(deck.id)
+            ? { ...deck, due_cards: 0, new_cards: deck.total_cards }
+            : deck;
         if (params.get("decks") === "loading") {
           await new Promise((resolve) => setTimeout(resolve, 350));
         }
@@ -555,11 +577,13 @@ export async function installMockApi(page: Page): Promise<void> {
           const summaries = [
             ...dtos.deckSummaries,
             ...dtos.bundleDeckSummaries,
-          ].map((deck) =>
-            params.get("emptyDeck") === deck.id
-              ? { ...deck, total_cards: 0, due_cards: 0, new_cards: 0 }
-              : deck,
-          );
+          ].map((deck) => {
+            const summary =
+              params.get("emptyDeck") === deck.id
+                ? { ...deck, total_cards: 0, due_cards: 0, new_cards: 0 }
+                : deck;
+            return withResetCounts(summary);
+          });
           return clone(
             summaries.filter((deck) => !deletedDeckIds.has(deck.id)),
           );
@@ -607,11 +631,42 @@ export async function installMockApi(page: Page): Promise<void> {
           );
         }
         return clone(
-          dtos.deckSummaries.filter((deck) => !deletedDeckIds.has(deck.id)),
+          dtos.deckSummaries
+            .filter((deck) => !deletedDeckIds.has(deck.id))
+            .map(withResetCounts),
         );
       }
       if (command === "create_deck") return clone(dtos.createdDeck);
       if (command === "rename_deck") return clone(dtos.renamedDeck);
+      if (command === "reset_deck_progress") {
+        const deckId = (args as { request: { deck_id: string } }).request
+          .deck_id;
+        if (params.get("deckReset") === "controlled") {
+          await new Promise<void>((resolve) => {
+            window.addEventListener(
+              "meiki-e2e-release-deck-reset",
+              () => resolve(),
+              { once: true },
+            );
+          });
+        }
+        if (params.get("deckReset") === "failure") {
+          throw new Error("schedule version raw fixture id");
+        }
+        if (params.get("deckReset") === "no-progress") {
+          return {
+            deck_id: deckId,
+            reset_cards: 0,
+            compensated_reviews: 0,
+          };
+        }
+        resetDeckIds.add(deckId);
+        return {
+          deck_id: deckId,
+          reset_cards: 1,
+          compensated_reviews: 2,
+        };
+      }
       if (command === "delete_decks") {
         const deckIds = (args as { request: { deck_ids: string[] } }).request
           .deck_ids;

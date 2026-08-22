@@ -656,6 +656,9 @@ for (const deckActionsCase of [
       .getByRole("button", { name: "Actions for Travel phrases" })
       .click();
     await expect(
+      page.getByRole("menuitem", { name: "Reset progress" }),
+    ).toBeVisible();
+    await expect(
       page.getByRole("menuitem", { name: "Delete deck" }),
     ).toBeVisible();
     expect(
@@ -664,6 +667,68 @@ for (const deckActionsCase of [
       ),
     ).toBe(true);
     await expect(page).toHaveScreenshot(`${deckActionsCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
+for (const resetCase of [
+  {
+    name: "deck-reset-confirmation-desktop-light",
+    state: "confirmation",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "deck-reset-confirmation-narrow-dark",
+    state: "confirmation",
+    theme: "dark",
+    viewport: "narrow",
+  },
+  {
+    name: "deck-reset-success-desktop-light",
+    state: "success",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "deck-reset-success-narrow-dark",
+    state: "success",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${resetCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/",
+      screen: "Decks",
+      theme: resetCase.theme,
+      viewport: resetCase.viewport,
+    });
+    await page
+      .getByRole("button", { name: "Actions for Travel phrases" })
+      .click();
+    await page.getByRole("menuitem", { name: "Reset progress" }).click();
+    const confirmation = page.getByRole("alertdialog", {
+      name: "Reset progress for “Travel phrases”?",
+    });
+    await expect(confirmation).toBeVisible();
+    if (resetCase.state === "success") {
+      await confirmation
+        .getByRole("button", { name: "Reset progress" })
+        .click();
+      await expect(
+        page.getByText("Reset progress for Travel phrases."),
+      ).toBeVisible();
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${resetCase.name}.png`, {
       animations: "disabled",
       caret: "hide",
       maxDiffPixelRatio: 0.12,

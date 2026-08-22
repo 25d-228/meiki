@@ -2115,6 +2115,219 @@ fn undoing_latest_of_multiple_reviews_keeps_the_card_introduced() {
 }
 
 #[test]
+fn deck_progress_reset_compensates_reverse_history_and_preserves_bundle_content() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let deck_id = &bundle.decks[0].deck.id;
+    let card_id = &bundle.decks[0].notes[0].cards[0].card.id;
+    let unseen_card_id = &bundle.decks[0].notes[0].cards[1].card.id;
+
+    let mut suspended_card = storage.get_card(card_id).unwrap();
+    suspended_card.suspended = true;
+    suspended_card.updated_at_ms = 2_500;
+    storage.update_card(&suspended_card).unwrap();
+    let first_review = event_for_card(&storage, card_id, "reset-review-1", 3_000);
+    storage.commit_review(&first_review).unwrap();
+    let mut lapse_review = event_for_card(&storage, card_id, "reset-review-2", 4_000);
+    lapse_review.comparison = ComparisonResult::Incorrect;
+    lapse_review.suggested_grade = Grade::Again;
+    lapse_review.chosen_grade = Grade::Again;
+    storage.commit_review(&lapse_review).unwrap();
+
+    let baseline = storage.load_schedule_baseline(card_id).unwrap();
+    let reviewed = storage.load_schedule(card_id).unwrap();
+    let reviewed_card_before = storage.get_card(card_id).unwrap();
+    let stale_review = event_for_card(&storage, card_id, "stale-after-reset", 5_000);
+    let unseen_before = storage.load_study_card(unseen_card_id).unwrap();
+    let deck_before = storage.get_deck(deck_id).unwrap();
+    let note_before = storage
+        .get_source_note(&bundle.decks[0].notes[0].note.source_item.id)
+        .unwrap();
+    let bundles_before = storage.installed_bundles().unwrap();
+
+    let mut next_undo = 0_u8;
+    let result = storage
+        .reset_deck_progress(deck_id, 6_000, || {
+            next_undo += 1;
+            format!("deck-reset-undo-{next_undo}")
+        })
+        .unwrap();
+
+    assert_eq!(result.reset_cards, 1);
+    assert_eq!(result.compensated_reviews, 2);
+    let reset = storage.load_schedule(card_id).unwrap();
+    let mut expected = baseline;
+    expected.version = reviewed.version + 2;
+    expected.last_review_event_id = Some("deck-reset-undo-2".into());
+    assert_eq!(reset, expected);
+    assert_eq!(reset.lifecycle, CardLifecycle::Unseen);
+    assert!(storage.active_review_events(card_id).unwrap().is_empty());
+    assert!(
+        storage
+            .active_review_events_for_deck(deck_id)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(storage.review_count(card_id).unwrap(), 0);
+    let history = storage.review_events(card_id).unwrap();
+    assert_eq!(history.len(), 4);
+    assert_eq!(history[2].kind, ReviewEventKind::Undo);
+    assert_eq!(
+        history[2].undoes_review_event_id.as_deref(),
+        Some("reset-review-2")
+    );
+    assert_eq!(
+        history[3].undoes_review_event_id.as_deref(),
+        Some("reset-review-1")
+    );
+    assert_eq!(storage.get_card(card_id).unwrap(), reviewed_card_before);
+    assert_eq!(
+        storage.load_study_card(unseen_card_id).unwrap(),
+        unseen_before
+    );
+    assert_eq!(storage.get_deck(deck_id).unwrap(), deck_before);
+    assert_eq!(
+        storage
+            .get_source_note(&bundle.decks[0].notes[0].note.source_item.id)
+            .unwrap(),
+        note_before
+    );
+    assert_eq!(storage.installed_bundles().unwrap(), bundles_before);
+    assert!(
+        storage
+            .check_deck_schedule_integrity(deck_id)
+            .unwrap()
+            .is_valid()
+    );
+    assert!(matches!(
+        storage.commit_review(&stale_review),
+        Err(StorageError::StaleReview)
+    ));
+}
+
+#[test]
+fn deck_progress_reset_leaves_moved_unrelated_and_trashed_cards_unchanged() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage.seed_walking_skeleton(1_000).unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let target_card_id = &bundle.decks[0].notes[0].cards[0].card.id;
+    let moved_card_id = &bundle.decks[1].notes[0].cards[0].card.id;
+    let target_review = event_for_card(&storage, target_card_id, "target-review", 3_000);
+    storage.commit_review(&target_review).unwrap();
+    let moved_review = event_for_card(&storage, moved_card_id, "moved-review", 3_100);
+    storage.commit_review(&moved_review).unwrap();
+    storage
+        .move_deck_cards(std::slice::from_ref(moved_card_id), DEFAULT_DECK_ID, 3_200)
+        .unwrap();
+    let trash_review = sample_event(&storage, "trash-review", 3_300);
+    storage.commit_review(&trash_review).unwrap();
+    storage
+        .set_deck_cards_deleted(&[SAMPLE_CARD_ID.into()], Some(3_400), 3_400)
+        .unwrap();
+
+    let moved_before = storage.load_study_card(moved_card_id).unwrap();
+    let moved_history_before = storage.review_events(moved_card_id).unwrap();
+    let trash_before = storage.load_study_card(SAMPLE_CARD_ID).unwrap();
+    let trash_history_before = storage.review_events(SAMPLE_CARD_ID).unwrap();
+    let library_before = storage.library_notes().unwrap();
+
+    let mut next_undo = 0_u8;
+    let result = storage
+        .reset_deck_progress(&bundle.decks[0].deck.id, 4_000, || {
+            next_undo += 1;
+            format!("scoped-reset-undo-{next_undo}")
+        })
+        .unwrap();
+
+    assert_eq!(result.reset_cards, 1);
+    assert_eq!(
+        storage.load_study_card(moved_card_id).unwrap(),
+        moved_before
+    );
+    assert_eq!(
+        storage.review_events(moved_card_id).unwrap(),
+        moved_history_before
+    );
+    assert_eq!(
+        storage.load_study_card(SAMPLE_CARD_ID).unwrap(),
+        trash_before
+    );
+    assert_eq!(
+        storage.review_events(SAMPLE_CARD_ID).unwrap(),
+        trash_history_before
+    );
+    let library_after = storage.library_notes().unwrap();
+    for note_before in library_before
+        .iter()
+        .filter(|note| note.note.source_item.id != bundle.decks[0].notes[0].note.source_item.id)
+    {
+        assert!(library_after.contains(note_before));
+    }
+}
+
+#[test]
+fn deck_progress_reset_noop_writes_nothing_and_precommit_failure_rolls_back() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let bundle = pristine_bundle_import();
+    storage
+        .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+        .unwrap();
+    let deck_id = &bundle.decks[0].deck.id;
+    let card_id = &bundle.decks[0].notes[0].cards[0].card.id;
+
+    let changes_before = storage.connection.total_changes();
+    let no_progress = storage
+        .reset_deck_progress(deck_id, 2_000, || "unused-undo".into())
+        .unwrap();
+    assert_eq!(no_progress.reset_cards, 0);
+    assert_eq!(no_progress.compensated_reviews, 0);
+    assert_eq!(storage.connection.total_changes(), changes_before);
+
+    let rollback_review = event_for_card(&storage, card_id, "rollback-review", 3_000);
+    storage.commit_review(&rollback_review).unwrap();
+    let schedule_before = storage.load_schedule(card_id).unwrap();
+    let history_before = storage.review_events(card_id).unwrap();
+    let counts_before = storage.deck_card_counts(4_000).unwrap();
+    let queue_updated_before = storage
+        .connection
+        .query_row(
+            "SELECT queue_updated_at_ms FROM cards WHERE id = ?1",
+            [card_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert!(matches!(
+        storage.reset_deck_progress_failing_before_commit(deck_id, 4_000, || {
+            "rollback-reset-undo".into()
+        }),
+        Err(StorageError::InjectedTestFailure(
+            "deck progress reset before commit"
+        ))
+    ));
+    assert_eq!(storage.load_schedule(card_id).unwrap(), schedule_before);
+    assert_eq!(storage.review_events(card_id).unwrap(), history_before);
+    assert_eq!(storage.review_count(card_id).unwrap(), 1);
+    assert_eq!(storage.deck_card_counts(4_000).unwrap(), counts_before);
+    assert_eq!(
+        storage
+            .connection
+            .query_row(
+                "SELECT queue_updated_at_ms FROM cards WHERE id = ?1",
+                [card_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        queue_updated_before
+    );
+}
+
+#[test]
 fn review_events_cannot_be_changed_or_deleted_in_place() {
     let mut storage = Storage::open_in_memory().unwrap();
     storage.seed_walking_skeleton(1_000).unwrap();
@@ -2991,6 +3204,96 @@ fn release_budget_large_version_eight_migration() {
         "release-budget migration_v8_10000 before_bytes={before_bytes} \
          after_bytes={after_bytes} elapsed_ms={}",
         migration_elapsed.as_millis()
+    );
+}
+
+#[test]
+#[ignore = "release performance budget; run with scripts/performance"]
+fn release_budget_deck_progress_reset_3000_reviews_ignores_9700_unrelated_cards() {
+    const REVIEWED_CARD_COUNT: u64 = 3_000;
+    const TOTAL_CARD_COUNT: u32 = 12_700;
+    let mut storage = Storage::open_in_memory().unwrap();
+    storage
+        .seed_large_performance_fixture(TOTAL_CARD_COUNT, 1_000_000_000)
+        .unwrap();
+    storage
+        .connection
+        .execute(
+            "UPDATE source_items
+             SET deck_id = ?1
+             WHERE deck_id = 'performance-deck'
+               AND (
+                   CAST(SUBSTR(id, 20) AS INTEGER) >= 9000
+                   OR CAST(SUBSTR(id, 20) AS INTEGER) % 3 = 2
+               )",
+            [DEFAULT_DECK_ID],
+        )
+        .unwrap();
+    storage
+        .connection
+        .execute_batch(
+            "CREATE TRIGGER reject_unrelated_progress_reset_schedule
+             BEFORE UPDATE ON schedule_states
+             WHEN EXISTS (
+                 SELECT 1
+                 FROM cards
+                 JOIN clozes ON clozes.id = cards.cloze_id
+                 JOIN source_items ON source_items.id = clozes.source_item_id
+                 WHERE cards.id = NEW.card_id
+                   AND source_items.deck_id = 'default-deck'
+             )
+             BEGIN
+                 SELECT RAISE(ABORT, 'progress reset touched unrelated schedule');
+             END;
+             CREATE TRIGGER reject_unrelated_progress_reset_review
+             BEFORE INSERT ON review_events
+             WHEN EXISTS (
+                 SELECT 1
+                 FROM cards
+                 JOIN clozes ON clozes.id = cards.cloze_id
+                 JOIN source_items ON source_items.id = clozes.source_item_id
+                 WHERE cards.id = NEW.card_id
+                   AND source_items.deck_id = 'default-deck'
+             )
+             BEGIN
+                 SELECT RAISE(ABORT, 'progress reset touched unrelated history');
+             END;",
+        )
+        .unwrap();
+    let unrelated_cards = storage
+        .deck_card_counts(1_000_000_000)
+        .unwrap()
+        .into_iter()
+        .find(|counts| counts.deck_id == DEFAULT_DECK_ID)
+        .unwrap()
+        .total_cards;
+    assert_eq!(unrelated_cards, 9_700);
+
+    let started = std::time::Instant::now();
+    let mut next_undo = 0_u64;
+    let result = storage
+        .reset_deck_progress("performance-deck", 1_000_000_001, || {
+            next_undo += 1;
+            format!("performance-reset-undo-{next_undo:07}")
+        })
+        .unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(result.reset_cards, REVIEWED_CARD_COUNT);
+    assert_eq!(result.compensated_reviews, REVIEWED_CARD_COUNT);
+    assert!(
+        storage
+            .active_review_events_for_deck("performance-deck")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        elapsed <= std::time::Duration::from_secs(5),
+        "3,000-review deck progress reset exceeded 5 s: {elapsed:?}"
+    );
+    eprintln!(
+        "release-budget deck_progress_reset_3000 unrelated_cards={unrelated_cards} elapsed_ms={}",
+        elapsed.as_millis()
     );
 }
 
