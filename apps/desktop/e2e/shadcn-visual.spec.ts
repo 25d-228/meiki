@@ -235,6 +235,45 @@ for (const visualCase of visualCases) {
   });
 }
 
+for (const statisticsCase of [
+  {
+    name: "today-statistics-dashboard-desktop-light",
+    theme: "light",
+    viewport: "desktop",
+  },
+  {
+    name: "today-statistics-dashboard-narrow-dark",
+    theme: "dark",
+    viewport: "narrow",
+  },
+] as const) {
+  test(`visual regression: ${statisticsCase.name}`, async ({ page }) => {
+    await prepare(page, {
+      route: "/?today=normal",
+      screen: "Today",
+      theme: statisticsCase.theme,
+      viewport: statisticsCase.viewport,
+    });
+    await expect(
+      page.getByRole("heading", { name: "Review statistics" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("img", { name: /Daily review activity from/ }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await expect(page).toHaveScreenshot(`${statisticsCase.name}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      fullPage: true,
+      maxDiffPixelRatio: 0.12,
+    });
+  });
+}
+
 for (const vimCase of [
   {
     name: "vim-decks-normal-desktop-light",

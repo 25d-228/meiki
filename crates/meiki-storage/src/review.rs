@@ -13,6 +13,119 @@ struct CardProgressReset {
     final_schedule: ScheduleState,
 }
 
+// A boundary inside a daylight-saving gap or repeated hour must use the same
+// forward-gap and earlier-duplicate behavior as `Date.setHours`.
+const ACTIVE_REVIEW_DAYS_QUERY: &str = r"WITH active_reviews AS (
+    SELECT
+        review.card_id,
+        review.reviewed_at_ms,
+        review.comparison,
+        review.previous_lifecycle,
+        date(
+            review.reviewed_at_ms / 1000,
+            'unixepoch',
+            'localtime'
+        ) AS local_date
+    FROM source_items
+    JOIN clozes ON clozes.source_item_id = source_items.id
+    JOIN cards ON cards.cloze_id = clozes.id
+    JOIN review_events AS review ON review.card_id = cards.id
+    LEFT JOIN review_events AS compensation
+      ON compensation.undoes_review_event_id = review.id
+    WHERE source_items.deleted_at_ms IS NULL
+      {deck_filter}
+      AND review.event_kind = 'review'
+      AND compensation.id IS NULL
+),
+review_dates AS (
+    SELECT DISTINCT local_date
+    FROM active_reviews
+),
+normalized_boundaries AS (
+    SELECT
+        local_date,
+        local_date || ' ' || printf(
+            '%02d:%02d:00',
+            ?1 / 60,
+            ?1 % 60
+        ) AS boundary_local,
+        unixepoch(
+            local_date || ' ' || printf(
+                '%02d:%02d:00',
+                ?1 / 60,
+                ?1 % 60
+            ),
+            'utc'
+        ) AS normalized_at_seconds
+    FROM review_dates
+),
+boundary_offset_samples AS (
+    SELECT
+        local_date,
+        boundary_local,
+        normalized_at_seconds,
+        unixepoch(datetime(
+            normalized_at_seconds + sample.offset_seconds,
+            'unixepoch',
+            'localtime'
+        )) - (normalized_at_seconds + sample.offset_seconds)
+            AS utc_offset_seconds
+    FROM normalized_boundaries
+    CROSS JOIN (
+        SELECT -43200 AS offset_seconds
+        UNION ALL SELECT 0
+        UNION ALL SELECT 43200
+    ) AS sample
+),
+resolved_boundaries AS (
+    SELECT
+        local_date,
+        COALESCE(
+            MIN(CASE
+                WHEN datetime(
+                    unixepoch(boundary_local) - utc_offset_seconds,
+                    'unixepoch',
+                    'localtime'
+                ) = boundary_local
+                THEN unixepoch(boundary_local) - utc_offset_seconds
+            END),
+            MIN(normalized_at_seconds)
+        ) * 1000 AS boundary_at_ms
+    FROM boundary_offset_samples
+    GROUP BY local_date
+),
+labeled_reviews AS (
+    SELECT
+        review.card_id,
+        review.comparison,
+        review.previous_lifecycle,
+        CASE
+            WHEN review.reviewed_at_ms < boundary.boundary_at_ms
+            THEN date(review.local_date, '-1 day')
+            ELSE review.local_date
+        END AS study_day
+    FROM active_reviews AS review
+    JOIN resolved_boundaries AS boundary
+      ON boundary.local_date = review.local_date
+)
+SELECT
+    study_day,
+    COUNT(*) AS reviews,
+    SUM(CASE
+        WHEN review.comparison IN ('exact', 'accepted_variant') THEN 1
+        ELSE 0
+    END) AS correct_reviews,
+    SUM(CASE
+        WHEN review.comparison IN ('near_match', 'incorrect', 'empty') THEN 1
+        ELSE 0
+    END) AS error_reviews,
+    COUNT(DISTINCT CASE
+        WHEN review.previous_lifecycle = 'unseen' THEN review.card_id
+    END) AS learned_cards
+FROM labeled_reviews AS review
+GROUP BY study_day
+ORDER BY study_day";
+
 impl Storage {
     /// Atomically appends a review event, advances the schedule projection, and
     /// updates queue-relevant card metadata.
@@ -448,39 +561,7 @@ impl Storage {
         // Keeping the selected-deck predicate direct lets SQLite begin with
         // the deck index instead of scanning unrelated review history.
         let deck_filter = deck_id.map_or("", |_| "AND source_items.deck_id = ?2");
-        let query = format!(
-            "SELECT
-                 date(
-                     review.reviewed_at_ms / 1000,
-                     'unixepoch',
-                     'localtime',
-                     '-' || ?1 || ' minutes'
-                 ) AS study_day,
-                 COUNT(*) AS reviews,
-                 SUM(CASE
-                     WHEN review.comparison IN ('exact', 'accepted_variant') THEN 1
-                     ELSE 0
-                 END) AS correct_reviews,
-                 SUM(CASE
-                     WHEN review.comparison IN ('near_match', 'incorrect', 'empty') THEN 1
-                     ELSE 0
-                 END) AS error_reviews,
-                 COUNT(DISTINCT CASE
-                     WHEN review.previous_lifecycle = 'unseen' THEN review.card_id
-                 END) AS learned_cards
-             FROM source_items
-             JOIN clozes ON clozes.source_item_id = source_items.id
-             JOIN cards ON cards.cloze_id = clozes.id
-             JOIN review_events AS review ON review.card_id = cards.id
-             LEFT JOIN review_events AS compensation
-               ON compensation.undoes_review_event_id = review.id
-             WHERE source_items.deleted_at_ms IS NULL
-               {deck_filter}
-               AND review.event_kind = 'review'
-               AND compensation.id IS NULL
-             GROUP BY study_day
-             ORDER BY study_day"
-        );
+        let query = ACTIVE_REVIEW_DAYS_QUERY.replace("{deck_filter}", deck_filter);
         let mut statement = self.connection.prepare(&query)?;
         let mut rows = if let Some(selected_deck_id) = deck_id {
             statement.query(params![day_boundary_minutes, selected_deck_id])?
