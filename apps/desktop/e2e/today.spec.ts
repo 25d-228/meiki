@@ -57,6 +57,28 @@ async function lastRequest(
   }, command);
 }
 
+async function commandCount(
+  page: import("@playwright/test").Page,
+  command: string,
+): Promise<number> {
+  return page.evaluate(
+    (name) =>
+      (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+        (request) => request.command === name,
+      ).length,
+    command,
+  );
+}
+
+async function releaseTodayRequest(
+  page: import("@playwright/test").Page,
+  kind: "overview" | "statistics",
+): Promise<void> {
+  await page.evaluate((requestKind) => {
+    window.dispatchEvent(new Event(`meiki-e2e-release-today-${requestKind}`));
+  }, kind);
+}
+
 async function installSavedQueue(
   page: import("@playwright/test").Page,
   deckId: string,
@@ -147,6 +169,169 @@ test("loads local statistics without runtime network requests", async ({
   await openToday(page);
   await expect(page.getByText("Cards learned today")).toBeVisible();
   expect(runtimeRequests).toEqual([]);
+});
+
+test("renders warm Today data immediately and refreshes it once in the background", async ({
+  page,
+}) => {
+  await page.goto("/?todayWarm=controlled");
+  await openToday(page);
+  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
+  await expect(
+    page
+      .locator("[data-statistics-summary-card]")
+      .filter({ hasText: "Cards learned today" }),
+  ).toContainText("2");
+
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+
+  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
+  await expect(page.getByText("Planning today…")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start study" })).toBeEnabled();
+  await expect.poll(() => commandCount(page, "get_today_overview")).toBe(2);
+  expect(await commandCount(page, "get_today_statistics")).toBe(1);
+
+  await releaseTodayRequest(page, "overview");
+  await expect(page.getByText("7 due and 4 new.")).toBeVisible();
+  await expect(page.getByText("Loading statistics…")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start study" })).toBeEnabled();
+  await expect.poll(() => commandCount(page, "get_today_statistics")).toBe(2);
+  await releaseTodayRequest(page, "statistics");
+
+  await expect(
+    page
+      .locator("[data-statistics-summary-card]")
+      .filter({ hasText: "Cards learned today" }),
+  ).toContainText("17");
+  expect(await commandCount(page, "get_today_overview")).toBe(2);
+  expect(await commandCount(page, "get_today_statistics")).toBe(2);
+});
+
+test("keeps the bounded cold Today request sequence", async ({ page }) => {
+  await page.goto("/?todayWarm=cold");
+  await openToday(page);
+
+  await expect(page.getByText("Planning today…")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Start study" }),
+  ).toBeDisabled();
+  await expect.poll(() => commandCount(page, "get_today_overview")).toBe(1);
+  expect(await commandCount(page, "get_today_statistics")).toBe(0);
+
+  await releaseTodayRequest(page, "overview");
+  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start study" })).toBeEnabled();
+  await expect.poll(() => commandCount(page, "get_today_statistics")).toBe(1);
+  await releaseTodayRequest(page, "statistics");
+  await expect(page.getByText("Cards learned today")).toBeVisible();
+});
+
+test("does not let an older warm response replace a newer deck selection", async ({
+  page,
+}) => {
+  await page.goto("/?todayWarm=stale");
+  await openToday(page);
+  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect.poll(() => commandCount(page, "get_today_overview")).toBe(2);
+  await page.getByLabel("Deck").selectOption("travel-deck");
+  await expect(page.getByText("Travel phrases", { exact: true })).toBeVisible();
+
+  await releaseTodayRequest(page, "overview");
+  await expect(page.getByLabel("Deck")).toHaveValue("travel-deck");
+  await expect(page.getByText("Travel phrases", { exact: true })).toBeVisible();
+  expect((await lastRequest(page, "get_today_statistics"))?.args).toMatchObject(
+    {
+      request: { deck_id: "travel-deck" },
+    },
+  );
+});
+
+test("never reuses another deck scope while a focused load is delayed", async ({
+  page,
+}) => {
+  await page.goto("/?todayWarm=scope");
+  await openToday(page);
+  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
+  await expect(page.getByText("Cards learned today")).toBeVisible();
+
+  await page.getByLabel("Deck").selectOption("travel-deck");
+  await expect(page.getByText("Planning today…")).toBeVisible();
+  await expect(page.getByText("Cards learned today")).toHaveCount(0);
+  await expect.poll(() => commandCount(page, "get_today_overview")).toBe(2);
+  await releaseTodayRequest(page, "overview");
+
+  await expect(page.getByText("Travel phrases", { exact: true })).toBeVisible();
+  await expect(
+    page
+      .locator("[data-statistics-summary-card]")
+      .filter({ hasText: "Cards learned today" }),
+  ).toContainText("1");
+});
+
+test("preserves warm results and offers one retry after background failure", async ({
+  page,
+}) => {
+  await page.goto("/?todayWarm=failure");
+  await openToday(page);
+  await expect(page.getByText("Cards learned today")).toBeVisible();
+
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Today could not be refreshed");
+  await expect(alert).toContainText("Showing the last successful results.");
+  await expect(alert).not.toContainText("database");
+  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
+  await expect(page.getByText("Cards learned today")).toBeVisible();
+  await alert.getByRole("button", { name: "Try again" }).click();
+  await expect(alert).toHaveCount(0);
+  await expect.poll(() => commandCount(page, "get_today_overview")).toBe(3);
+});
+
+test("keeps warm charts when their background refresh fails", async ({
+  page,
+}) => {
+  await page.goto("/?todayWarm=failure-statistics");
+  await openToday(page);
+  const learnedCards = page
+    .locator("[data-statistics-summary-card]")
+    .filter({ hasText: "Cards learned today" });
+  await expect(learnedCards).toContainText("2");
+
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Today could not be refreshed");
+  await expect(alert).not.toContainText("database");
+  await expect(learnedCards).toContainText("2");
+  await expect(page.getByText("Review statistics are unavailable")).toHaveCount(
+    0,
+  );
+});
+
+test("does not reuse warm Today data after the local study day changes", async ({
+  page,
+}) => {
+  await page.clock.install({ time: new Date("2026-08-29T03:59:00") });
+  await page.goto("/?todayWarm=study-day");
+  await openToday(page);
+  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Decks", exact: true }).click();
+  await page.clock.setFixedTime(new Date("2026-08-29T04:01:00"));
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+
+  await expect(page.getByText("Planning today…")).toBeVisible();
+  await expect(page.getByText("Cards learned today")).toHaveCount(0);
+  await expect.poll(() => commandCount(page, "get_today_overview")).toBe(2);
+  await releaseTodayRequest(page, "overview");
+  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
 });
 
 test("shows scoped summaries and accessible bounded activity charts", async ({

@@ -230,6 +230,26 @@ export async function installMockApi(page: Page): Promise<void> {
       }
 
       if (command === "get_today_overview") {
+        const warmMode = params.get("todayWarm");
+        if (
+          (warmMode === "controlled" && calls[command] === 2) ||
+          (warmMode === "cold" && calls[command] === 1) ||
+          (warmMode === "scope" && calls[command] === 2) ||
+          (warmMode === "stale" && calls[command] === 2) ||
+          (warmMode === "study-day" && calls[command] === 2) ||
+          (warmMode === "mutation" && calls[command] === 3)
+        ) {
+          await new Promise<void>((resolve) => {
+            window.addEventListener(
+              "meiki-e2e-release-today-overview",
+              () => resolve(),
+              { once: true },
+            );
+          });
+        }
+        if (warmMode === "failure" && calls[command] === 2) {
+          throw new Error("database refresh exposed internal details");
+        }
         if (params.get("failure") === "today") {
           throw new Error("The local collection is temporarily unavailable.");
         }
@@ -268,16 +288,38 @@ export async function installMockApi(page: Page): Promise<void> {
           if (!selectedDeck) {
             throw new Error(`deck ${requestedDeckId} does not exist`);
           }
-          return {
+          const focusedOverview = {
             ...resetOverview,
             deck_id: requestedDeckId,
             deck_name: selectedDeck.name,
             decks: availableDecks,
           };
+          return warmMode === "controlled" && calls[command] > 1
+            ? { ...focusedOverview, due_reviews: 7, new_cards: 4 }
+            : focusedOverview;
         }
-        return { ...resetOverview, decks: availableDecks };
+        const loadedOverview = { ...resetOverview, decks: availableDecks };
+        return warmMode === "controlled" && calls[command] > 1
+          ? { ...loadedOverview, due_reviews: 7, new_cards: 4 }
+          : loadedOverview;
       }
       if (command === "get_today_statistics") {
+        const warmMode = params.get("todayWarm");
+        if (
+          (warmMode === "controlled" && calls[command] === 2) ||
+          (warmMode === "cold" && calls[command] === 1)
+        ) {
+          await new Promise<void>((resolve) => {
+            window.addEventListener(
+              "meiki-e2e-release-today-statistics",
+              () => resolve(),
+              { once: true },
+            );
+          });
+        }
+        if (warmMode === "failure-statistics" && calls[command] === 2) {
+          throw new Error("database query exposed internal identity details");
+        }
         if (params.get("failure") === "statistics" && calls[command] === 1) {
           throw new Error("database query exposed internal identity details");
         }
@@ -296,11 +338,18 @@ export async function installMockApi(page: Page): Promise<void> {
           todayName === "empty" ||
           resetDeckIds.has(request.deck_id) ||
           deletedDeckIds.has(request.deck_id);
-        return todayStatistics(
+        const loadedStatistics = todayStatistics(
           request.day_start_ms,
           empty,
           request.deck_id !== "__all_decks__",
         );
+        return warmMode === "controlled" && calls[command] > 1
+          ? {
+              ...loadedStatistics,
+              cards_learned_today: 17,
+              reviews_today: 23,
+            }
+          : loadedStatistics;
       }
       if (command === "prepare_study") {
         if (params.get("collection") === "empty")

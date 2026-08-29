@@ -42,6 +42,32 @@ async function lastRequest(page: Page, command: string) {
   }, command);
 }
 
+async function requestCount(page: Page, command: string): Promise<number> {
+  return page.evaluate(
+    (name) =>
+      (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+        (request) => request.command === name,
+      ).length,
+    command,
+  );
+}
+
+test("refreshes warm Today data after saving a card", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("Cards learned today")).toBeVisible();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const source = await sourceTextarea(page);
+  await source.fill("日曜日は図書館に行きます");
+  await selectRange(page, 4, 7);
+  await page.getByRole("button", { name: "Make cloze" }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Card saved on this device.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(page.getByText("1 due and 1 new.")).toBeVisible();
+  expect(await requestCount(page, "get_today_overview")).toBe(2);
+});
+
 test("maps a UTF-16 cloze request, renders its preview, and saves the edited DTO", async ({
   page,
 }) => {

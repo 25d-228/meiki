@@ -36,6 +36,7 @@
     onDeleteDeck: (deletion: SingleDeckDeletion) => void;
     onEdit: (cardId: string) => void;
     onRename: (name: string) => void;
+    onTodayMutation: () => void;
   };
 
   const defaultDeckId = "default-deck";
@@ -51,6 +52,7 @@
     onDeleteDeck,
     onEdit,
     onRename,
+    onTodayMutation,
   }: Props = $props();
   let overview = $state<DeckCardOverviewDto | null>(null);
   let query = $state("");
@@ -207,6 +209,7 @@
         destination_deck_id: destinationDeckId,
         now_ms: Date.now(),
       });
+      onTodayMutation();
       notice = actionNotice(action);
       movingCard = null;
       await loadCards();
@@ -241,6 +244,7 @@
       });
       renameDialogOpen = false;
       onRename(renamed.name);
+      onTodayMutation();
       notice = `Renamed deck to “${renamed.name}”.`;
     } catch (reason) {
       error = message(reason);
@@ -291,6 +295,7 @@
         now_ms: now.getTime(),
         day_start_ms: start.getTime(),
       });
+      onTodayMutation();
       timeOverrideDialogOpen = false;
       notice = useTimeOverride
         ? `Set this deck’s daily time to ${timeOverrideMinutes} minutes.`
