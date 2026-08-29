@@ -15,6 +15,7 @@ export async function installMockApi(page: Page): Promise<void> {
       "An exceptionally long language display name for wrapping";
     const calls: Record<string, number> = {};
     const committedReviewEventIds = new Set<string>();
+    const compensatedReviewEventIds = new Set<string>();
     const deletedDeckIds = new Set<string>();
     const resetDeckIds = new Set<string>();
     const removedDeckCardIds = new Set<string>();
@@ -343,6 +344,22 @@ export async function installMockApi(page: Page): Promise<void> {
           empty,
           request.deck_id !== "__all_decks__",
         );
+        const activeReviewCount = [...committedReviewEventIds].filter(
+          (eventId) => !compensatedReviewEventIds.has(eventId),
+        ).length;
+        if (!empty && activeReviewCount > 0) {
+          const today = loadedStatistics.review_activity.at(-1)!;
+          today.reviews += activeReviewCount;
+          today.correct_reviews += activeReviewCount;
+          loadedStatistics.reviews_today += activeReviewCount;
+          loadedStatistics.correct_reviews_today += activeReviewCount;
+          loadedStatistics.correct_rate_basis_points = Math.round(
+            (loadedStatistics.correct_reviews_today * 10_000) /
+              loadedStatistics.reviews_today,
+          );
+          loadedStatistics.error_rate_basis_points =
+            10_000 - loadedStatistics.correct_rate_basis_points;
+        }
         return warmMode === "controlled" && calls[command] > 1
           ? {
               ...loadedStatistics,
@@ -562,6 +579,10 @@ export async function installMockApi(page: Page): Promise<void> {
         if (params.get("failure") === "undo" && calls[command] === 1) {
           throw new Error("The review undo was interrupted.");
         }
+        compensatedReviewEventIds.add(
+          (args as { request: { review_event_id: string } }).request
+            .review_event_id,
+        );
         return {
           ...clone(dtos.undoResult),
           undo_event_id: (args as { request: { undo_event_id: string } })

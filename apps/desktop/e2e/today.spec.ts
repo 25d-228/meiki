@@ -238,11 +238,11 @@ test("does not let an older warm response replace a newer deck selection", async
   await page.getByRole("button", { name: "Today", exact: true }).click();
   await expect.poll(() => commandCount(page, "get_today_overview")).toBe(2);
   await page.getByLabel("Deck").selectOption("travel-deck");
-  await expect(page.getByText("Travel phrases", { exact: true })).toBeVisible();
+  await expect(page.locator(".queue > .eyebrow")).toHaveText("Travel phrases");
 
   await releaseTodayRequest(page, "overview");
   await expect(page.getByLabel("Deck")).toHaveValue("travel-deck");
-  await expect(page.getByText("Travel phrases", { exact: true })).toBeVisible();
+  await expect(page.locator(".queue > .eyebrow")).toHaveText("Travel phrases");
   expect((await lastRequest(page, "get_today_statistics"))?.args).toMatchObject(
     {
       request: { deck_id: "travel-deck" },
@@ -264,7 +264,7 @@ test("never reuses another deck scope while a focused load is delayed", async ({
   await expect.poll(() => commandCount(page, "get_today_overview")).toBe(2);
   await releaseTodayRequest(page, "overview");
 
-  await expect(page.getByText("Travel phrases", { exact: true })).toBeVisible();
+  await expect(page.locator(".queue > .eyebrow")).toHaveText("Travel phrases");
   await expect(
     page
       .locator("[data-statistics-summary-card]")
