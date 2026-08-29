@@ -66,6 +66,7 @@
   let retryStudyStart = $state(false);
   let loadedTodayRefresh = $state<number | null>(null);
   let overviewRequestId = 0;
+  let statisticsRequestId = 0;
   let activityMaximum = $derived(
     Math.max(
       1,
@@ -211,21 +212,32 @@
     request = statisticsRequest,
   ): Promise<void> {
     if (!request) return;
+    const currentStatisticsRequestId = ++statisticsRequestId;
     statisticsLoading = true;
     statisticsError = false;
     try {
       const loaded = await api.getTodayStatistics(request);
-      if (requestId === overviewRequestId && statisticsRequest === request) {
+      if (
+        requestId === overviewRequestId &&
+        currentStatisticsRequestId === statisticsRequestId &&
+        sameStatisticsScope(statisticsRequest, request)
+      ) {
         statistics = loaded;
         writeCurrentWarmData();
       }
     } catch {
-      if (requestId === overviewRequestId && statisticsRequest === request) {
+      if (
+        requestId === overviewRequestId &&
+        currentStatisticsRequestId === statisticsRequestId &&
+        sameStatisticsScope(statisticsRequest, request)
+      ) {
         if (statistics) refreshError = true;
         else statisticsError = true;
       }
     } finally {
-      if (statisticsRequest === request) statisticsLoading = false;
+      if (currentStatisticsRequestId === statisticsRequestId) {
+        statisticsLoading = false;
+      }
     }
   }
 
