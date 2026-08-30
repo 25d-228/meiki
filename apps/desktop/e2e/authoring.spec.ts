@@ -52,7 +52,9 @@ async function requestCount(page: Page, command: string): Promise<number> {
   );
 }
 
-test("refreshes warm Today data after saving a card", async ({ page }) => {
+test("Save & next saves once, opens a clean draft, and refreshes warm Today data", async ({
+  page,
+}) => {
   await page.goto("/");
   await expect(page.getByText("Cards learned today")).toBeVisible();
   await page.getByRole("button", { name: "Add", exact: true }).click();
@@ -60,8 +62,14 @@ test("refreshes warm Today data after saving a card", async ({ page }) => {
   await source.fill("日曜日は図書館に行きます");
   await selectRange(page, 4, 7);
   await page.getByRole("button", { name: "Make cloze" }).click();
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Card saved on this device.")).toBeVisible();
+  await page.getByRole("button", { name: "Save & next" }).click();
+
+  expect(await requestCount(page, "save_authoring_draft")).toBe(1);
+  expect(await requestCount(page, "new_authoring_draft")).toBe(2);
+  const cleanSource = await sourceTextarea(page);
+  await expect(cleanSource).toHaveValue("");
+  await expect(cleanSource).toBeEditable();
+  await expect(page.getByRole("button", { name: /Cloze 1/ })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Today", exact: true }).click();
   await expect(page.getByText("1 due and 1 new.")).toBeVisible();
