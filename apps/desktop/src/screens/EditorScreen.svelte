@@ -454,7 +454,8 @@
       savedMessage = "Card saved on this device.";
       if (onSaved) {
         await onSaved();
-      } else if (next) {
+      }
+      if (next && !onReturn) {
         await startNew(false);
       }
     } catch (reason) {

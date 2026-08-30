@@ -55,6 +55,7 @@
     onDeleteDecks: (deletion: MultipleDeckDeletion) => void;
     onRemoveBundle: (deletion: BundleDeletion) => void;
     onProgressReset: () => void;
+    onTodayMutation: () => void;
   };
 
   type DeckView = "grid" | "list";
@@ -121,6 +122,7 @@
     onDeleteDecks,
     onRemoveBundle,
     onProgressReset,
+    onTodayMutation,
   }: Props = $props();
   let decks = $state<DeckSummaryDto[]>([]);
   let activeQueue = $state<StudyQueueSession | null>(null);
@@ -247,6 +249,7 @@
       newDeckName = "";
       newDeckDialogOpen = false;
       await loadDecks();
+      onTodayMutation();
       notice = `Created deck “${created.name}”.`;
     } catch (cause) {
       error = message(cause);
@@ -844,11 +847,13 @@
         notice = `${deck.name} has no cards ready to study.`;
         return;
       }
+      const completesPendingReview = Boolean(activeQueue?.pendingReview);
       activeQueue = await replaceStudyQueue(
         activeQueue,
         plan.overview,
         api.gradeReview,
       );
+      if (completesPendingReview) onTodayMutation();
       onStudy(deck.name);
     } catch (cause) {
       error = message(cause);

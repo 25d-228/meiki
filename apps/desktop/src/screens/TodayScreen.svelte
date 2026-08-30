@@ -10,6 +10,7 @@
   import type { TodayStatisticsDto } from "../lib/generated/TodayStatisticsDto";
   import type { TodayStatisticsRequest } from "../lib/generated/TodayStatisticsRequest";
   import { localDayBounds } from "../lib/local-day";
+  import type { TodayWarmData } from "../lib/today-warm-data";
   import {
     clearStudyQueue,
     clearStudySession,
@@ -23,8 +24,10 @@
     onStart: () => void;
     onSettings: () => void;
     onDeckContextChange: (value: string) => void;
-    deletionRefresh: number;
-    progressResetRefresh: number;
+    todayRefresh: number;
+    readWarmData: (deckId: string, nowMs: number) => TodayWarmData | null;
+    writeWarmData: (warmData: TodayWarmData) => void;
+    onTodayMutation: () => void;
   };
 
   const selectedDeckKey = "meiki-today-deck";
@@ -35,22 +38,35 @@
     onStart,
     onSettings,
     onDeckContextChange,
-    deletionRefresh,
-    progressResetRefresh,
+    todayRefresh,
+    readWarmData,
+    writeWarmData,
+    onTodayMutation,
   }: Props = $props();
-  let overview = $state<TodayOverviewDto | null>(null);
-  let statistics = $state<TodayStatisticsDto | null>(null);
-  let statisticsRequest = $state<TodayStatisticsRequest | null>(null);
+  const initialDeckId = localStorage.getItem(selectedDeckKey) ?? allDecksId;
+  const initialWarmData = (() => readWarmData(initialDeckId, Date.now()))();
+  let overview = $state<TodayOverviewDto | null>(
+    initialWarmData?.overview ?? null,
+  );
+  let statistics = $state<TodayStatisticsDto | null>(
+    initialWarmData?.statistics ?? null,
+  );
+  let statisticsRequest = $state<TodayStatisticsRequest | null>(
+    statisticsRequestFromWarmData(initialWarmData),
+  );
   let statisticsLoading = $state(false);
   let statisticsError = $state(false);
   let activeQueue = $state<StudyQueueSession | null>(null);
-  let selectedDeckId = $state(allDecksId);
-  let loading = $state(true);
+  let selectedDeckId = $state(initialDeckId);
+  let loading = $state(initialWarmData === null);
+  let refreshing = $state(false);
   let startingStudy = $state(false);
   let error = $state("");
+  let refreshError = $state(false);
   let retryStudyStart = $state(false);
-  let loadedDeletionRefresh = $state<number | null>(null);
-  let loadedProgressResetRefresh = $state<number | null>(null);
+  let loadedTodayRefresh = $state<number | null>(null);
+  let overviewRequestId = 0;
+  let statisticsRequestId = 0;
   let activityMaximum = $derived(
     Math.max(
       1,
@@ -95,40 +111,41 @@
     } else {
       if (storedQueue) clearStudyQueue();
     }
-    selectedDeckId = localStorage.getItem(selectedDeckKey) ?? allDecksId;
+    if (overview) onDeckContextChange(overview.deck_name);
     void loadOverview();
+    return () => {
+      overviewRequestId += 1;
+    };
   });
 
   $effect(() => {
-    if (loadedDeletionRefresh === null) {
-      loadedDeletionRefresh = deletionRefresh;
+    if (loadedTodayRefresh === null) {
+      loadedTodayRefresh = todayRefresh;
       return;
     }
-    if (deletionRefresh === loadedDeletionRefresh) return;
-    loadedDeletionRefresh = deletionRefresh;
-    void loadOverview();
-  });
-
-  $effect(() => {
-    if (loadedProgressResetRefresh === null) {
-      loadedProgressResetRefresh = progressResetRefresh;
-      return;
-    }
-    if (progressResetRefresh === loadedProgressResetRefresh) return;
-    loadedProgressResetRefresh = progressResetRefresh;
+    if (todayRefresh === loadedTodayRefresh) return;
+    loadedTodayRefresh = todayRefresh;
     void loadOverview();
   });
 
   async function loadOverview(): Promise<void> {
-    loading = true;
+    const requestId = ++overviewRequestId;
+    const hasWarmOverview = overview?.deck_id === selectedDeckId;
+    loading = !hasWarmOverview;
+    refreshing = hasWarmOverview;
     error = "";
+    refreshError = false;
     retryStudyStart = false;
-    statistics = null;
-    statisticsRequest = null;
-    statisticsLoading = false;
-    statisticsError = false;
+    if (!hasWarmOverview) {
+      overview = null;
+      statistics = null;
+      statisticsRequest = null;
+      statisticsLoading = false;
+      statisticsError = false;
+    }
     try {
       const decks = await api.listDeckSummaries(Date.now());
+      if (requestId !== overviewRequestId) return;
       if (
         activeQueue &&
         activeQueue.deckId !== allDecksId &&
@@ -144,10 +161,14 @@
       ) {
         selectedDeckId = allDecksId;
         localStorage.setItem(selectedDeckKey, allDecksId);
+        applyWarmData(readWarmData(allDecksId, Date.now()));
+        loading = overview === null;
+        refreshing = overview !== null;
       }
       const settings = await api.getSchedulerSettings(
         selectedDeckId === allDecksId ? defaultDeckId : selectedDeckId,
       );
+      if (requestId !== overviewRequestId) return;
       const now = new SvelteDate();
       const { start, end } = localDayBounds(now, settings.day_boundary_minutes);
       const todayRequest = {
@@ -156,39 +177,119 @@
         day_start_ms: start.getTime(),
         day_end_ms: end.getTime(),
       };
-      overview = await api.getTodayOverview(todayRequest);
-      onDeckContextChange(overview.deck_name);
-      localStorage.setItem(selectedDeckKey, overview.deck_id);
-      statisticsRequest = {
+      const loadedOverview = await api.getTodayOverview(todayRequest);
+      if (requestId !== overviewRequestId) return;
+      overview = loadedOverview;
+      onDeckContextChange(loadedOverview.deck_name);
+      localStorage.setItem(selectedDeckKey, loadedOverview.deck_id);
+      const nextStatisticsRequest = {
         ...todayRequest,
         day_boundary_minutes: settings.day_boundary_minutes,
       };
-      void loadStatistics();
+      if (!sameStatisticsScope(statisticsRequest, nextStatisticsRequest)) {
+        statistics = null;
+      }
+      statisticsRequest = nextStatisticsRequest;
+      writeCurrentWarmData();
+      void loadStatistics(requestId, nextStatisticsRequest);
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      if (requestId !== overviewRequestId) return;
+      if (overview?.deck_id === selectedDeckId) {
+        refreshError = true;
+      } else {
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
     } finally {
-      loading = false;
+      if (requestId === overviewRequestId) {
+        loading = false;
+        refreshing = false;
+      }
     }
   }
 
-  async function loadStatistics(): Promise<void> {
-    if (!statisticsRequest) return;
-    const request = statisticsRequest;
+  async function loadStatistics(
+    requestId = overviewRequestId,
+    request = statisticsRequest,
+  ): Promise<void> {
+    if (!request) return;
+    const currentStatisticsRequestId = ++statisticsRequestId;
     statisticsLoading = true;
     statisticsError = false;
     try {
       const loaded = await api.getTodayStatistics(request);
-      if (statisticsRequest === request) statistics = loaded;
+      if (
+        requestId === overviewRequestId &&
+        currentStatisticsRequestId === statisticsRequestId &&
+        sameStatisticsScope(statisticsRequest, request)
+      ) {
+        statistics = loaded;
+        writeCurrentWarmData();
+      }
     } catch {
-      if (statisticsRequest === request) statisticsError = true;
+      if (
+        requestId === overviewRequestId &&
+        currentStatisticsRequestId === statisticsRequestId &&
+        sameStatisticsScope(statisticsRequest, request)
+      ) {
+        if (statistics) refreshError = true;
+        else statisticsError = true;
+      }
     } finally {
-      if (statisticsRequest === request) statisticsLoading = false;
+      if (currentStatisticsRequestId === statisticsRequestId) {
+        statisticsLoading = false;
+      }
     }
   }
 
   async function changeDeck(deckId: string): Promise<void> {
     selectedDeckId = deckId;
+    applyWarmData(readWarmData(deckId, Date.now()));
     await loadOverview();
+  }
+
+  function applyWarmData(warmData: TodayWarmData | null): void {
+    overview = warmData?.overview ?? null;
+    statistics = warmData?.statistics ?? null;
+    statisticsRequest = statisticsRequestFromWarmData(warmData);
+    statisticsError = false;
+  }
+
+  function statisticsRequestFromWarmData(
+    warmData: TodayWarmData | null,
+  ): TodayStatisticsRequest | null {
+    return warmData
+      ? {
+          deck_id: warmData.deckId,
+          now_ms: warmData.dayStartMs,
+          day_start_ms: warmData.dayStartMs,
+          day_end_ms: warmData.dayEndMs,
+          day_boundary_minutes: warmData.dayBoundaryMinutes,
+        }
+      : null;
+  }
+
+  function writeCurrentWarmData(): void {
+    if (!overview || !statisticsRequest) return;
+    writeWarmData({
+      deckId: overview.deck_id,
+      dayStartMs: statisticsRequest.day_start_ms,
+      dayEndMs: statisticsRequest.day_end_ms,
+      dayBoundaryMinutes: statisticsRequest.day_boundary_minutes,
+      overview,
+      statistics,
+    });
+  }
+
+  function sameStatisticsScope(
+    current: TodayStatisticsRequest | null,
+    next: TodayStatisticsRequest,
+  ): boolean {
+    return (
+      current?.deck_id === next.deck_id &&
+      current.day_start_ms === next.day_start_ms &&
+      current.day_end_ms === next.day_end_ms &&
+      current.day_boundary_minutes === next.day_boundary_minutes
+    );
   }
 
   async function beginStudy(): Promise<void> {
@@ -205,11 +306,13 @@
     error = "";
     retryStudyStart = false;
     try {
+      const completesPendingReview = Boolean(activeQueue?.pendingReview);
       activeQueue = await replaceStudyQueue(
         activeQueue,
         overview,
         api.gradeReview,
       );
+      if (completesPendingReview) onTodayMutation();
       onStart();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -303,7 +406,21 @@
     </Alert.Root>
   {/if}
 
-  <div class="today-overview" aria-busy={loading}>
+  {#if refreshError}
+    <Alert.Root role="alert">
+      <Alert.Title>Today could not be refreshed</Alert.Title>
+      <Alert.Description>
+        <p>Showing the last successful results.</p>
+        <Button
+          class="mt-3"
+          variant="outline"
+          onclick={() => void loadOverview()}>Try again</Button
+        >
+      </Alert.Description>
+    </Alert.Root>
+  {/if}
+
+  <div class="today-overview" aria-busy={loading || refreshing}>
     <Card.Root class="p-6">
       <div class="queue">
         <span class="eyebrow">{overview?.deck_name ?? "Review queue"}</span>

@@ -229,6 +229,9 @@ test("wraps a long language name without narrowing determinate progress", async 
 test("keeps one monotonic import visible and refreshes Decks after background success", async ({
   page,
 }) => {
+  await page.goto("/?bundleImport=activity&todayWarm=mutation");
+  await navigatePrimary(page, "Today");
+  await expect(page.getByText("Cards learned today")).toBeVisible();
   await startBundleImport(page);
   const card = page.getByTestId("bundle-import-activity");
   const dialog = page.getByRole("dialog", { name: "Import bundle" });
@@ -295,6 +298,25 @@ test("keeps one monotonic import visible and refreshes Decks after background su
 
   await navigatePrimary(page, "Decks");
   await expect(page.getByTestId("deck-deck:ja-JP:05")).toBeVisible();
+  await navigatePrimary(page, "Today");
+  await expect(page.getByText("Planning today…")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.__MEIKI_TEST_REQUESTS__ ?? []).filter(
+            (request) => request.command === "get_today_overview",
+          ).length,
+      ),
+    )
+    .toBe(3);
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event("meiki-e2e-release-today-overview")),
+  );
+  await expect(
+    page.getByLabel("Deck").locator('option[value="deck:ja-JP:05"]'),
+  ).toHaveText("Japanese 05 — N1 / balanced C1 bridge");
+  await navigatePrimary(page, "Decks");
   await card
     .getByRole("button", { name: "Dismiss bundle import status" })
     .click();

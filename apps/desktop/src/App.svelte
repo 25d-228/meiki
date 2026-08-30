@@ -6,6 +6,7 @@
   import RiMenuLine from "remixicon-svelte/icons/menu-line";
   import RiSettings3Line from "remixicon-svelte/icons/settings-3-line";
   import { onMount, tick } from "svelte";
+  import { SvelteMap } from "svelte/reactivity";
 
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -36,6 +37,7 @@
     clearStudySession,
     readStudyQueue,
   } from "./lib/study-queue";
+  import type { TodayWarmData } from "./lib/today-warm-data";
   import { screens, type Screen, type ThemeMode } from "./lib/ui";
   import DeckManagementScreen from "./screens/DeckManagementScreen.svelte";
   import DecksScreen from "./screens/DecksScreen.svelte";
@@ -91,13 +93,39 @@
   let deletionDialogOpen = false;
   let deletionCardVisible = false;
   let deletionRefresh = 0;
-  let progressResetRefresh = 0;
+  let todayRefresh = 0;
+  const todayWarmData = new SvelteMap<string, TodayWarmData>();
   let nextDeletionOperationId = 1;
   $: bundleImportRunning =
     bundleImportActivity?.status === "choosing" ||
     bundleImportActivity?.status === "previewing" ||
     bundleImportActivity?.status === "running";
   $: deletionRunning = deletionActivity?.status === "running";
+
+  function readTodayWarmData(
+    deckId: string,
+    nowMs: number,
+  ): TodayWarmData | null {
+    const warmData = todayWarmData.get(deckId);
+    if (
+      !warmData ||
+      nowMs < warmData.dayStartMs ||
+      nowMs >= warmData.dayEndMs
+    ) {
+      if (warmData) todayWarmData.delete(deckId);
+      return null;
+    }
+    return warmData;
+  }
+
+  function writeTodayWarmData(warmData: TodayWarmData): void {
+    todayWarmData.set(warmData.deckId, warmData);
+  }
+
+  function invalidateTodayWarmData(): void {
+    todayWarmData.clear();
+    todayRefresh += 1;
+  }
 
   onMount(() => {
     const savedTheme = localStorage.getItem("meiki-theme");
@@ -237,6 +265,7 @@
       bundleImportCardVisible = true;
       bundleImportDialogOpen = false;
       bundleImportRefresh += 1;
+      invalidateTodayWarmData();
     } catch (cause) {
       if (bundleImportActivity?.path !== path) return;
       bundleImportActivity.error = message(cause);
@@ -404,6 +433,7 @@
       );
       return;
     }
+    invalidateTodayWarmData();
     try {
       await applyDeletedDeckCleanup([result.deleted_deck_id]);
     } catch {
@@ -450,6 +480,7 @@
       );
       return;
     }
+    invalidateTodayWarmData();
     try {
       await applyDeletedDeckCleanup(result.deleted_deck_ids);
     } catch {
@@ -505,6 +536,7 @@
       );
       return;
     }
+    invalidateTodayWarmData();
     try {
       const remainingDecks = await api.listDeckSummaries(Date.now());
       const remainingDeckIds = new Set(remainingDecks.map((deck) => deck.id));
@@ -618,6 +650,11 @@
     editingStudyCardId = null;
     await tick();
     mainElement.focus();
+  }
+
+  async function handleEditorSaved(): Promise<void> {
+    invalidateTodayWarmData();
+    if (editingReturnScreen) await performEditorReturn();
   }
 
   async function confirmDiscard(): Promise<void> {
@@ -798,8 +835,10 @@
             onStart={() => void startStudy("today", deckContext)}
             onSettings={() => void navigate("settings")}
             onDeckContextChange={(value) => (deckContext = value)}
-            {deletionRefresh}
-            {progressResetRefresh}
+            {todayRefresh}
+            readWarmData={readTodayWarmData}
+            writeWarmData={writeTodayWarmData}
+            onTodayMutation={invalidateTodayWarmData}
           />
         {:else if activeScreen === "decks"}
           <DecksScreen
@@ -815,13 +854,17 @@
             onDeleteDeck={(deletion) => void deleteSingleDeck(deletion)}
             onDeleteDecks={(deletion) => void deleteMultipleDecks(deletion)}
             onRemoveBundle={(deletion) => void removeBundle(deletion)}
-            onProgressReset={() => (progressResetRefresh += 1)}
+            onProgressReset={() => {
+              invalidateTodayWarmData();
+            }}
+            onTodayMutation={invalidateTodayWarmData}
           />
         {:else if activeScreen === "study"}
           <StudyScreen
             onCreate={() => void navigate("editor")}
             onEdit={editStudyCard}
             onQueueComplete={finishStudyQueue}
+            onTodayMutation={invalidateTodayWarmData}
           />
         {:else if activeScreen === "deck"}
           <DeckManagementScreen
@@ -834,6 +877,7 @@
             onDeleteDeck={(deletion) => void deleteSingleDeck(deletion)}
             onEdit={editDeckCard}
             onRename={renameSelectedDeck}
+            onTodayMutation={invalidateTodayWarmData}
           />
         {:else if activeScreen === "editor"}
           <EditorScreen
@@ -842,7 +886,7 @@
               ? selectedDeckId
               : undefined}
             onReturn={editingReturnScreen ? returnFromEditor : undefined}
-            onSaved={editingReturnScreen ? performEditorReturn : undefined}
+            onSaved={handleEditorSaved}
             returnLabel={editingReturnScreen === "deck"
               ? "Cancel"
               : "Return to study"}
@@ -850,7 +894,11 @@
         {:else if activeScreen === "typing"}
           <TypingScreen />
         {:else}
-          <SettingsScreen {theme} onThemeChange={applyTheme} />
+          <SettingsScreen
+            {theme}
+            onThemeChange={applyTheme}
+            onTodayMutation={invalidateTodayWarmData}
+          />
         {/if}
       </main>
     </div>

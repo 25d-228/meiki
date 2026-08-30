@@ -1010,6 +1010,35 @@ test("maps keyboard grading and undo without browser persistence logic", async (
     },
   });
   await expect(page.getByLabel("Your answer")).toBeFocused();
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Resume study" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .locator("[data-statistics-summary-card]")
+      .filter({ hasText: "Reviews today" }),
+  ).toContainText("5");
+  expect(await requestCount(page, "get_today_overview")).toBe(2);
+});
+
+test("refreshes warm Today data after a completed review", async ({ page }) => {
+  await openStudy(page, "/");
+  await page.getByLabel("Your answer").fill("行きます");
+  await page.getByLabel("Your answer").press("Enter");
+  await page.getByRole("button", { name: /^Good/ }).click();
+  await expect(page.getByText(/Second card ·/)).toBeVisible();
+
+  await page.getByRole("button", { name: "Today", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Resume study" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .locator("[data-statistics-summary-card]")
+      .filter({ hasText: "Reviews today" }),
+  ).toContainText("6");
+  expect(await requestCount(page, "get_today_overview")).toBe(2);
 });
 
 test("keeps one undo on session completion and restores the reviewed queue position", async ({

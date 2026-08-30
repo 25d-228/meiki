@@ -34,11 +34,12 @@
   type Props = {
     theme: ThemeMode;
     onThemeChange: (theme: ThemeMode) => void;
+    onTodayMutation: () => void;
   };
 
   const settingsDeckId = "default-deck";
 
-  let { theme, onThemeChange }: Props = $props();
+  let { theme, onThemeChange, onTodayMutation }: Props = $props();
   let settings = $state<SchedulerSettingsDto | null>(null);
   let schedulingMode = $state<SchedulingModeDto>("automatic");
   let collectionBudgetHours = $state(0);
@@ -160,6 +161,7 @@
           previewedRequest ?? schedulingRequest(),
         ),
       );
+      onTodayMutation();
       writePromptAudioAutoplay(autoplayPromptAudio);
       notice = "Scheduling preferences saved.";
     } catch (cause) {

@@ -59,6 +59,7 @@
     onCreate: () => void;
     onEdit?: (cardId: string) => void;
     onQueueComplete?: () => void;
+    onTodayMutation: () => void;
   };
 
   type ViewState =
@@ -95,7 +96,7 @@
   const allDecksId = "__all_decks__";
   const grades: GradeDto[] = ["again", "hard", "good", "easy"];
 
-  let { onCreate, onEdit, onQueueComplete }: Props = $props();
+  let { onCreate, onEdit, onQueueComplete, onTodayMutation }: Props = $props();
   let view = $state<ViewState>("loading");
   let recoveryView = $state<StableView>("prompt");
   let retryAction = $state<RetryAction>("load");
@@ -178,6 +179,7 @@
           api.gradeReview,
         );
         writeStudyQueue(queueSession);
+        onTodayMutation();
       }
       if (!queueSession) return;
       await reconcileQueue();
@@ -429,6 +431,7 @@
         queue: queueBeforeReview,
         undoEventId: null,
       };
+      onTodayMutation();
       pendingGrade = null;
       vimMode = "normal";
       if (queueSession.position >= queueSession.entries.length) {
@@ -453,6 +456,7 @@
         card_content_version: card.card_content_version,
         schedule_version: card.schedule_version,
       });
+      onTodayMutation();
       completionKind = "suspended";
       advanceStudyQueue();
       view = "next";
@@ -495,6 +499,7 @@
       completionKind = null;
       resetStudyKeyboardState();
       restoreReviewedQueue(review.queue, card);
+      onTodayMutation();
       undoableReview = null;
       undoNotice = "Last review undone. The card is back in the queue.";
       view = "prompt";
