@@ -270,7 +270,11 @@
         api.listDeckSummaries(Date.now()),
         api.listInstalledBundles(),
       ]);
+      stopPointerSelection();
       decks = loadedDecks;
+      selectedDeckIds = selectedDeckIds.filter((id) =>
+        visibleDecks.some((deck) => deck.id === id),
+      );
       if (!visibleDecks.some((deck) => deck.id === focusedDeckId)) {
         focusedDeckId = visibleDecks[0]?.id ?? "";
       }

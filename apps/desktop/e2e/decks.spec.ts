@@ -2222,6 +2222,8 @@ test("reports installation when existing decks only need bundle associations", a
   await page.goto("/?bundle=unassociated");
   await openDecks(page);
   await expandDeckSection(page, "und");
+  await selectDeck(page, "Travel phrases");
+  await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
   await page.getByRole("button", { name: "Import bundle" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Import bundle" });
@@ -2237,6 +2239,23 @@ test("reports installation when existing decks only need bundle associations", a
       .getByText("Japanese is now installed."),
   ).toBeVisible();
   await expect(page.getByText(/Added Japanese with 0 decks/)).toHaveCount(0);
+  await expect(page.locator('[data-language-disclosure="ja"]')).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  await expect(page.getByTestId("deck-selection-count")).toHaveText(
+    "1 deck selected",
+  );
+  await expect(
+    page.getByRole("checkbox", { name: "Select Travel phrases" }),
+  ).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByTestId("deck-deck:ja-JP:00")).toHaveCount(0);
+  await expandDeckSection(page, "ja");
+  await expect(
+    page.getByRole("checkbox", {
+      name: "Select Japanese 00 — Kana, sound, and Japanese input",
+    }),
+  ).toHaveAttribute("aria-checked", "false");
 });
 
 test("removes an installed bundle after one confirmation and leaves unrelated decks", async ({

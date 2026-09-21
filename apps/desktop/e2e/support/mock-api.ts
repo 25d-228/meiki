@@ -740,6 +740,16 @@ export async function installMockApi(page: Page): Promise<void> {
             summaries.filter((deck) => !deletedDeckIds.has(deck.id)),
           );
         }
+        if (params.get("bundle") === "unassociated") {
+          return clone([
+            ...dtos.deckSummaries,
+            ...dtos.bundleDeckSummaries.map((deck) => ({
+              ...deck,
+              language_tag: null,
+              is_bundle_stage: false,
+            })),
+          ]);
+        }
         if (params.get("deckDeletion") === "focused-session") {
           return clone(
             focusedSessionDeckDeleted

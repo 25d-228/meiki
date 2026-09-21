@@ -620,6 +620,12 @@ for (const view of ["Grid", "List"] as const) {
           await expandDeckSection(page, "fr");
           await expandDeckSection(page, "es");
         }
+        await page.locator("#main-content").focus();
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+        await expect(
+          page.getByRole("link", { name: "Skip to content" }),
+        ).not.toBeInViewport();
         expect(
           await page.evaluate(
             () => document.documentElement.scrollWidth <= window.innerWidth,
