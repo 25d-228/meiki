@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
+import { expandDeckSection } from "./support/deck-sections";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
@@ -15,6 +16,7 @@ async function openTravelDeck(
     .getByRole("navigation", { name: "Primary navigation" })
     .getByRole("button", { name: "Decks", exact: true })
     .click();
+  await expandDeckSection(page, "other");
   await page
     .getByTestId("deck-travel-deck")
     .getByRole("button", { name: "Open" })
@@ -245,6 +247,7 @@ test("warns that deleting a bundle stage permanently removes bundled cards", asy
     .getByRole("navigation", { name: "Primary navigation" })
     .getByRole("button", { name: "Decks", exact: true })
     .click();
+  await expandDeckSection(page, "ja");
   const stage = page.getByTestId("deck-deck:ja-JP:00");
   await stage.getByRole("button", { name: "Open" }).click();
   await page.getByRole("button", { name: "Delete deck" }).click();

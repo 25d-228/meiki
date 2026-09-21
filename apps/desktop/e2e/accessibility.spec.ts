@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
+import { expandDeckSection } from "./support/deck-sections";
 
 type Theme = "light" | "dark";
 type Screen = "Today" | "Decks" | "Add" | "Typing" | "Settings";
@@ -91,6 +92,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.getByRole("button", { name: "Start study" }).click();
     await expectNoAccessibilityViolations(page);
     await navigate(page, "Decks");
+    await expandDeckSection(page, "other");
     await page
       .getByTestId("deck-travel-deck")
       .getByRole("button", { name: "Open" })
@@ -105,6 +107,7 @@ test("deck deletion progress exposes an accessible determinate state", async ({
   await page.goto("/?deckDeletion=progress-visual");
   await chooseTheme(page, "dark");
   await navigate(page, "Decks");
+  await expandDeckSection(page, "other");
   await page
     .getByTestId("deck-travel-deck")
     .getByRole("button", { name: "Open" })
@@ -133,6 +136,7 @@ test("deck reset and deletion actions are keyboard accessible", async ({
 }) => {
   await chooseTheme(page, "dark");
   await navigate(page, "Decks");
+  await expandDeckSection(page, "other");
   const actions = page.getByRole("button", {
     name: "Actions for Travel phrases",
   });
@@ -169,6 +173,7 @@ test("deck view controls expose keyboard-operable selected state", async ({
   page,
 }) => {
   await navigate(page, "Decks");
+  await expandDeckSection(page, "other");
   const viewControl = page.getByRole("group", { name: "Deck view" });
   const grid = viewControl.getByRole("button", { name: "Grid" });
   const list = viewControl.getByRole("button", { name: "List" });
@@ -197,6 +202,7 @@ test("deck selection and one batch confirmation are keyboard accessible", async 
 }) => {
   await page.goto("/?decks=batch");
   await navigate(page, "Decks");
+  await expandDeckSection(page, "other");
   const travel = page.getByRole("checkbox", {
     name: "Select Travel phrases",
   });
@@ -280,6 +286,7 @@ for (const theme of ["light", "dark"] as const) {
   }) => {
     await chooseTheme(page, theme);
     await navigate(page, "Decks");
+    await expandDeckSection(page, "other");
     await page
       .getByTestId("deck-travel-deck")
       .getByRole("button", { name: "Open" })

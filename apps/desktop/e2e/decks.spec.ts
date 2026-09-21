@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
+import { expandDeckSection } from "./support/deck-sections";
 
 const minimumActionGapPixels = 8;
 
@@ -158,6 +159,7 @@ async function clickDeckBackground(
   page: import("@playwright/test").Page,
   deckId: string,
 ): Promise<void> {
+  await page.getByTestId(`deck-${deckId}`).scrollIntoViewIfNeeded();
   const bounds = await page.getByTestId(`deck-${deckId}`).boundingBox();
   if (!bounds) throw new Error("Deck background geometry is unavailable");
   await clickBelowPointerThreshold(page, {
@@ -181,6 +183,7 @@ async function beginDeckBackgroundPress(
   page: import("@playwright/test").Page,
   deckId: string,
 ): Promise<number> {
+  await page.getByTestId(`deck-${deckId}`).scrollIntoViewIfNeeded();
   const area = page.getByTestId("deck-selection-area");
   await area.evaluate((element) => {
     element.addEventListener(
@@ -204,6 +207,7 @@ async function partialDeckDragPoints(
   page: import("@playwright/test").Page,
   deckId: string,
 ): Promise<{ start: Point; end: Point }> {
+  await page.getByTestId(`deck-${deckId}`).scrollIntoViewIfNeeded();
   const area = await page.getByTestId("deck-selection-area").boundingBox();
   const deck = await page.getByTestId(`deck-${deckId}`).boundingBox();
   if (!area || !deck) throw new Error("Deck selection geometry is unavailable");
@@ -319,6 +323,7 @@ async function dragFromElement(
   page: import("@playwright/test").Page,
   locator: import("@playwright/test").Locator,
 ): Promise<void> {
+  await locator.scrollIntoViewIfNeeded();
   const origin = await locator.boundingBox();
   const target = await page.getByTestId("deck-listening-deck").boundingBox();
   if (!origin || !target)
@@ -446,6 +451,7 @@ test("includes suspended cards in Total and presents the populated default deck 
   page,
 }) => {
   await openDecks(page);
+  await expandDeckSection(page, "other");
 
   const unsorted = page.getByTestId("deck-default-deck");
   await expect(unsorted.getByText("Unsorted", { exact: true })).toBeVisible();
@@ -460,6 +466,7 @@ test("defaults to Grid and persists pointer and keyboard view changes", async ({
   await page.evaluate(() => localStorage.removeItem("meiki-decks-view"));
   await page.reload();
   await openDecks(page);
+  await expandDeckSection(page, "other");
   const viewControl = page.getByRole("group", { name: "Deck view" });
   const grid = viewControl.getByRole("button", { name: "Grid" });
   const list = viewControl.getByRole("button", { name: "List" });
@@ -477,6 +484,7 @@ test("defaults to Grid and persists pointer and keyboard view changes", async ({
 
   await page.reload();
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await expect(list).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByTestId("deck-list")).toBeVisible();
 
@@ -494,6 +502,7 @@ test("keeps deck information and actions identical in Grid and List", async ({
   page,
 }) => {
   await openDecks(page);
+  await expandDeckSection(page, "other");
   const gridDetails = await Promise.all([
     deckDetails(page, "default-deck"),
     deckDetails(page, "travel-deck"),
@@ -537,6 +546,8 @@ test("aligns every List count column when Study and Resume labels differ", async
   await page.goto("/?decks=batch");
   await seedStudyState(page, "travel-deck", "__all_decks__");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await selectDeckView(page, "List");
   await expect(
     page
@@ -582,6 +593,8 @@ test("keeps a visible gap between Grid navigation actions", async ({
   await page.goto("/?decks=batch");
   await seedStudyState(page, "travel-deck", "__all_decks__");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
 
   for (const { deckId, studyLabel } of [
     { deckId: "travel-deck", studyLabel: "Resume" },
@@ -607,6 +620,7 @@ test("uses the shared single-deck deletion flow from List", async ({
   page,
 }) => {
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await selectDeckView(page, "List");
   await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
   const confirmation = page.getByRole("alertdialog", {
@@ -628,6 +642,8 @@ for (const deckView of ["Grid", "List"] as const) {
   }) => {
     await page.goto("/?decks=batch");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     if (deckView === "List") await selectDeckView(page, "List");
 
     await expectDeckSelectionControls(page);
@@ -657,6 +673,8 @@ for (const deckView of ["Grid", "List"] as const) {
   }) => {
     await page.goto("/?decks=batch");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     if (deckView === "List") await selectDeckView(page, "List");
 
     const pointerId = await beginPackagedCompatibleDrag(page, "travel-deck");
@@ -698,6 +716,8 @@ for (const { deckView, deckId, deckName } of [
   }) => {
     await page.goto("/?bundleRemoval=installed&decks=batch");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     if (deckView === "List") await selectDeckView(page, "List");
     await selectDeck(page, "Archived phrases");
     await page
@@ -733,6 +753,7 @@ for (const { deckView, deckId, deckName } of [
 
 test("a background double-click opens visible Unsorted", async ({ page }) => {
   await openDecks(page);
+  await expandDeckSection(page, "other");
 
   await doubleClickDeckBackground(page, "default-deck");
 
@@ -750,6 +771,8 @@ for (const deckView of ["Grid", "List"] as const) {
   }) => {
     await page.goto("/?decks=batch");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     if (deckView === "List") await selectDeckView(page, "List");
 
     await page
@@ -769,6 +792,8 @@ for (const deckView of ["Grid", "List"] as const) {
   }) => {
     await page.goto("/?decks=batch");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     if (deckView === "List") await selectDeckView(page, "List");
     await selectDeck(page, "Travel phrases");
     await selectDeck(page, "Listening practice");
@@ -802,6 +827,8 @@ for (const deckView of ["Grid", "List"] as const) {
   }) => {
     await page.goto("/?decks=batch");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     if (deckView === "List") await selectDeckView(page, "List");
     await selectDeck(page, "Travel phrases");
     await selectDeck(page, "Listening practice");
@@ -831,6 +858,8 @@ for (const cancellation of ["pointer cancel", "window blur"] as const) {
   }) => {
     await page.goto("/?decks=batch");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     await selectDeck(page, "Travel phrases");
     await selectDeck(page, "Listening practice");
     const pointerId = await beginDeckBackgroundPress(page, "travel-deck");
@@ -862,6 +891,9 @@ test("the rectangle stays clipped to Decks without horizontal overflow", async (
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
+  await page.getByTestId("deck-default-deck").scrollIntoViewIfNeeded();
   const area = page.getByTestId("deck-selection-area");
   const areaBefore = await area.boundingBox();
   if (!areaBefore) throw new Error("Deck selection area is unavailable");
@@ -896,6 +928,8 @@ test("plain and Shift rectangle drags use the pointer-down selection snapshot", 
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await selectDeck(page, "Travel phrases");
 
   await dragAcrossDeckEdge(page, "listening-deck");
@@ -928,6 +962,8 @@ for (const modifierCase of [
     await setPointerPlatform(page, modifierCase.platform);
     await page.goto("/?decks=batch");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     await selectDeck(page, "Travel phrases");
     await selectDeck(page, "Listening practice");
 
@@ -950,13 +986,21 @@ test("a rectangle excludes Unsorted while selecting every deletable deck", async
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
+  await page.getByTestId("deck-default-deck").scrollIntoViewIfNeeded();
   const area = await page.getByTestId("deck-selection-area").boundingBox();
   if (!area) throw new Error("Deck selection area is unavailable");
   await page.mouse.move(area.x + 1, area.y + 1);
   await page.mouse.down();
-  await page.mouse.move(area.x + area.width - 1, area.y + area.height - 1, {
-    steps: 8,
-  });
+  await page.mouse.move(
+    area.x + area.width - 1,
+    (page.viewportSize()?.height ?? 720) - 2,
+    {
+      steps: 8,
+    },
+  );
+  await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(5);
   await page.mouse.up();
 
   await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(5);
@@ -974,6 +1018,8 @@ test("interactive origins never begin rectangle selection", async ({
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   const travel = page.getByTestId("deck-travel-deck");
   await dragFromElement(
     page,
@@ -1051,6 +1097,8 @@ test("single-deck actions remain available with selected decks", async ({
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await selectDeck(page, "Travel phrases");
   await openDeckDeleteAction(page, "listening-deck", "Listening practice");
   await expect(
@@ -1065,6 +1113,8 @@ for (const edge of ["bottom", "top"] as const) {
     await page.setViewportSize({ width: 700, height: 420 });
     await page.goto("/?decks=scroll");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     await selectDeckView(page, "List");
     if (edge === "top") {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -1098,6 +1148,8 @@ test("edge scrolling uses the nearest vertical Decks container only", async ({
   await page.setViewportSize({ width: 900, height: 700 });
   await page.goto("/?decks=scroll");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await selectDeckView(page, "List");
   const main = page.locator("#main-content");
   await main.evaluate((element) => {
@@ -1121,6 +1173,8 @@ for (const stopCase of ["pointer cancel", "window blur", "unmount"] as const) {
     await page.setViewportSize({ width: 700, height: 420 });
     await page.goto("/?decks=scroll");
     await openDecks(page);
+    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "ja");
     await selectDeckView(page, "List");
     await page.getByTestId("deck-travel-deck").scrollIntoViewIfNeeded();
     const scrollBefore = await page.evaluate(() => window.scrollY);
@@ -1167,6 +1221,8 @@ test("keeps selected decks while switching between Grid and List", async ({
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
@@ -1194,6 +1250,8 @@ test("deletes several ordinary decks with one batch command", async ({
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expectDeckSelectionControls(page);
   for (const deckName of [
     "Travel phrases",
@@ -1231,6 +1289,8 @@ test("confirms several bundle stages once with permanent-content copy", async ({
 }) => {
   await page.goto("/?decks=batch");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expectDeckSelectionControls(page);
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
   await selectDeck(page, "Japanese 01 — N5 / A1 foundation");
@@ -1259,6 +1319,8 @@ test("mixed deletion clears only removed focused queue and Today state", async (
   await seedStudyState(page, "travel-deck", "deck:ja-JP:00");
   await page.evaluate(() => localStorage.setItem("meiki-decks-view", "list"));
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
@@ -1302,6 +1364,8 @@ test("batch deletion preserves all-decks queue and unrelated Today state", async
   await page.goto("/?decks=batch");
   await seedStudyState(page, "__all_decks__", "archive-deck");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expectDeckSelectionControls(page);
   await selectDeck(page, "Listening practice");
   await page.getByRole("button", { name: "Delete selected" }).click();
@@ -1334,6 +1398,8 @@ test("pre-commit batch failure preserves decks, selection, queue, and Today", as
   await page.goto("/?decks=batch&batchDeletion=precommit-failure");
   await seedStudyState(page, "travel-deck", "travel-deck");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Listening practice");
@@ -1371,6 +1437,8 @@ test("post-commit cleanup failure reports that every selected deck was deleted",
 }) => {
   await page.goto("/?decks=batch&batchDeletion=postcommit-failure");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
@@ -1395,6 +1463,8 @@ test("post-commit cleanup failure reports that every selected deck was deleted",
 test("batch deletion progress is semantic and monotonic", async ({ page }) => {
   await page.goto("/?decks=batch&batchDeletion=progress");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Japanese 00 — Kana, sound, and Japanese input");
@@ -1459,6 +1529,7 @@ for (const deckView of ["Grid", "List"] as const) {
     await seedStudyState(page, "__all_decks__", "__all_decks__");
     await page.goto("/?bundleRemoval=installed&today=empty");
     await openDecks(page);
+    await expandDeckSection(page, "other");
     await expect(page.getByText(/A saved session is active/)).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Bundle actions" }),
@@ -1482,6 +1553,7 @@ test("wraps long names without horizontal overflow in Grid or narrow List", asyn
   await page.setViewportSize({ width: 360, height: 720 });
   await page.goto("/?decks=long-name");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   const longName =
     "Travel phrases for an exceptionally long multilingual journey through 日本語 and العربية";
   const gridDeck = page.getByTestId("deck-travel-deck");
@@ -1523,6 +1595,7 @@ test("opens each deletable deck's reset action by keyboard and keeps Unsorted wi
   page,
 }) => {
   await openDecks(page);
+  await expandDeckSection(page, "other");
 
   const actions = page.getByRole("button", {
     name: "Actions for Travel phrases",
@@ -1550,6 +1623,8 @@ test("offers Reset progress for ordinary and bundle decks in Grid and List", asy
 }) => {
   await page.goto("/?bundleRemoval=installed");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   for (const view of ["Grid", "List"] as const) {
     if (view === "List") await selectDeckView(page, view);
     for (const [deckId, deckName] of [
@@ -1575,6 +1650,7 @@ test("confirms one deck reset, refreshes Decks and Today, and preserves Today se
     localStorage.setItem("meiki-today-deck", "travel-deck");
   });
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await openDeckResetAction(page, "travel-deck", "Travel phrases");
 
   const confirmation = page.getByRole("alertdialog", {
@@ -1621,6 +1697,7 @@ test("confirms one deck reset, refreshes Decks and Today, and preserves Today se
 test("reports a reset no-op without changing deck counts", async ({ page }) => {
   await page.goto("/?deckReset=no-progress");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await openDeckResetAction(page, "travel-deck", "Travel phrases");
   await page
     .getByRole("alertdialog", {
@@ -1653,6 +1730,7 @@ for (const queueDeckId of [
     await seedStudyState(page, queueDeckId, "travel-deck");
     await page.goto("/");
     await openDecks(page);
+    await expandDeckSection(page, "other");
     await openDeckResetAction(page, "travel-deck", "Travel phrases");
     await page
       .getByRole("alertdialog", {
@@ -1689,6 +1767,7 @@ test("keeps queue state on a concise reset failure", async ({ page }) => {
   );
   await page.goto("/?deckReset=failure");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await openDeckResetAction(page, "travel-deck", "Travel phrases");
   const confirmation = page.getByRole("alertdialog", {
     name: "Reset progress for “Travel phrases”?",
@@ -1711,6 +1790,7 @@ test("submits a rapid repeated reset confirmation only once", async ({
 }) => {
   await page.goto("/?deckReset=controlled");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await openDeckResetAction(page, "travel-deck", "Travel phrases");
   const confirmation = page.getByRole("alertdialog", {
     name: "Reset progress for “Travel phrases”?",
@@ -1739,6 +1819,7 @@ test("deletes an ordinary deck from its card once and refreshes Decks in place",
   page,
 }) => {
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
 
   const confirmation = page.getByRole("alertdialog", {
@@ -1772,6 +1853,8 @@ test("clears selected decks and a pending batch snapshot after one selected deck
 }) => {
   await page.goto("/?decks=batch&deckDeletion=postcommit-failure");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expectDeckSelectionControls(page);
   await selectDeck(page, "Travel phrases");
   await selectDeck(page, "Listening practice");
@@ -1820,6 +1903,8 @@ test("keeps bundle-stage deletion copy and Move cards instead behavior on Decks"
 }) => {
   await page.goto("/?bundleRemoval=installed");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await openDeckDeleteAction(
     page,
     "deck:ja-JP:00",
@@ -1862,6 +1947,7 @@ test("shows the shared monotonic deletion progress from a deck card", async ({
 }) => {
   await page.goto("/?deckDeletion=progress");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
   await page
     .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
@@ -1896,6 +1982,7 @@ test("preserves queue, session, Today selection, and deck after a pre-commit fai
   );
   await page.goto("/?deckDeletion=precommit-failure");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await expectDeckSelectionControls(page, 1);
   await selectDeck(page, "Travel phrases");
   await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
@@ -1933,6 +2020,7 @@ test("refreshes the deleted deck while preserving the post-commit cleanup warnin
 }) => {
   await page.goto("/?deckDeletion=postcommit-failure");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
   await page
     .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
@@ -1957,6 +2045,7 @@ test("clears only the deleted deck's focused queue and resets its Today selectio
   await seedStudyState(page, "travel-deck", "travel-deck");
   await page.goto("/");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
   await page
     .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
@@ -1983,6 +2072,7 @@ for (const preservedQueue of ["__all_decks__", "default-deck"] as const) {
     await seedStudyState(page, preservedQueue, "default-deck");
     await page.goto("/");
     await openDecks(page);
+    await expandDeckSection(page, "other");
     await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
     await page
       .getByRole("alertdialog", { name: "Delete “Travel phrases”?" })
@@ -2008,6 +2098,7 @@ for (const preservedQueue of ["__all_decks__", "default-deck"] as const) {
 test("hides the empty internal default deck", async ({ page }) => {
   await page.goto("/?decks=empty-default");
   await openDecks(page);
+  await expandDeckSection(page, "other");
 
   await expect(page.getByTestId("deck-default-deck")).toHaveCount(0);
   await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
@@ -2018,6 +2109,7 @@ test("offers hidden empty Unsorted as the direct deletion destination", async ({
 }) => {
   await page.goto("/?decks=empty-default");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await expect(page.getByTestId("deck-default-deck")).toHaveCount(0);
   await expect(page.locator(".deck-grid").getByTestId(/^deck-/)).toHaveCount(1);
   await openDeckDeleteAction(page, "travel-deck", "Travel phrases");
@@ -2050,6 +2142,7 @@ test("previews and adds the complete Japanese bundle in ordered progress stages"
   page,
 }) => {
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await page.getByRole("button", { name: "Import bundle" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Import bundle" });
@@ -2089,6 +2182,7 @@ test("marks installed bundle decks and disables an already installed bundle", as
 }) => {
   await page.goto("/?bundle=partial");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await page.getByRole("button", { name: "Import bundle" }).click();
   let dialog = page.getByRole("dialog", { name: "Import bundle" });
   await expect(dialog.getByText("Installed", { exact: true })).toHaveCount(2);
@@ -2097,6 +2191,7 @@ test("marks installed bundle decks and disables an already installed bundle", as
   await page.keyboard.press("Escape");
   await page.goto("/?bundle=installed");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await page.getByRole("button", { name: "Import bundle" }).click();
   dialog = page.getByRole("dialog", { name: "Import bundle" });
   await expect(
@@ -2112,6 +2207,7 @@ test("reports installation when existing decks only need bundle associations", a
 }) => {
   await page.goto("/?bundle=unassociated");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await page.getByRole("button", { name: "Import bundle" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Import bundle" });
@@ -2134,6 +2230,8 @@ test("removes an installed bundle after one confirmation and leaves unrelated de
 }) => {
   await page.goto("/?bundleRemoval=installed");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await page.getByRole("button", { name: "Bundle actions" }).click();
   const actions = page.getByRole("dialog", { name: "Bundle actions" });
   const removeJapanese = actions.getByRole("button", {
@@ -2185,6 +2283,8 @@ test("exports an installed bundle from its language actions", async ({
 }) => {
   await page.goto("/?bundleRemoval=installed");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await page.getByRole("button", { name: "Bundle actions" }).click();
   await page
     .getByRole("dialog", { name: "Bundle actions" })
@@ -2225,6 +2325,8 @@ test("preserves an all-decks study queue when its bundle decks are removed", asy
   });
   await page.goto("/?bundleRemoval=installed");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await expect(page.getByText(/A saved session is active/)).toBeVisible();
 
   await confirmJapaneseBundleRemoval(page);
@@ -2242,6 +2344,8 @@ test("preserves an all-decks study queue when its bundle decks are removed", asy
 test("resets a removed Today deck selection to All decks", async ({ page }) => {
   await page.goto("/?bundleRemoval=installed");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await page.evaluate(() => {
     localStorage.setItem("meiki-today-deck", "deck:ja-JP:05");
   });
@@ -2274,6 +2378,7 @@ test("keeps Unsorted visible when active cards exist but hides rename and delete
   page,
 }) => {
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await page
     .getByTestId("deck-default-deck")
     .getByRole("button", { name: "Open" })
@@ -2296,6 +2401,7 @@ test("keeps Unsorted visible when active cards exist but hides rename and delete
 test("creates a deck from its name only", async ({ page }) => {
   await page.goto("/?decks=lifecycle");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await page.getByRole("button", { name: "New deck" }).click();
   const dialog = page.getByRole("dialog", { name: "New deck" });
   await expect(dialog.getByRole("textbox")).toHaveCount(1);
@@ -2313,6 +2419,7 @@ test("starts and resumes a study queue restricted to one deck", async ({
   page,
 }) => {
   await openDecks(page);
+  await expandDeckSection(page, "other");
   const travelDeck = page.getByTestId("deck-travel-deck");
   await travelDeck.getByRole("button", { name: "Study" }).click();
   await expect(
@@ -2323,6 +2430,7 @@ test("starts and resumes a study queue restricted to one deck", async ({
   });
 
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await expect(
     page
       .getByTestId("deck-travel-deck")
@@ -2348,6 +2456,8 @@ test("replaces a bundle-stage queue while preserving its completed review", asyn
 }) => {
   await page.goto("/?bundleRemoval=installed");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   const stage00 = page.getByTestId("deck-deck:ja-JP:00");
   const stage01 = page.getByTestId("deck-deck:ja-JP:01");
   const stage02 = page.getByTestId("deck-deck:ja-JP:02");
@@ -2360,6 +2470,8 @@ test("replaces a bundle-stage queue while preserving its completed review", asyn
   await page.getByLabel("Your answer").fill("unfinished response");
 
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await page.evaluate(() => {
     sessionStorage.setItem(
       "meiki-active-study-session",
@@ -2411,11 +2523,15 @@ test("keeps only an empty deck disabled while another queue is saved", async ({
 }) => {
   await page.goto("/?bundleRemoval=installed&emptyDeck=default-deck");
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
   await page
     .getByTestId("deck-travel-deck")
     .getByRole("button", { name: "Study" })
     .click();
   await openDecks(page);
+  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "ja");
 
   await expect(
     page
@@ -2439,6 +2555,7 @@ test("manages deck identity and daily time without Settings deck controls", asyn
 }) => {
   await page.goto("/?decks=lifecycle");
   await openDecks(page);
+  await expandDeckSection(page, "other");
   await page
     .getByTestId("deck-travel-deck")
     .getByRole("button", { name: "Open" })

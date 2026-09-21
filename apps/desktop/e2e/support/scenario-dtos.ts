@@ -232,6 +232,7 @@ const deckSummaries = [
   {
     id: "default-deck",
     name: "Unsorted",
+    language_tag: null,
     is_bundle_stage: false,
     total_cards: 3,
     due_cards: 1,
@@ -240,6 +241,7 @@ const deckSummaries = [
   {
     id: "travel-deck",
     name: "Travel phrases",
+    language_tag: null,
     is_bundle_stage: false,
     total_cards: 2,
     due_cards: 0,
@@ -711,6 +713,46 @@ export const scenarioDtos = {
   },
   decks,
   deckSummaries,
+  groupedDeckSummaries: [
+    deckSummaries[0],
+    { ...deckSummaries[1], language_tag: "es-MX", name: "Renamed Travel" },
+    {
+      ...deckSummaries[1],
+      id: "listening-deck",
+      language_tag: "ES-es",
+      name: "Listening practice",
+    },
+    {
+      ...deckSummaries[1],
+      id: "archive-deck",
+      language_tag: "fr-FR",
+      name: "French practice",
+    },
+    {
+      ...deckSummaries[1],
+      id: "unknown-deck",
+      language_tag: "zz-ZZ",
+      name: "Unrecognized language",
+    },
+    {
+      ...deckSummaries[1],
+      id: "missing-deck",
+      language_tag: null,
+      name: "Personal notes",
+    },
+    {
+      ...deckSummaries[1],
+      id: "invalid-deck",
+      language_tag: "not_a_tag",
+      name: "Invalid metadata",
+    },
+    {
+      ...deckSummaries[1],
+      id: "undetermined-deck",
+      language_tag: "und",
+      name: "Undetermined metadata",
+    },
+  ],
   bundlePreview: {
     path: "/tmp/exports/meiki-e2e.meiki",
     language_tag: "ja-JP",
@@ -722,6 +764,7 @@ export const scenarioDtos = {
   bundleDeckSummaries: bundleDecks.map((deck) => ({
     id: deck.id,
     name: deck.name,
+    language_tag: "ja-JP",
     is_bundle_stage: true,
     total_cards: deck.cards,
     due_cards: 0,
@@ -732,6 +775,7 @@ export const scenarioDtos = {
     {
       id: "listening-deck",
       name: "Listening practice",
+      language_tag: null,
       is_bundle_stage: false,
       total_cards: 4,
       due_cards: 2,
@@ -740,6 +784,7 @@ export const scenarioDtos = {
     {
       id: "archive-deck",
       name: "Archived phrases",
+      language_tag: null,
       is_bundle_stage: false,
       total_cards: 1,
       due_cards: 0,
@@ -748,6 +793,7 @@ export const scenarioDtos = {
     ...bundleDecks.slice(0, 2).map((deck) => ({
       id: deck.id,
       name: deck.name,
+      language_tag: "ja-JP",
       is_bundle_stage: true,
       total_cards: deck.cards,
       due_cards: 0,
@@ -793,6 +839,8 @@ export const scenarioDtos = {
       {
         id: "listening-deck",
         name: "Listening",
+        language_tag: null,
+        is_bundle_stage: false,
         total_cards: 0,
         due_cards: 0,
         new_cards: 0,

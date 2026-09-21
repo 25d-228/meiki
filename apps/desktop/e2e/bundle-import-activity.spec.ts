@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
+import { expandDeckSection } from "./support/deck-sections";
 
 const terminalMinimumVisibleMs = 2_500;
 const terminalMaximumVisibleMs = 4_500;
@@ -297,6 +298,14 @@ test("keeps one monotonic import visible and refreshes Decks after background su
   }
 
   await navigatePrimary(page, "Decks");
+  await expect(page.locator('[data-language-disclosure="ja"]')).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  await expect(page.locator('[data-language-disclosure="ja"]')).toContainText(
+    "6 decks",
+  );
+  await expandDeckSection(page, "ja");
   await expect(page.getByTestId("deck-deck:ja-JP:05")).toBeVisible();
   await navigatePrimary(page, "Today");
   await expect(page.getByText("Planning today…")).toBeVisible();

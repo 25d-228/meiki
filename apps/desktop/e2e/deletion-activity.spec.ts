@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
+import { expandDeckSection } from "./support/deck-sections";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
@@ -27,6 +28,7 @@ async function navigatePrimary(
 
 async function openDecks(page: Page): Promise<void> {
   await navigatePrimary(page, "Decks");
+  await expandDeckSection(page, "other");
 }
 
 async function startSingleDeckDeletion(page: Page): Promise<void> {

@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
+import { expandDeckSection } from "./support/deck-sections";
 
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
@@ -52,6 +53,7 @@ test("dialog, toolbar, fields, and empty state are keyboard operable", async ({
 }) => {
   await page.goto("/?collection=empty");
   await page.getByRole("button", { name: "Decks", exact: true }).click();
+  await expandDeckSection(page, "other");
   await page
     .getByTestId("deck-travel-deck")
     .getByRole("button", { name: "Open" })
