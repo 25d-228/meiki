@@ -174,7 +174,7 @@
     >();
     for (const deck of decks) {
       if (deck.id === defaultDeckId) continue;
-      let key = "other";
+      let key = "und";
       try {
         const language = new Intl.Locale(deck.language_tag ?? "und").language;
         if (language && language !== "und") key = language.toLowerCase();
@@ -185,7 +185,7 @@
       if (!section) {
         section = {
           key,
-          name: key === "other" ? "Other decks" : languageName(key),
+          name: key === "und" ? "Other decks" : languageName(key),
           decks: [],
         };
         sections.set(key, section);
@@ -193,11 +193,7 @@
       section.decks.push(deck);
     }
     return [...sections.values()].sort((a, b) =>
-      a.key === "other"
-        ? 1
-        : b.key === "other"
-          ? -1
-          : a.name.localeCompare(b.name),
+      a.key === "und" ? 1 : b.key === "und" ? -1 : a.name.localeCompare(b.name),
     );
   });
   let visibleDecks = $derived([
@@ -1337,7 +1333,7 @@
                 <span class="min-w-0 [overflow-wrap:anywhere]"
                   >{section.name}</span
                 >
-                <span class="ml-auto shrink-0 text-sm text-muted-foreground"
+                <span class="ml-auto shrink-0 text-sm"
                   >{section.decks.length}
                   {section.decks.length === 1 ? "deck" : "decks"}</span
                 >
@@ -1345,7 +1341,10 @@
             {/snippet}
           </Collapsible.Trigger>
           <Collapsible.Content class="pt-2">
-            {@render deckPresentation(section.decks)}
+            <!-- The primitive hides content but keeps children mounted; folded decks must not be hit-test targets. -->
+            {#if expandedLanguages.includes(section.key)}
+              {@render deckPresentation(section.decks)}
+            {/if}
           </Collapsible.Content>
         </Collapsible.Root>
       {/each}

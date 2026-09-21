@@ -16,7 +16,7 @@ async function openTravelDeck(
     .getByRole("navigation", { name: "Primary navigation" })
     .getByRole("button", { name: "Decks", exact: true })
     .click();
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
   await page
     .getByTestId("deck-travel-deck")
     .getByRole("button", { name: "Open" })

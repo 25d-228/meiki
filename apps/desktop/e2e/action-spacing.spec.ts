@@ -106,7 +106,7 @@ test("keeps independent actions separated across maintained screens", async ({
   await expectActionGroupGap(page.locator(".today-actions"));
 
   await navigatePrimary(page, "Decks");
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
   const gridDeck = page.getByTestId("deck-travel-deck");
   await expectActionGroupGap(gridDeck.locator(".deck-navigation-actions"));
   await expectActionGroupGap(gridDeck.locator(".deck-card-actions"));
@@ -170,7 +170,7 @@ test("keeps Study prompt, reveal, grading, and audio actions separated", async (
 test("keeps import and bundle dialog actions separated", async ({ page }) => {
   await page.goto("/?bundleRemoval=installed");
   await navigatePrimary(page, "Decks");
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
 
   await page.getByRole("button", { name: "Import bundle" }).click();
   const importDialog = page.getByRole("dialog", { name: "Import bundle" });
@@ -203,7 +203,7 @@ test("keeps single-deck deletion dialog actions separated", async ({
 }) => {
   await page.goto("/");
   await navigatePrimary(page, "Decks");
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
   const travelDeck = page.getByTestId("deck-travel-deck");
   await travelDeck
     .getByRole("button", { name: "Actions for Travel phrases" })
@@ -229,7 +229,7 @@ test("keeps single-deck deletion dialog actions separated", async ({
 test("keeps batch-deletion dialog actions separated", async ({ page }) => {
   await page.goto("/?decks=batch");
   await navigatePrimary(page, "Decks");
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
   await page.getByRole("checkbox", { name: "Select Travel phrases" }).click();
   await page
     .getByRole("checkbox", { name: "Select Listening practice" })
@@ -249,7 +249,7 @@ test("keeps wrapped narrow action groups separated without horizontal overflow",
   await page.setViewportSize({ width: 360, height: 720 });
   await page.goto("/?bundleRemoval=installed");
   await navigatePrimary(page, "Decks");
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
   await expectWrappedActionGroup(page.locator(".screen-actions"));
 
   await page

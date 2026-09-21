@@ -53,7 +53,7 @@ test("dialog, toolbar, fields, and empty state are keyboard operable", async ({
 }) => {
   await page.goto("/?collection=empty");
   await page.getByRole("button", { name: "Decks", exact: true }).click();
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
   await page
     .getByTestId("deck-travel-deck")
     .getByRole("button", { name: "Open" })

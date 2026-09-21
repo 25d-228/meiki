@@ -29,7 +29,7 @@ async function openDecks(page: Page, route = "/"): Promise<void> {
   await expect(
     page.getByRole("heading", { name: "Decks", level: 1 }),
   ).toBeVisible();
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
   await expect(page.getByTestId("deck-travel-deck")).toBeVisible();
 }
 

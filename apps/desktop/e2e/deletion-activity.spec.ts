@@ -28,7 +28,7 @@ async function navigatePrimary(
 
 async function openDecks(page: Page): Promise<void> {
   await navigatePrimary(page, "Decks");
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
 }
 
 async function startSingleDeckDeletion(page: Page): Promise<void> {

@@ -62,7 +62,7 @@ for (const view of ["Grid", "List"] as const) {
     await expect(page.getByTestId("deck-archive-deck")).toHaveCount(0);
     await expandDeckSection(page, "fr");
     await expandDeckSection(page, "zz");
-    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "und");
     await expect(page.locator("[data-vim-deck-item]")).toHaveCount(8);
     expect(
       await page
@@ -192,7 +192,7 @@ for (const value of ["{broken", '"es"', '["es", 3]']) {
       page.locator('[data-language-disclosure="es"]'),
     ).toHaveAttribute("aria-expanded", "false");
     await expect(
-      page.locator('[data-language-disclosure="other"]'),
+      page.locator('[data-language-disclosure="und"]'),
     ).toHaveAttribute("aria-expanded", "false");
   });
 }

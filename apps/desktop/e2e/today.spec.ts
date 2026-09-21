@@ -829,7 +829,7 @@ test("recovers the selected Today deck after an individual deck is deleted", asy
     .getByRole("navigation", { name: "Primary navigation" })
     .getByRole("button", { name: "Decks", exact: true })
     .click();
-  await expandDeckSection(page, "other");
+  await expandDeckSection(page, "und");
   await page
     .getByTestId("deck-travel-deck")
     .getByRole("button", { name: "Open" })

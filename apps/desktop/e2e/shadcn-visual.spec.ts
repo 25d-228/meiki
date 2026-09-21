@@ -49,7 +49,7 @@ async function navigate(page: Page, screen: Screen): Promise<void> {
     await page.getByRole("button", { name: "Start study" }).click();
   } else if (screen === "Deck") {
     await navigatePrimary(page, "Decks");
-    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "und");
     await page
       .getByTestId("deck-travel-deck")
       .getByRole("button", { name: "Open" })
@@ -301,7 +301,7 @@ for (const vimCase of [
       viewport: vimCase.viewport,
     });
     if (vimCase.screen === "Decks") {
-      await expandDeckSection(page, "other");
+      await expandDeckSection(page, "und");
       await page.locator("#main-content").focus();
       await page.keyboard.press("j");
       await expect(page.getByTestId("deck-travel-deck")).toBeFocused();
@@ -571,7 +571,7 @@ for (const deckViewCase of [
         .getByRole("button", { name: "List" })
         .click();
     }
-    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "und");
     await expect(
       page.getByTestId(
         deckViewCase.view === "Grid" ? "deck-grid" : "deck-list",
@@ -666,7 +666,7 @@ for (const selectionCase of [
         .getByRole("button", { name: "List" })
         .click();
     }
-    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "und");
     await expandDeckSection(page, "ja");
     await page.getByRole("checkbox", { name: "Select Travel phrases" }).click();
     await page
@@ -742,7 +742,7 @@ for (const deckActionsCase of [
       theme: deckActionsCase.theme,
       viewport: deckActionsCase.viewport,
     });
-    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "und");
     await page
       .getByRole("button", { name: "Actions for Travel phrases" })
       .click();
@@ -798,7 +798,7 @@ for (const resetCase of [
       theme: resetCase.theme,
       viewport: resetCase.viewport,
     });
-    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "und");
     await page
       .getByRole("button", { name: "Actions for Travel phrases" })
       .click();
@@ -951,7 +951,7 @@ for (const deletionCase of [
       theme: deletionCase.theme,
       viewport: deletionCase.viewport,
     });
-    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "und");
     await page
       .getByTestId("deck-travel-deck")
       .getByRole("button", { name: "Open" })
@@ -1000,7 +1000,7 @@ for (const deletionActivityCase of [
       theme: deletionActivityCase.theme,
       viewport: deletionActivityCase.viewport,
     });
-    await expandDeckSection(page, "other");
+    await expandDeckSection(page, "und");
     await page
       .getByRole("button", { name: "Actions for Travel phrases" })
       .click();
