@@ -279,6 +279,15 @@ for (const layout of [
     for (const view of ["Grid", "List"] as const) {
       await page.getByRole("button", { name: view, exact: true }).click();
       await expandDeckSection(page, "es");
+      await page
+        .getByRole("group", { name: "Deck view" })
+        .evaluate(async (element) => {
+          await Promise.all(
+            element
+              .getAnimations({ subtree: true })
+              .map((animation) => animation.finished),
+          );
+        });
       expect(
         (await new AxeBuilder({ page }).include("main").analyze()).violations,
       ).toEqual([]);
