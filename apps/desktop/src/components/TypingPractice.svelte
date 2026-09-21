@@ -2,7 +2,7 @@
   import RiArrowRightLine from "remixicon-svelte/icons/arrow-right-line";
   import RiRestartLine from "remixicon-svelte/icons/restart-line";
 
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
 
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
@@ -12,6 +12,7 @@
     type InstructionPlatform,
     type TypingLesson,
   } from "$lib/typing-lessons";
+  import { TypingSpeech, type TypingSpeechStatus } from "$lib/typing-speech";
   import { type VimMode, vimCommandAllowed } from "$lib/vim-keybindings";
   import TypingKeyboard from "./TypingKeyboard.svelte";
 
@@ -54,12 +55,17 @@
   let sequenceCompleted = $state(false);
   let feedback = $state("");
   let liveStatus = $state("");
+  let speechStatus = $state<TypingSpeechStatus>(null);
   let inputElement = $state<HTMLInputElement | null>(null);
+  let typingSpeech: TypingSpeech | null = null;
 
   let expectedCode = $derived(expectedCodes[expectedIndex] ?? null);
   let completedCodes = $derived(expectedCodes.slice(0, expectedIndex));
 
   onMount(() => {
+    typingSpeech = new TypingSpeech(window, (status) => {
+      speechStatus = status;
+    });
     if (completed) {
       expectedIndex = expectedCodes.length;
       result = "correct";
@@ -68,6 +74,8 @@
     }
     liveStatus = initialStatus();
   });
+
+  onDestroy(() => typingSpeech?.destroy());
 
   function acceptsPhysicalCode(code: string): boolean {
     return (
@@ -187,6 +195,7 @@
     }
 
     physicalTrail = [...physicalTrail, event.code];
+    pronouncePhysicalCharacter(event);
     if (event.code === "Enter" && lesson.mode === "committed") {
       if (compositionActive) {
         updatePhysicalSequence(event.code, true);
@@ -226,8 +235,9 @@
   }
 
   function handleInput(event: Event): void {
-    inputValue = (event.currentTarget as HTMLInputElement).value;
-    if (!composing) committedOutput = inputValue;
+    const nextValue = (event.currentTarget as HTMLInputElement).value;
+    inputValue = nextValue;
+    if (!composing) commitOutput(nextValue);
   }
 
   function handleCompositionStart(event: CompositionEvent): void {
@@ -247,7 +257,7 @@
     composing = false;
     compositionText = "";
     inputValue = (event.currentTarget as HTMLInputElement).value;
-    committedOutput = inputValue;
+    commitOutput(inputValue);
     feedback = "";
     liveStatus = committedOutput
       ? `Committed ${committedOutput}. Press Enter to check.`
@@ -274,14 +284,6 @@
   }
 
   function sameGraphemes(actual: string, expected: string): boolean {
-    const segmenter = new Intl.Segmenter(undefined, {
-      granularity: "grapheme",
-    });
-    const graphemes = (value: string) =>
-      Array.from(
-        segmenter.segment(value.normalize("NFC")),
-        ({ segment }) => segment,
-      );
     const actualGraphemes = graphemes(actual);
     const expectedGraphemes = graphemes(expected);
     return (
@@ -301,6 +303,7 @@
   }
 
   function retry(): void {
+    typingSpeech?.cancel();
     expectedIndex = 0;
     pressedCodes = [];
     incorrectCode = null;
@@ -313,6 +316,64 @@
     sequenceCompleted = false;
     feedback = "";
     liveStatus = initialStatus();
+  }
+
+  function pronouncePhysicalCharacter(event: KeyboardEvent): void {
+    if (lesson.mode !== "physical") return;
+    const legend = lesson.keyLegends[event.code];
+    if (!legend) return;
+    const shiftActive =
+      event.shiftKey ||
+      pressedCodes.includes("ShiftLeft") ||
+      pressedCodes.includes("ShiftRight");
+    const character = shiftActive
+      ? (legend.shifted ?? legend.base)
+      : legend.base;
+    if (character) typingSpeech?.pronounce([character], lesson.languageTag);
+  }
+
+  function commitOutput(nextOutput: string): void {
+    const addedGraphemes = insertedGraphemes(committedOutput, nextOutput);
+    committedOutput = nextOutput;
+    typingSpeech?.pronounce(addedGraphemes, lesson.languageTag);
+  }
+
+  function insertedGraphemes(previous: string, next: string): string[] {
+    const previousGraphemes = graphemes(previous);
+    const nextGraphemes = graphemes(next);
+    let prefixLength = 0;
+    while (
+      prefixLength < previousGraphemes.length &&
+      prefixLength < nextGraphemes.length &&
+      previousGraphemes[prefixLength] === nextGraphemes[prefixLength]
+    ) {
+      prefixLength += 1;
+    }
+
+    let suffixLength = 0;
+    while (
+      suffixLength < previousGraphemes.length - prefixLength &&
+      suffixLength < nextGraphemes.length - prefixLength &&
+      previousGraphemes[previousGraphemes.length - 1 - suffixLength] ===
+        nextGraphemes[nextGraphemes.length - 1 - suffixLength]
+    ) {
+      suffixLength += 1;
+    }
+
+    return nextGraphemes.slice(
+      prefixLength,
+      nextGraphemes.length - suffixLength,
+    );
+  }
+
+  function graphemes(value: string): string[] {
+    const segmenter = new Intl.Segmenter(undefined, {
+      granularity: "grapheme",
+    });
+    return Array.from(
+      segmenter.segment(value.normalize("NFC")),
+      ({ segment }) => segment,
+    );
   }
 </script>
 
@@ -413,6 +474,19 @@
     {feedback || liveStatus}
   </p>
 
+  {#if speechStatus}
+    <p
+      id="typing-speech-status"
+      class="speech-status"
+      role="status"
+      aria-live="polite"
+    >
+      {speechStatus === "unavailable"
+        ? "Character sound is unavailable for this language."
+        : "Character sound could not be played."}
+    </p>
+  {/if}
+
   <div class="practice-actions">
     <Button variant="outline" onclick={retry}>
       <RiRestartLine data-icon="inline-start" aria-hidden="true" />
@@ -508,6 +582,12 @@
     color: var(--muted-foreground);
     font-size: var(--text-sm);
     font-weight: 700;
+  }
+
+  .speech-status {
+    margin: -0.75rem 0 0;
+    color: var(--muted-foreground);
+    font-size: var(--text-sm);
   }
 
   .correct-feedback {
