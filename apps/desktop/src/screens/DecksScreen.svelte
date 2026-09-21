@@ -7,8 +7,9 @@
   import RiListUnordered from "remixicon-svelte/icons/list-unordered";
   import RiMore2Line from "remixicon-svelte/icons/more-2-line";
   import RiRestartLine from "remixicon-svelte/icons/restart-line";
+  import RiArrowRightSLine from "remixicon-svelte/icons/arrow-right-s-line";
   import { onMount, tick } from "svelte";
-  import { SvelteDate, SvelteSet } from "svelte/reactivity";
+  import { SvelteDate, SvelteMap, SvelteSet } from "svelte/reactivity";
 
   import DeckBatchDeletionFlow from "../components/DeckBatchDeletionFlow.svelte";
   import DeckDeletionFlow from "../components/DeckDeletionFlow.svelte";
@@ -17,6 +18,7 @@
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
+  import * as Collapsible from "$lib/components/ui/collapsible/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
@@ -88,6 +90,7 @@
   };
 
   const deckViewPreferenceKey = "meiki-decks-view";
+  const expandedLanguagesPreferenceKey = "meiki-decks-expanded-languages";
   const allDecksId = "__all_decks__";
   const defaultDeckId = "default-deck";
   const pointerMovementThreshold = 6;
@@ -160,12 +163,64 @@
   let edgeScrollFrame: number | null = null;
   let vimKeybindingsEnabled = $state(false);
   let focusedDeckId = $state("");
+  let expandedLanguages = $state<string[]>([]);
+  let unsortedDecks = $derived(
+    decks.filter((deck) => deck.id === defaultDeckId),
+  );
+  let languageSections = $derived.by(() => {
+    const sections = new SvelteMap<
+      string,
+      { key: string; name: string; decks: DeckSummaryDto[] }
+    >();
+    for (const deck of decks) {
+      if (deck.id === defaultDeckId) continue;
+      let key = "und";
+      try {
+        const language = new Intl.Locale(deck.language_tag ?? "und").language;
+        if (language && language !== "und") key = language.toLowerCase();
+      } catch {
+        // Invalid persisted metadata belongs with the other unclassified decks.
+      }
+      let section = sections.get(key);
+      if (!section) {
+        section = {
+          key,
+          name: key === "und" ? "Other decks" : languageName(key),
+          decks: [],
+        };
+        sections.set(key, section);
+      }
+      section.decks.push(deck);
+    }
+    return [...sections.values()].sort((a, b) =>
+      a.key === "und" ? 1 : b.key === "und" ? -1 : a.name.localeCompare(b.name),
+    );
+  });
+  let visibleDecks = $derived([
+    ...unsortedDecks,
+    ...languageSections
+      .filter((section) => expandedLanguages.includes(section.key))
+      .flatMap((section) => section.decks),
+  ]);
 
   onMount(() => {
     onDeckContextChange("All decks");
     vimKeybindingsEnabled = readVimKeybindings();
     if (localStorage.getItem(deckViewPreferenceKey) === "list") {
       deckView = "list";
+    }
+    try {
+      const saved: unknown = JSON.parse(
+        localStorage.getItem(expandedLanguagesPreferenceKey) ?? "[]",
+      );
+      if (
+        Array.isArray(saved) &&
+        saved.every((key) => typeof key === "string")
+      ) {
+        expandedLanguages = [...new Set(saved)];
+      }
+    } catch {
+      // A malformed local preference must not prevent collection loading.
     }
     const storedQueue = readStudyQueue();
     if (storedQueue && remainingStudyCards(storedQueue) > 0) {
@@ -215,9 +270,13 @@
         api.listDeckSummaries(Date.now()),
         api.listInstalledBundles(),
       ]);
+      stopPointerSelection();
       decks = loadedDecks;
-      if (!loadedDecks.some((deck) => deck.id === focusedDeckId)) {
-        focusedDeckId = loadedDecks[0]?.id ?? "";
+      selectedDeckIds = selectedDeckIds.filter((id) =>
+        visibleDecks.some((deck) => deck.id === id),
+      );
+      if (!visibleDecks.some((deck) => deck.id === focusedDeckId)) {
+        focusedDeckId = visibleDecks[0]?.id ?? "";
       }
       installedBundles = loadedBundles;
       if (
@@ -307,11 +366,13 @@
   }
 
   function selectDeckView(view: DeckView): void {
+    stopPointerSelection();
     deckView = view;
     localStorage.setItem(deckViewPreferenceKey, view);
   }
 
   async function focusDeck(deckId: string): Promise<void> {
+    if (!visibleDecks.some((deck) => deck.id === deckId)) return;
     focusedDeckId = deckId;
     await tick();
     deckInteractionArea
@@ -320,15 +381,20 @@
   }
 
   function moveDeckFocus(direction: -1 | 1): void {
-    if (decks.length === 0) return;
-    const currentIndex = decks.findIndex((deck) => deck.id === focusedDeckId);
+    if (visibleDecks.length === 0) return;
+    const currentIndex = visibleDecks.findIndex(
+      (deck) => deck.id === focusedDeckId,
+    );
     const nextIndex =
       currentIndex < 0
         ? direction === 1
           ? 0
-          : decks.length - 1
-        : Math.min(decks.length - 1, Math.max(0, currentIndex + direction));
-    void focusDeck(decks[nextIndex].id);
+          : visibleDecks.length - 1
+        : Math.min(
+            visibleDecks.length - 1,
+            Math.max(0, currentIndex + direction),
+          );
+    void focusDeck(visibleDecks[nextIndex].id);
   }
 
   function openDeck(deck: DeckSummaryDto): void {
@@ -345,6 +411,16 @@
 
   function handleVimKeydown(event: KeyboardEvent): void {
     if (!vimCommandAllowed(event, vimKeybindingsEnabled)) return;
+    if (
+      event
+        .composedPath()
+        .some(
+          (target) =>
+            target instanceof Element &&
+            target.hasAttribute("data-language-disclosure"),
+        )
+    )
+      return;
     const key = event.key.toLowerCase();
     if (key === "j" || key === "k") {
       event.preventDefault();
@@ -360,7 +436,9 @@
       }
       return;
     }
-    const deck = decks.find((candidate) => candidate.id === focusedDeckId);
+    const deck = visibleDecks.find(
+      (candidate) => candidate.id === focusedDeckId,
+    );
     if (!deck) return;
     if (
       (event.key === "Enter" || key === "o") &&
@@ -384,6 +462,28 @@
 
   function clearSelection(): void {
     selectedDeckIds = [];
+  }
+
+  function setLanguageExpanded(key: string, open: boolean): void {
+    stopPointerSelection();
+    expandedLanguages = open
+      ? [...new Set([...expandedLanguages, key])]
+      : expandedLanguages.filter((language) => language !== key);
+    if (!open) {
+      const hiddenIds = new Set(
+        languageSections
+          .find((section) => section.key === key)
+          ?.decks.map((deck) => deck.id),
+      );
+      selectedDeckIds = selectedDeckIds.filter((id) => !hiddenIds.has(id));
+    }
+    if (!visibleDecks.some((deck) => deck.id === focusedDeckId)) {
+      focusedDeckId = visibleDecks[0]?.id ?? "";
+    }
+    localStorage.setItem(
+      expandedLanguagesPreferenceKey,
+      JSON.stringify(expandedLanguages),
+    );
   }
 
   function toggleDeckSelection(deckId: string): void {
@@ -1100,110 +1200,159 @@
     bind:this={deckInteractionArea}
     onpointerdown={beginPointerSelection}
   >
-    {#if deckView === "grid"}
-      <div class="deck-grid" data-testid="deck-grid" aria-busy={loading}>
-        {#if loading && decks.length === 0}
-          <Card.Root class="p-6">
-            <p class="text-muted-foreground">Loading decks…</p>
-          </Card.Root>
-        {:else}
-          {#each decks as deck (deck.id)}
-            <Card.Root
-              class={selectedDeckIds.includes(deck.id)
-                ? "gap-5 p-5 ring-2 ring-primary"
-                : "gap-5 p-5"}
-              data-deck-selection-id={deck.id === defaultDeckId
-                ? undefined
-                : deck.id}
-              data-selected={selectedDeckIds.includes(deck.id)}
-              data-deck-selection-click-id={deck.id}
-              data-testid={`deck-${deck.id}`}
-              data-vim-deck-item
-              data-vim-deck-id={deck.id}
-              data-vim-focused={focusedDeckId === deck.id}
-              role={vimKeybindingsEnabled ? "group" : undefined}
-              tabindex={vimKeybindingsEnabled
-                ? focusedDeckId === deck.id
-                  ? 0
-                  : -1
-                : undefined}
-              aria-label={vimKeybindingsEnabled
-                ? `Deck ${deck.name}`
-                : undefined}
-              onfocusin={() => (focusedDeckId = deck.id)}
-              ondblclick={(event) => openDeckFromDoubleClick(event, deck)}
-            >
-              <Card.Header class="p-0">
-                <Card.Title class="[overflow-wrap:anywhere]" data-deck-name
-                  >{deck.name}</Card.Title
-                >
-                <Card.Description>
-                  {deck.total_cards}
-                  {deck.total_cards === 1 ? "card" : "cards"}
-                </Card.Description>
-                {#if deck.id !== defaultDeckId}
-                  <Card.Action>
-                    <div class="deck-card-actions">
-                      {@render deckSelectionControl(deck)}
-                      {@render deckActionsMenu(deck)}
-                    </div>
-                  </Card.Action>
-                {/if}
-              </Card.Header>
-              {@render deckCounts(deck)}
-              <Card.Footer class="justify-end p-0">
-                {@render deckNavigationActions(deck)}
-              </Card.Footer>
+    {#snippet deckPresentation(presentedDecks: DeckSummaryDto[])}
+      {#if deckView === "grid"}
+        <div class="deck-grid">
+          {#if loading && decks.length === 0}
+            <Card.Root class="p-6">
+              <p class="text-muted-foreground">Loading decks…</p>
             </Card.Root>
-          {/each}
-        {/if}
-      </div>
-    {:else}
-      <div class="deck-list" data-testid="deck-list" aria-busy={loading}>
-        {#if loading && decks.length === 0}
-          <Card.Root class="p-6">
-            <p class="text-muted-foreground">Loading decks…</p>
-          </Card.Root>
-        {:else}
-          {#each decks as deck (deck.id)}
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex (roving focus must coexist with the row's native action controls) -->
-            <article
-              class="deck-list-row"
-              data-deck-selection-id={deck.id === defaultDeckId
-                ? undefined
-                : deck.id}
-              data-selected={selectedDeckIds.includes(deck.id)}
-              data-deck-selection-click-id={deck.id}
-              data-testid={`deck-${deck.id}`}
-              data-vim-deck-item
-              data-vim-deck-id={deck.id}
-              data-vim-focused={focusedDeckId === deck.id}
-              role={vimKeybindingsEnabled ? "group" : undefined}
-              tabindex={vimKeybindingsEnabled
-                ? focusedDeckId === deck.id
-                  ? 0
-                  : -1
-                : undefined}
-              aria-label={vimKeybindingsEnabled
-                ? `Deck ${deck.name}`
-                : undefined}
-              onfocusin={() => (focusedDeckId = deck.id)}
-              ondblclick={(event) => openDeckFromDoubleClick(event, deck)}
-            >
-              <h2 class="deck-list-name" data-deck-name>{deck.name}</h2>
-              {@render deckCounts(deck)}
-              <div class="deck-list-actions">
-                {@render deckNavigationActions(deck)}
-                {#if deck.id !== defaultDeckId}
-                  {@render deckSelectionControl(deck)}
-                  {@render deckActionsMenu(deck)}
-                {/if}
-              </div>
-            </article>
-          {/each}
-        {/if}
-      </div>
-    {/if}
+          {:else}
+            {#each presentedDecks as deck (deck.id)}
+              <Card.Root
+                class={selectedDeckIds.includes(deck.id)
+                  ? "gap-5 p-5 ring-2 ring-primary"
+                  : "gap-5 p-5"}
+                data-deck-selection-id={deck.id === defaultDeckId
+                  ? undefined
+                  : deck.id}
+                data-selected={selectedDeckIds.includes(deck.id)}
+                data-deck-selection-click-id={deck.id}
+                data-testid={`deck-${deck.id}`}
+                data-vim-deck-item
+                data-vim-deck-id={deck.id}
+                data-vim-focused={focusedDeckId === deck.id}
+                role={vimKeybindingsEnabled ? "group" : undefined}
+                tabindex={vimKeybindingsEnabled
+                  ? focusedDeckId === deck.id
+                    ? 0
+                    : -1
+                  : undefined}
+                aria-label={vimKeybindingsEnabled
+                  ? `Deck ${deck.name}`
+                  : undefined}
+                onfocusin={() => (focusedDeckId = deck.id)}
+                ondblclick={(event) => openDeckFromDoubleClick(event, deck)}
+              >
+                <Card.Header class="p-0">
+                  <Card.Title class="[overflow-wrap:anywhere]" data-deck-name
+                    >{deck.name}</Card.Title
+                  >
+                  <Card.Description>
+                    {deck.total_cards}
+                    {deck.total_cards === 1 ? "card" : "cards"}
+                  </Card.Description>
+                  {#if deck.id !== defaultDeckId}
+                    <Card.Action>
+                      <div class="deck-card-actions">
+                        {@render deckSelectionControl(deck)}
+                        {@render deckActionsMenu(deck)}
+                      </div>
+                    </Card.Action>
+                  {/if}
+                </Card.Header>
+                {@render deckCounts(deck)}
+                <Card.Footer class="justify-end p-0">
+                  {@render deckNavigationActions(deck)}
+                </Card.Footer>
+              </Card.Root>
+            {/each}
+          {/if}
+        </div>
+      {:else}
+        <div class="deck-list">
+          {#if loading && decks.length === 0}
+            <Card.Root class="p-6">
+              <p class="text-muted-foreground">Loading decks…</p>
+            </Card.Root>
+          {:else}
+            {#each presentedDecks as deck (deck.id)}
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex (roving focus must coexist with the row's native action controls) -->
+              <article
+                class="deck-list-row"
+                data-deck-selection-id={deck.id === defaultDeckId
+                  ? undefined
+                  : deck.id}
+                data-selected={selectedDeckIds.includes(deck.id)}
+                data-deck-selection-click-id={deck.id}
+                data-testid={`deck-${deck.id}`}
+                data-vim-deck-item
+                data-vim-deck-id={deck.id}
+                data-vim-focused={focusedDeckId === deck.id}
+                role={vimKeybindingsEnabled ? "group" : undefined}
+                tabindex={vimKeybindingsEnabled
+                  ? focusedDeckId === deck.id
+                    ? 0
+                    : -1
+                  : undefined}
+                aria-label={vimKeybindingsEnabled
+                  ? `Deck ${deck.name}`
+                  : undefined}
+                onfocusin={() => (focusedDeckId = deck.id)}
+                ondblclick={(event) => openDeckFromDoubleClick(event, deck)}
+              >
+                <h2 class="deck-list-name" data-deck-name>{deck.name}</h2>
+                {@render deckCounts(deck)}
+                <div class="deck-list-actions">
+                  {@render deckNavigationActions(deck)}
+                  {#if deck.id !== defaultDeckId}
+                    {@render deckSelectionControl(deck)}
+                    {@render deckActionsMenu(deck)}
+                  {/if}
+                </div>
+              </article>
+            {/each}
+          {/if}
+        </div>
+      {/if}
+    {/snippet}
+    <div
+      class="deck-sections"
+      data-testid={deckView === "grid" ? "deck-grid" : "deck-list"}
+      aria-busy={loading}
+    >
+      {#if unsortedDecks.length > 0 || (loading && decks.length === 0)}
+        {@render deckPresentation(unsortedDecks)}
+      {/if}
+      {#each languageSections as section (section.key)}
+        <Collapsible.Root
+          open={expandedLanguages.includes(section.key)}
+          onOpenChange={(open) => setLanguageExpanded(section.key, open)}
+        >
+          <Collapsible.Trigger>
+            {#snippet child({ props })}
+              <Button
+                {...props}
+                variant="ghost"
+                class="h-auto min-h-11 w-full justify-start whitespace-normal px-3 py-2 text-left"
+                data-language-disclosure={section.key}
+                aria-label={`${section.name}, ${section.decks.length} ${section.decks.length === 1 ? "deck" : "decks"}`}
+              >
+                <RiArrowRightSLine
+                  class={expandedLanguages.includes(section.key)
+                    ? "shrink-0 rotate-90"
+                    : "shrink-0"}
+                  aria-hidden="true"
+                />
+                <span class="min-w-0 [overflow-wrap:anywhere]"
+                  >{section.name}</span
+                >
+                <span class="ml-auto shrink-0 text-sm"
+                  >{section.decks.length}
+                  {section.decks.length === 1 ? "deck" : "decks"}</span
+                >
+              </Button>
+            {/snippet}
+          </Collapsible.Trigger>
+          <Collapsible.Content class="pt-2">
+            <!-- The primitive hides content but keeps children mounted; folded decks must not be hit-test targets. -->
+            {#if expandedLanguages.includes(section.key)}
+              {@render deckPresentation(section.decks)}
+            {/if}
+          </Collapsible.Content>
+        </Collapsible.Root>
+      {/each}
+    </div>
     {#if selectionRectangle}
       <div
         class="deck-selection-rectangle"
@@ -1435,6 +1584,14 @@
   .deck-selection-area {
     position: relative;
     min-width: 0;
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .deck-sections {
+    display: grid;
+    min-width: 0;
+    gap: 0.75rem;
   }
 
   .deck-selection-area[data-dragging="true"] {

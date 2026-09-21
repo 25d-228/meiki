@@ -682,6 +682,13 @@ export async function installMockApi(page: Page): Promise<void> {
           throw new Error("The local collection is temporarily unavailable.");
         }
         if (params.get("decks") === "empty") return [];
+        if (params.get("decks") === "grouped") {
+          return clone(
+            dtos.groupedDeckSummaries.filter(
+              (deck) => !deletedDeckIds.has(deck.id),
+            ),
+          );
+        }
         if (params.get("decks") === "long-name") {
           return clone(
             dtos.deckSummaries.map((deck) =>
@@ -707,6 +714,7 @@ export async function installMockApi(page: Page): Promise<void> {
             ...Array.from({ length: 24 }, (_, index) => ({
               id: `scroll-deck-${index + 1}`,
               name: `Scroll fixture ${index + 1}`,
+              language_tag: null,
               is_bundle_stage: false,
               total_cards: index + 1,
               due_cards: index % 3,
@@ -731,6 +739,16 @@ export async function installMockApi(page: Page): Promise<void> {
           return clone(
             summaries.filter((deck) => !deletedDeckIds.has(deck.id)),
           );
+        }
+        if (params.get("bundle") === "unassociated") {
+          return clone([
+            ...dtos.deckSummaries,
+            ...dtos.bundleDeckSummaries.map((deck) => ({
+              ...deck,
+              language_tag: null,
+              is_bundle_stage: false,
+            })),
+          ]);
         }
         if (params.get("deckDeletion") === "focused-session") {
           return clone(

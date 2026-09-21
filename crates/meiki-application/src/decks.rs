@@ -27,6 +27,7 @@ pub struct DeckDto {
 pub struct DeckSummaryDto {
     pub id: String,
     pub name: String,
+    pub language_tag: Option<String>,
     pub is_bundle_stage: bool,
     pub total_cards: u32,
     pub due_cards: u32,
@@ -263,6 +264,7 @@ impl ApplicationService {
             if deck.id == DEFAULT_DECK_ID && counts.all_cards == 0 {
                 continue;
             }
+            let bundle_language = storage.bundle_language_for_deck(&deck.id)?;
             summaries.push(DeckSummaryDto {
                 id: deck.id.clone(),
                 name: if deck.id == DEFAULT_DECK_ID {
@@ -270,7 +272,8 @@ impl ApplicationService {
                 } else {
                     deck.name
                 },
-                is_bundle_stage: storage.bundle_language_for_deck(&deck.id)?.is_some(),
+                is_bundle_stage: bundle_language.is_some(),
+                language_tag: deck.language_tag.or(bundle_language),
                 total_cards: desktop_u32(counts.total_cards, "deck card count")?,
                 due_cards: desktop_u32(counts.due_cards, "deck due card count")?,
                 new_cards: desktop_u32(counts.new_cards, "deck new card count")?,
@@ -834,6 +837,54 @@ mod tests {
                 }],
             }],
         }
+    }
+
+    #[test]
+    fn summaries_use_persisted_language_then_bundle_fallback_without_changing_counts() {
+        let directory = tempdir().unwrap();
+        let service = ApplicationService::new(directory.path().join("collection.db"));
+        let mut storage = service.open_storage().unwrap();
+        let bundle = one_card_bundle("a".repeat(64));
+        storage
+            .import_pristine_bundle(&bundle, || {}, || Ok::<(), ()>(()))
+            .unwrap();
+        let mut deck = storage.get_deck("cleanup-stage").unwrap();
+        deck.language_tag = Some("es-MX".into());
+        deck.name = "Renamed independently of language".into();
+        storage.update_deck(&deck).unwrap();
+        drop(storage);
+        let summaries = service.list_deck_summaries(2_000).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].language_tag.as_deref(), Some("es-MX"));
+        assert!(summaries[0].is_bundle_stage);
+        assert_eq!(summaries[0].total_cards, 1);
+        assert_eq!(summaries[0].new_cards, 1);
+        assert_eq!(summaries[0].due_cards, 0);
+
+        let mut storage = service.open_storage().unwrap();
+        deck.language_tag = None;
+        storage.update_deck(&deck).unwrap();
+        add_card(
+            &mut storage,
+            DEFAULT_DECK_ID,
+            "unsorted-language",
+            CardLifecycle::Unseen,
+            2_000,
+            false,
+        );
+        drop(storage);
+        let summaries = service.list_deck_summaries(2_000).unwrap();
+        assert_eq!(
+            deck_summary(&summaries, "cleanup-stage")
+                .language_tag
+                .as_deref(),
+            Some("ko-KR")
+        );
+        let unsorted = deck_summary(&summaries, DEFAULT_DECK_ID);
+        assert_eq!(unsorted.name, "Unsorted");
+        assert_eq!(unsorted.language_tag, None);
+        assert_eq!(unsorted.total_cards, 1);
+        assert!(!unsorted.is_bundle_stage);
     }
 
     fn review_card(

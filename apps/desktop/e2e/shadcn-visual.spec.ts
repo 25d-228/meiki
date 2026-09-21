@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { installMockApi } from "./support/mock-api";
+import { expandDeckSection } from "./support/deck-sections";
 
 const minimumActionGapPixels = 8;
 
@@ -48,6 +49,7 @@ async function navigate(page: Page, screen: Screen): Promise<void> {
     await page.getByRole("button", { name: "Start study" }).click();
   } else if (screen === "Deck") {
     await navigatePrimary(page, "Decks");
+    await expandDeckSection(page, "und");
     await page
       .getByTestId("deck-travel-deck")
       .getByRole("button", { name: "Open" })
@@ -299,6 +301,7 @@ for (const vimCase of [
       viewport: vimCase.viewport,
     });
     if (vimCase.screen === "Decks") {
+      await expandDeckSection(page, "und");
       await page.locator("#main-content").focus();
       await page.keyboard.press("j");
       await expect(page.getByTestId("deck-travel-deck")).toBeFocused();
@@ -568,6 +571,7 @@ for (const deckViewCase of [
         .getByRole("button", { name: "List" })
         .click();
     }
+    await expandDeckSection(page, "und");
     await expect(
       page.getByTestId(
         deckViewCase.view === "Grid" ? "deck-grid" : "deck-list",
@@ -591,6 +595,54 @@ for (const deckViewCase of [
       maxDiffPixelRatio: 0.12,
     });
   });
+}
+
+for (const view of ["Grid", "List"] as const) {
+  for (const layout of [
+    { viewport: "desktop", theme: "light" },
+    { viewport: "narrow", theme: "dark" },
+  ] as const) {
+    test(`visual regression: deck-languages-${view}-${layout.viewport}-${layout.theme}`, async ({
+      page,
+    }) => {
+      await prepare(page, {
+        route: "/?decks=grouped",
+        screen: "Decks",
+        ...layout,
+      });
+      await page
+        .getByRole("group", { name: "Deck view" })
+        .getByRole("button", { name: view })
+        .click();
+      await expect(page.locator("[data-language-disclosure]")).toHaveCount(4);
+      for (const state of ["collapsed", "expanded"] as const) {
+        if (state === "expanded") {
+          await expandDeckSection(page, "fr");
+          await expandDeckSection(page, "es");
+        }
+        await page.locator("#main-content").focus();
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+        await expect(
+          page.getByRole("link", { name: "Skip to content" }),
+        ).not.toBeInViewport();
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        ).toBe(true);
+        await expect(page).toHaveScreenshot(
+          `deck-languages-${view.toLowerCase()}-${layout.viewport}-${layout.theme}-${state}.png`,
+          {
+            animations: "disabled",
+            caret: "hide",
+            fullPage: true,
+            maxDiffPixelRatio: 0.12,
+          },
+        );
+      }
+    });
+  }
 }
 
 for (const selectionCase of [
@@ -620,6 +672,8 @@ for (const selectionCase of [
         .getByRole("button", { name: "List" })
         .click();
     }
+    await expandDeckSection(page, "und");
+    await expandDeckSection(page, "ja");
     await page.getByRole("checkbox", { name: "Select Travel phrases" }).click();
     await page
       .getByRole("checkbox", {
@@ -644,27 +698,17 @@ for (const selectionCase of [
     const areaBounds = await page
       .getByTestId("deck-selection-area")
       .boundingBox();
-    const deckBounds = await page.getByTestId("deck-travel-deck").boundingBox();
+    const deckBounds = await page
+      .getByTestId("deck-deck:ja-JP:00")
+      .boundingBox();
     if (!areaBounds || !deckBounds) {
       throw new Error("Deck selection geometry is unavailable");
     }
-    const start =
-      selectionCase.view === "Grid"
-        ? {
-            x: deckBounds.x + deckBounds.width + 8,
-            y: deckBounds.y + deckBounds.height - 12,
-          }
-        : { x: deckBounds.x + 8, y: deckBounds.y - 4 };
-    const end =
-      selectionCase.view === "Grid"
-        ? {
-            x: deckBounds.x + deckBounds.width - 48,
-            y: deckBounds.y + 40,
-          }
-        : {
-            x: deckBounds.x + deckBounds.width - 24,
-            y: deckBounds.y + 40,
-          };
+    const start = { x: deckBounds.x + 8, y: deckBounds.y - 4 };
+    const end = {
+      x: deckBounds.x + deckBounds.width - 24,
+      y: deckBounds.y + 40,
+    };
     await page.keyboard.down("Shift");
     await page.mouse.move(start.x, start.y);
     await page.mouse.down();
@@ -704,6 +748,7 @@ for (const deckActionsCase of [
       theme: deckActionsCase.theme,
       viewport: deckActionsCase.viewport,
     });
+    await expandDeckSection(page, "und");
     await page
       .getByRole("button", { name: "Actions for Travel phrases" })
       .click();
@@ -759,6 +804,7 @@ for (const resetCase of [
       theme: resetCase.theme,
       viewport: resetCase.viewport,
     });
+    await expandDeckSection(page, "und");
     await page
       .getByRole("button", { name: "Actions for Travel phrases" })
       .click();
@@ -911,6 +957,7 @@ for (const deletionCase of [
       theme: deletionCase.theme,
       viewport: deletionCase.viewport,
     });
+    await expandDeckSection(page, "und");
     await page
       .getByTestId("deck-travel-deck")
       .getByRole("button", { name: "Open" })
@@ -959,6 +1006,7 @@ for (const deletionActivityCase of [
       theme: deletionActivityCase.theme,
       viewport: deletionActivityCase.viewport,
     });
+    await expandDeckSection(page, "und");
     await page
       .getByRole("button", { name: "Actions for Travel phrases" })
       .click();
